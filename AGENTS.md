@@ -42,5 +42,7 @@
 - Run `just test` after changing Rust code.
 - Run `just lint` and `just fmt-check` before committing.
 - Run `just test-bpf` after changing files under `bpf/`.
+- Run `just test-bpf-live` after changing BPF maps, records, attachment, or
+  userspace ring-buffer handling. This test requires Docker daemon access.
 - Run `just test-cupti` after changing files under `cupti/`.
 - Use emoji conventional commits, for example `🐛 fix: reject reused pid`.

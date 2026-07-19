@@ -17,7 +17,7 @@ xprobe CLI
         v
 core inspection and measurement orchestration
         |
-        +-- host collector (eBPF, planned)
+        +-- host collector (eBPF uprobe entry events)
         +-- device collector (in-process CUPTI agent, planned)
         +-- correlation and exporters (planned)
 ```
@@ -30,14 +30,14 @@ cleanup. It does not contain an agent runtime or model integration.
 
 | Path | Responsibility | Current state |
 | --- | --- | --- |
-| `xprobe/cli` | Arguments, rendering, exit codes | `doctor`, `inspect` |
-| `xprobe/core` | Deterministic environment and process logic | `doctor`, `inspect` |
+| `xprobe/cli` | Arguments, rendering, exit codes | `doctor`, `inspect`, `dev uprobe` |
+| `xprobe/core` | Deterministic environment and process logic | Inspection and identity verification |
 | `xprobe/protocol` | Public serde types and schema generation | Implemented |
-| `xprobe/collector` | Host and device collector interfaces | Skeleton |
+| `xprobe/collector` | Host and device collector interfaces | Host uprobe entry collector |
 | `xprobe/correlator` | Event matching and statistics | Skeleton |
 | `xprobe/exporter` | JSONL and trace export | Skeleton |
 | `xprobe/daemon` | Future privilege-separated sessions | Skeleton |
-| `bpf/` | eBPF programs and build | Minimal object |
+| `bpf/` | eBPF programs and build | PID-scoped uprobe and ring buffer |
 | `cupti/` | In-process CUPTI agent | ABI skeleton |
 
 ## Public contracts
@@ -52,6 +52,7 @@ Current schemas cover:
 - structured errors;
 - environment capabilities;
 - process inspection;
+- bounded host capture results;
 - measurement specifications and results.
 
 ## Process identity
@@ -64,13 +65,21 @@ PID + process start time in kernel clock ticks
 ```
 
 A changed start time produces `TARGET_REUSED`; disappearance during inspection
-produces `TARGET_EXITED`. No partial report is returned.
+or collection produces `TARGET_EXITED`. The CLI verifies the identity again
+after detaching the probe. No result is returned for a reused or exited target.
 
 ## Host and device collection
 
-Host probes are designed to attach externally with eBPF. The hot path must not
-perform symbol resolution, regular-expression matching, unbounded reads, or
-analysis.
+The implemented host collector embeds a Clang-built BPF object, loads it with
+libbpf-rs, attaches one PID-scoped function-entry uprobe, and consumes fixed-size
+records from a ring buffer. The target PID namespace device and inode are passed
+to BPF so emitted PID/TID values match the namespace used by the CLI. Collection
+stops at a caller-supplied sample limit or deadline, reports ring-buffer drops,
+and detaches through Rust ownership on every return path.
+
+The BPF hot path performs only namespace identity filtering, timestamp and CPU
+capture, sequence/drop accounting, and ring-buffer submission. Symbol lookup,
+JSON construction, and timeout handling remain in userspace.
 
 CUPTI callback and activity collection requires code inside the target process.
 The supported direction is startup-time loading or explicit application/plugin

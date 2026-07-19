@@ -5,9 +5,16 @@ channels:
   - nodefaults
 
 dependencies:
+  - autoconf>=2.72
+  - automake>=1.17
+  - bison>=3.8
   - clang>=22,<23
   - cmake>=3.20
+  - flex>=2.6
+  - gawk>=5.3
+  - gettext>=0.25
   - just>=1.40
+  - make>=4.4
   - ninja>=1.12
   - pkg-config>=0.29
-
+  - python>=3.12,<3.14

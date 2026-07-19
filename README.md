@@ -6,8 +6,9 @@ CLI with versioned JSON contracts, intended for both performance engineers and
 coding agents.
 
 The repository is under active development. The current executable discovers
-local tracing capabilities and inspects target processes; probe attachment and
-CUDA activity collection are not implemented yet.
+local tracing capabilities, inspects target processes, and captures bounded
+userspace function-entry events with eBPF uprobes. CUDA activity collection is
+not implemented yet.
 
 ## Current capabilities
 
@@ -15,10 +16,11 @@ CUDA activity collection are not implemented yet.
 | --- | --- |
 | `doctor` environment inspection | Implemented |
 | `inspect --pid` process inspection | Implemented |
-| Versioned Event, Error, Capability, Inspect, and Measurement schemas | Implemented |
-| eBPF build pipeline | Minimal buildable probe only |
+| Versioned Event, Error, Capability, Inspect, Host Capture, and Measurement schemas | Implemented |
+| PID-scoped eBPF uprobe collection | Implemented through `dev uprobe` |
+| eBPF build pipeline | Embedded libbpf object and ring buffer |
 | CUPTI agent | ABI skeleton only |
-| Probe attachment, collection, correlation, and export | Planned |
+| CUDA collection, correlation, and export | Planned |
 
 ## Quick start
 
@@ -40,6 +42,8 @@ Inspect the current environment and a target process:
 ```bash
 target/debug/xprobe doctor --json --non-interactive --no-color
 target/debug/xprobe inspect --pid <pid> --json --non-interactive --no-color
+target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
+  --samples 10 --timeout-ms 5000 --json --non-interactive --no-color
 ```
 
 Machine-readable results are written to stdout. Runtime logs and human errors

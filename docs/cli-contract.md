@@ -26,7 +26,7 @@ schemas are the machine-readable contract.
 | `1` | Internal, I/O, or malformed-system-data failure |
 | `2` | Invalid command-line arguments, emitted by Clap |
 | `3` | Target not found, exited, or was reused |
-| `4` | Permission denied while inspecting the target |
+| `4` | Permission denied while inspecting or attaching to the target |
 
 Capability absence does not make `doctor` fail. `ok: true` means the inspection
 completed; callers must read individual capability and check statuses.
@@ -88,3 +88,29 @@ That field remains `unknown` until an in-process signal can establish it.
 Process command lines may contain sensitive arguments. Callers must treat the
 inspection result accordingly; xprobe does not read environment variables or
 process memory.
+
+## `dev uprobe`
+
+```bash
+xprobe dev uprobe \
+  --pid 1234 \
+  --binary /srv/app/server \
+  --symbol handle_request \
+  --probe-id 7 \
+  --samples 100 \
+  --timeout-ms 5000 \
+  --json --non-interactive --no-color
+```
+
+The command captures function-entry events only. `--binary` must resolve to the
+target executable or a shared library visible in `/proc/<pid>/maps`; otherwise
+the command returns `BINARY_NOT_MAPPED`. `--samples` and `--timeout-ms` must both
+be greater than zero.
+
+The result conforms to `schemas/host-capture.schema.json`. Reaching the deadline
+before the requested sample count is a successful bounded capture with
+`timed_out: true`; attachment, map, malformed-record, permission, and target
+identity failures use the standard error envelope. Events contain host
+monotonic nanoseconds, a sequence number, namespace-local PID/TID, CPU, probe
+id, binary path, and symbol. Argument capture and return probes are not yet
+implemented.

@@ -12,9 +12,30 @@ just build
 just test
 ```
 
-The environment contains Clang, CMake, Ninja, pkg-config, and Just. CUDA is not
-installed into it yet because the implemented commands do not compile CUPTI or
-CUDA code.
+The environment contains Clang, CMake, Ninja, pkg-config, Just, Python, and the
+autotools required to compile vendored libbpf, libelf, and zlib. A system C
+compiler and Linux UAPI/multiarch headers are also required. CUDA is not
+installed into the environment because the implemented commands do not compile
+CUPTI or CUDA code.
+
+## eBPF tests
+
+Compile the BPF object without attaching it:
+
+```bash
+just test-bpf
+```
+
+Run the real PID-scoped uprobe test in the pinned container:
+
+```bash
+just test-bpf-live
+```
+
+The live test requires Docker daemon access and grants the container `BPF`,
+`PERFMON`, `SYS_ADMIN`, and `SYS_RESOURCE`, with seccomp disabled for BPF/perf
+syscalls. It does not use `--privileged`, does not require GPU access, mounts the
+workspace read-only, and removes the container after the test.
 
 ## GPU checks
 
@@ -53,5 +74,5 @@ the CUDA headers, compiler, and CUPTI development files. When selected:
 - do not use `--privileged` for GPU-only tests.
 
 eBPF attachment tests are host-sensitive and are separate from CUDA compilation
-tests. Grant only the required BPF/perf capabilities and host PID visibility;
-do not assume a CUDA container can attach host probes by default.
+tests. The target and collector run in the same container PID namespace; host
+PID visibility is not required for the current fixture.
