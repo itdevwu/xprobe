@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "xprobe/cli",
+    "xprobe/collector",
+    "xprobe/core",
+    "xprobe/correlator",
+    "xprobe/daemon",
+    "xprobe/exporter",
+    "xprobe/protocol",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/xprobe-dev/xprobe"
+rust-version = "1.85"
+
+[workspace.dependencies]
+clap = { version = "4.5", features = ["derive"] }
+xprobe-collector = { path = "xprobe/collector" }
+xprobe-core = { path = "xprobe/core" }
+xprobe-correlator = { path = "xprobe/correlator" }
+xprobe-exporter = { path = "xprobe/exporter" }
+xprobe-protocol = { path = "xprobe/protocol" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

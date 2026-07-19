@@ -1,0 +1,23 @@
+[package]
+name = "xprobe-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "xprobe"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+xprobe-collector.workspace = true
+xprobe-core.workspace = true
+xprobe-correlator.workspace = true
+xprobe-exporter.workspace = true
+xprobe-protocol.workspace = true
+
+[lints]
+workspace = true
+
