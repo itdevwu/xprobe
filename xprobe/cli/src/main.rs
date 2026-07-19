@@ -11,11 +11,11 @@ use xprobe_collector::{
     cupti,
     uprobe::{self, UprobeRequest},
 };
-use xprobe_core::{doctor, inspect};
+use xprobe_core::{doctor, inspect, resolve};
 use xprobe_exporter::events_to_jsonl;
 use xprobe_protocol::{
     CapabilityReport, CheckResult, ErrorCode, ErrorResponse, HostCaptureResult, ProcessReport,
-    SchemaVersion, XprobeError,
+    ResolvedProbe, SchemaVersion, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -31,6 +31,8 @@ enum Command {
     Doctor(DoctorArgs),
     /// Inspect a target process without attaching probes.
     Inspect(InspectArgs),
+    /// Resolve a userspace event selector against a target process.
+    Resolve(ResolveArgs),
     /// Run low-level development probes.
     Dev(DevArgs),
 }
@@ -69,6 +71,29 @@ struct InspectArgs {
     /// Target process ID.
     #[arg(long)]
     pid: u32,
+
+    /// Emit only the versioned JSON result on stdout.
+    #[arg(long)]
+    json: bool,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+
+    /// Never wait for user input.
+    #[arg(long)]
+    non_interactive: bool,
+}
+
+#[derive(Debug, Args)]
+struct ResolveArgs {
+    /// Target process ID.
+    #[arg(long)]
+    pid: u32,
+
+    /// Event selector: uprobe:<binary>:<symbol|+0xoffset>:<entry|return>.
+    #[arg(long, alias = "event")]
+    selector: String,
 
     /// Emit only the versioned JSON result on stdout.
     #[arg(long)]
@@ -160,10 +185,42 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Doctor(args) => run_doctor(args),
         Command::Inspect(args) => run_inspect(args),
+        Command::Resolve(args) => run_resolve(args),
         Command::Dev(args) => match args.command {
             DevCommand::Uprobe(args) => run_uprobe(args),
             DevCommand::Cupti(args) => run_cupti(args),
         },
+    }
+}
+
+fn run_resolve(args: ResolveArgs) -> ExitCode {
+    let ResolveArgs {
+        pid,
+        selector,
+        json,
+        no_color: _,
+        non_interactive: _,
+    } = args;
+    let report = match inspect::run(pid) {
+        Ok(report) => report,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+
+    match resolve::run(&report, &selector) {
+        Ok(resolved) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&resolved).expect("resolved probe must serialize")
+                );
+            } else {
+                print_resolved_probe(&resolved);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
     }
 }
 
@@ -495,6 +552,26 @@ fn print_host_capture(result: &HostCaptureResult) {
             result.probe_id
         );
     }
+}
+
+fn print_resolved_probe(resolved: &ResolvedProbe) {
+    println!("Target: PID {}", resolved.target.pid);
+    println!("Binary: {}", resolved.binary_path);
+    println!(
+        "Build ID: {}",
+        resolved.build_id.as_deref().unwrap_or("unavailable")
+    );
+    println!("Object: {:?}", resolved.object_kind);
+    println!("Probe: {:?}", resolved.probe_kind);
+    if let Some(symbol) = &resolved.symbol {
+        println!("Symbol: {symbol}");
+    }
+    println!("File offset: {:#x}", resolved.file_offset);
+    println!("Runtime address: {:#x}", resolved.runtime_address);
+    println!(
+        "Mapping: {:#x}-{:#x} (file offset {:#x})",
+        resolved.mapping.start_address, resolved.mapping.end_address, resolved.mapping.file_offset
+    );
 }
 
 fn print_check(name: &str, result: &CheckResult) {

@@ -4,7 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
     CapabilityReport, ErrorResponse, Event, HostCaptureResult, MeasurementResult, MeasurementSpec,
-    ProcessReport, schema::generated_schemas,
+    ProcessReport, ResolvedProbe, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -241,6 +241,30 @@ fn process_report_contract_round_trips() {
             "cuda_callback": false,
             "cuda_activity": false,
             "runtime_injection": false
+        }
+    }));
+}
+
+#[test]
+fn resolved_probe_contract_round_trips() {
+    assert_round_trip::<ResolvedProbe>(&json!({
+        "schema_version": "1.0",
+        "ok": true,
+        "target": {"pid": 1234, "process_start_time": 42},
+        "selector": "uprobe:/srv/app/libserver.so:handle_request:entry",
+        "binary_path": "/srv/app/libserver.so",
+        "build_id": "0123456789abcdef",
+        "object_kind": "shared_library",
+        "probe_kind": "uprobe",
+        "symbol": "handle_request",
+        "symbol_virtual_address": 8192,
+        "symbol_size": 32,
+        "file_offset": 8192,
+        "runtime_address": 140_737_488_363_520_u64,
+        "mapping": {
+            "start_address": 140_737_488_355_328_u64,
+            "end_address": 140_737_488_420_864_u64,
+            "file_offset": 0
         }
     }));
 }

@@ -120,6 +120,38 @@ Use `--jsonl` instead of `--json` to emit only the normalized `Event` values,
 one compact JSON object per line. This is the same event stream format produced
 by the CUPTI decoder.
 
+## `resolve`
+
+```bash
+xprobe resolve \
+  --pid 1234 \
+  --selector 'uprobe:/srv/app/libserver.so:handle_request:entry' \
+  --json --non-interactive --no-color
+```
+
+`--event` is accepted as an alias for `--selector`. Supported selector forms
+are:
+
+```text
+uprobe:<binary>:<symbol>:entry
+uprobe:<binary>:<symbol>:return
+uprobe:<binary>:+0x<file-offset>:entry
+uprobe:<binary>:+0x<file-offset>:return
+```
+
+Resolution is read-only and does not attach a probe. The command verifies the
+PID plus process start time, requires the binary to be present in
+`/proc/<pid>/maps`, parses ELF load segments and symbol tables, reads the GNU
+Build ID when present, and returns the file offset, matching process mapping,
+and computed runtime address. PIE executables and `ET_DYN` shared libraries are
+reported separately. Hexadecimal `+0x...` values always mean ELF file offsets,
+not virtual addresses.
+
+The result conforms to `schemas/resolve.schema.json`. Malformed selectors,
+missing symbols, unmapped binaries, and offsets outside loadable or mapped
+regions use the standard error envelope. An absent Build ID is represented by
+`null`; invalid ELF metadata is an error.
+
 ## `dev cupti`
 
 ```bash

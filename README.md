@@ -7,9 +7,10 @@ coding agents.
 
 The repository is under active development. The current executable discovers
 local tracing capabilities, inspects target processes, and captures bounded
-userspace function-entry events with eBPF uprobes. Its in-process CUPTI agent
-captures CUDA launch boundaries and correlated GPU kernel intervals to a
-versioned binary stream.
+userspace function-entry events with eBPF uprobes. It also resolves symbol and
+file-offset probe selectors against live PIE executables and shared libraries.
+Its in-process CUPTI agent captures CUDA launch boundaries and correlated GPU
+kernel intervals to a versioned binary stream.
 
 ## Current capabilities
 
@@ -17,7 +18,8 @@ versioned binary stream.
 | --- | --- |
 | `doctor` environment inspection | Implemented |
 | `inspect --pid` process inspection | Implemented |
-| Versioned Event, Error, Capability, Inspect, Host Capture, and Measurement schemas | Implemented |
+| Versioned public JSON schemas | Implemented |
+| `resolve` for PIE, shared libraries, symbols, offsets, and Build IDs | Implemented |
 | PID-scoped eBPF uprobe collection | Implemented through `dev uprobe` |
 | eBPF build pipeline | Embedded libbpf object and ring buffer |
 | CUPTI agent | Runtime launch callbacks and concurrent-kernel activity |
@@ -45,6 +47,9 @@ Inspect the current environment and a target process:
 ```bash
 target/debug/xprobe doctor --json --non-interactive --no-color
 target/debug/xprobe inspect --pid <pid> --json --non-interactive --no-color
+target/debug/xprobe resolve --pid <pid> \
+  --selector 'uprobe:/path/to/lib.so:function_name:entry' \
+  --json --non-interactive --no-color
 target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
   --samples 10 --timeout-ms 5000 --json --non-interactive --no-color
 target/debug/xprobe dev cupti --input /tmp/xprobe-cupti.bin \

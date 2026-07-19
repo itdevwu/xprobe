@@ -31,8 +31,8 @@ cleanup. It does not contain an agent runtime or model integration.
 
 | Path | Responsibility | Current state |
 | --- | --- | --- |
-| `xprobe/cli` | Arguments, rendering, exit codes | `doctor`, `inspect`, `dev uprobe` |
-| `xprobe/core` | Deterministic environment and process logic | Inspection and identity verification |
+| `xprobe/cli` | Arguments, rendering, exit codes | `doctor`, `inspect`, `resolve`, development capture commands |
+| `xprobe/core` | Deterministic environment and process logic | Inspection, identity verification, ELF probe resolution |
 | `xprobe/protocol` | Public serde types and schema generation | Implemented |
 | `xprobe/collector` | Host and device collector interfaces | Host uprobe collector and CUPTI decoder |
 | `xprobe/correlator` | Event matching and statistics | Skeleton |
@@ -53,6 +53,7 @@ Current schemas cover:
 - structured errors;
 - environment capabilities;
 - process inspection;
+- resolved userspace probes;
 - bounded host capture results;
 - measurement specifications and results.
 
@@ -68,6 +69,20 @@ PID + process start time in kernel clock ticks
 A changed start time produces `TARGET_REUSED`; disappearance during inspection
 or collection produces `TARGET_EXITED`. The CLI verifies the identity again
 after detaching the probe. No result is returned for a reused or exited target.
+
+## Probe resolution
+
+The core resolver parses a userspace event selector, reads the selected ELF
+file, and matches it against file-backed regions in `/proc/<pid>/maps`. Symbol
+virtual addresses are converted through ELF load segments to file offsets; the
+file offset and matching process map then determine the runtime address. This
+calculation handles fixed-address executables, PIE executables, and shared
+libraries without treating a process mapping base as a symbol address.
+
+Resolution reports the canonical binary path, GNU Build ID when present,
+symbol metadata, probe kind, file offset, runtime address, and exact map used as
+evidence. The target identity is checked before and after resolution. Resolution
+does not attach a probe or mutate the target.
 
 ## Host and device collection
 

@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResolvedProbe",
+  "type": "object",
+  "properties": {
+    "binary_path": {
+      "type": "string"
+    },
+    "build_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "file_offset": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "mapping": {
+      "$ref": "#/$defs/ProcessMapping"
+    },
+    "object_kind": {
+      "$ref": "#/$defs/ElfObjectKind"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "probe_kind": {
+      "$ref": "#/$defs/HostProbeKind"
+    },
+    "runtime_address": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "selector": {
+      "type": "string"
+    },
+    "symbol": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "symbol_size": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "symbol_virtual_address": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "target",
+    "selector",
+    "binary_path",
+    "object_kind",
+    "probe_kind",
+    "file_offset",
+    "runtime_address",
+    "mapping"
+  ],
+  "$defs": {
+    "ElfObjectKind": {
+      "type": "string",
+      "enum": [
+        "executable",
+        "position_independent_executable",
+        "shared_library"
+      ]
+    },
+    "HostProbeKind": {
+      "type": "string",
+      "enum": [
+        "uprobe",
+        "uretprobe",
+        "kprobe",
+        "kretprobe",
+        "tracepoint",
+        "syscall",
+        "usdt"
+      ]
+    },
+    "ProcessMapping": {
+      "type": "object",
+      "properties": {
+        "end_address": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "file_offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start_address": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start_address",
+        "end_address",
+        "file_offset"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    }
+  }
+}
