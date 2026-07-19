@@ -119,6 +119,34 @@ def main() -> None:
             raise SystemExit(decoded.returncode)
         assert decoded.stderr == ""
         events = [json.loads(line) for line in decoded.stdout.splitlines()]
+        measured = subprocess.run(
+            [
+                xprobe,
+                "measure",
+                "--input",
+                capture,
+                "--from",
+                "cuda:kernel_start:name~xprobe_test_kernel.*",
+                "--to",
+                "cuda:kernel_end:name~xprobe_test_kernel.*",
+                "--match",
+                "exact",
+                "--samples",
+                "3",
+                "--json",
+                "--non-interactive",
+                "--no-color",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if measured.returncode != 0:
+            sys.stdout.write(measured.stdout)
+            sys.stderr.write(measured.stderr)
+            raise SystemExit(measured.returncode)
+        assert measured.stderr == ""
+        measurement = json.loads(measured.stdout)
 
     counts = collections.Counter(record["kind"] for record in records)
     diagnostics = {"header": header, "counts": counts, "records": records}
@@ -175,10 +203,23 @@ def main() -> None:
         for event in events
         if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
     )
+    assert measurement["measurement"]["samples"]["matched"] == 3
+    assert measurement["measurement"]["latency_ns"]["min"] > 0
+    assert (
+        measurement["measurement"]["latency_ns"]["max"]
+        >= measurement["measurement"]["latency_ns"]["min"]
+    )
+    assert measurement["correlation"]["confidence"] == "exact"
+    assert measurement["clock"]["alignment"] == "cupti_same_domain"
 
     print(
         json.dumps(
-            {"records": len(records), "events": len(events), "kinds": counts},
+            {
+                "records": len(records),
+                "events": len(events),
+                "matched": measurement["measurement"]["samples"]["matched"],
+                "kinds": counts,
+            },
             sort_keys=True,
         )
     )

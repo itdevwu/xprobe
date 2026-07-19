@@ -97,6 +97,13 @@ impl EndpointKind {
     const fn is_host(&self) -> bool {
         matches!(self, Self::HostEntry | Self::HostReturn)
     }
+
+    const fn uses_host_clock(&self) -> bool {
+        matches!(
+            self,
+            Self::HostEntry | Self::HostReturn | Self::CudaApi { .. }
+        )
+    }
 }
 
 struct Endpoint {
@@ -128,12 +135,14 @@ pub fn run(
     let needs_cupti_callback = start.kind.needs_callback() || end.kind.needs_callback();
     let needs_cupti_activity = start.kind.needs_activity() || end.kind.needs_activity();
     let needs_cupti = needs_cupti_callback || needs_cupti_activity;
+    let needs_clock_alignment = start.kind.uses_host_clock() != end.kind.uses_host_clock();
     let target_restart_required = needs_cupti && !report.cuda.xprobe_cupti_loaded;
     let requirements = ValidationRequirements {
         needs_ebpf,
         needs_cupti,
         needs_cupti_callback,
         needs_cupti_activity,
+        needs_clock_alignment,
         target_restart_required,
         target_mutation: false,
     };
@@ -144,6 +153,13 @@ pub fn run(
     check_collectability(&end, "end", &mut issues);
     check_capabilities(report, &start, &end, &requirements, &mut issues);
     check_policy(&start, &end, match_policy, &mut issues, &mut warnings);
+    if requirements.needs_clock_alignment {
+        issues.push(issue(
+            ErrorCode::ClockAlignmentFailed,
+            "the current capture ABI does not align host monotonic and CUPTI activity clocks"
+                .to_owned(),
+        ));
+    }
     check_selector_breadth(&start, "start", &mut warnings);
     check_selector_breadth(&end, "end", &mut warnings);
 
@@ -601,20 +617,21 @@ mod tests {
     }
 
     #[test]
-    fn accepts_exact_launch_to_kernel_when_agent_is_available() {
+    fn accepts_exact_kernel_duration_when_agent_is_available() {
         let mut report = inspect::run(std::process::id()).unwrap();
         report.cuda.xprobe_cupti_loaded = true;
         report.capabilities.cuda_callback = true;
         report.capabilities.cuda_activity = true;
         let result = run(
             &report,
-            "cuda:runtime_api:cudaLaunchKernel:exit",
             "cuda:kernel_start:name~test.*",
+            "cuda:kernel_end:name~test.*",
             "exact",
         )
         .unwrap();
         assert!(result.valid);
         assert!(!result.requirements.target_restart_required);
+        assert!(!result.requirements.needs_clock_alignment);
         assert!(result.issues.is_empty());
     }
 }

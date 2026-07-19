@@ -34,6 +34,7 @@ fn validate_reports_environment_requirements_without_attaching() {
     assert!(result.requirements.needs_cupti);
     assert!(result.requirements.needs_cupti_callback);
     assert!(result.requirements.needs_cupti_activity);
+    assert!(result.requirements.needs_clock_alignment);
     assert!(!result.requirements.target_mutation);
     assert!(!result.valid);
     assert!(
@@ -41,6 +42,12 @@ fn validate_reports_environment_requirements_without_attaching() {
             .issues
             .iter()
             .any(|issue| issue.code == ErrorCode::CuptiAgentNotLoaded)
+    );
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|issue| issue.code == ErrorCode::ClockAlignmentFailed)
     );
 }
 

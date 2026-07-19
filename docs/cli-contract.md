@@ -166,7 +166,7 @@ xprobe validate \
 `validate` reads process and ELF metadata but does not attach probes, initialize
 CUPTI, or modify the target. It resolves host selectors, validates CUDA filters
 and regular expressions, checks the correlation policy against available keys,
-and reports required eBPF and CUPTI capabilities.
+and reports required eBPF, CUPTI, and clock-alignment capabilities.
 
 The current selector grammar recognizes CUDA runtime and driver API callbacks,
 kernel, memcpy, and memset activity. This build can collect
@@ -176,10 +176,11 @@ the result invalid until their collectors are implemented.
 
 Supported match policy spellings are `exact`, `first-after`, `nearest`,
 `stack-nested`, and `stream-order`. `exact` is valid only when both endpoints
-share a deterministic CUPTI correlation key. `stack-nested` requires entry and
-return selectors for the same host function. `stream-order` requires two GPU
-activity endpoints. Temporal policies emit `HEURISTIC_CORRELATION`; broad
-kernel selectors emit `BROAD_EVENT_SELECTOR`.
+share a deterministic CUPTI correlation key and their clocks are the same or
+already aligned. `stack-nested` requires entry and return selectors for the
+same host function. `stream-order` requires two GPU activity endpoints.
+Temporal policies emit `HEURISTIC_CORRELATION`; broad kernel selectors emit
+`BROAD_EVENT_SELECTOR`.
 
 Malformed input, invalid regex syntax, unresolved symbols, and unknown policies
 use the error envelope and a nonzero exit code. A well-formed request that
@@ -187,6 +188,40 @@ cannot run in the current target returns exit code zero with `ok: true`,
 `valid: false`, and explicit issues. A missing CUPTI agent also reports whether
 a target restart is required. Results conform to
 `schemas/validate.schema.json`.
+
+## `measure`
+
+```bash
+xprobe measure \
+  --input /tmp/xprobe-cupti.bin \
+  --from 'cuda:kernel_start:name~flash.*' \
+  --to 'cuda:kernel_end:name~flash.*' \
+  --match exact \
+  --samples 100 \
+  --json --non-interactive --no-color
+```
+
+The first measurement path consumes a completed CUPTI capture. It supports
+`cudaLaunchKernel` runtime API selectors, kernel start/end selectors, and the
+`exact` and `first-after` policies. `exact` joins on CUPTI correlation ID;
+`first-after` performs a chronological one-to-one greedy match and is always
+labeled `HEURISTIC_CORRELATION`.
+
+At least one of `--samples` or `--duration-ms` is required. `--max-events`
+defaults to 100,000 and rejects larger captures before correlation. Source
+drops are included in the result and produce an `EVENTS_DROPPED` warning.
+Unknown source records fail instead of being ignored.
+
+Latency is calculated only when both endpoints use the same clock domain or
+have already been normalized. Kernel start-to-end and API entry-to-exit are
+therefore supported by capture ABI v1. API-to-kernel and host-to-kernel latency
+return `CLOCK_ALIGNMENT_FAILED` until clock calibration is implemented. Live
+multi-source collection from an arbitrary running PID is not part of this
+completed-capture path.
+
+The result conforms to `schemas/measurement-result.schema.json`. No matched
+pairs return `NO_MATCHED_SAMPLES`; unsupported policies and unbounded requests
+use the standard error envelope.
 
 ## `dev cupti`
 

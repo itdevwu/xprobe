@@ -26,6 +26,7 @@ kernel intervals to a versioned binary stream.
 | CUPTI agent | Runtime launch callbacks and concurrent-kernel activity |
 | CUDA raw capture | Startup injection or explicit application integration |
 | Unified Event JSONL | Implemented for uprobe and CUPTI captures |
+| Completed-capture exact and first-after measurement | Implemented for same-clock CUDA events |
 | Clock normalization and cross-source correlation | Planned |
 
 ## Quick start
@@ -59,6 +60,10 @@ target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
   --samples 10 --timeout-ms 5000 --json --non-interactive --no-color
 target/debug/xprobe dev cupti --input /tmp/xprobe-cupti.bin \
   --session-id xp_cuda_1 --json --non-interactive --no-color
+target/debug/xprobe measure --input /tmp/xprobe-cupti.bin \
+  --from 'cuda:kernel_start:name~kernel.*' \
+  --to 'cuda:kernel_end:name~kernel.*' --match exact --samples 100 \
+  --json --non-interactive --no-color
 ```
 
 Machine-readable results are written to stdout. Runtime logs and human errors

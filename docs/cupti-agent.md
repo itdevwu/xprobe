@@ -66,3 +66,18 @@ target/debug/xprobe dev cupti \
   --session-id xp_cuda_1 \
   --json --non-interactive --no-color
 ```
+
+Measure same-clock events in a completed capture:
+
+```bash
+target/debug/xprobe measure \
+  --input /tmp/xprobe-cupti.bin \
+  --from 'cuda:kernel_start:name~kernel.*' \
+  --to 'cuda:kernel_end:name~kernel.*' \
+  --match exact --samples 100 \
+  --json --non-interactive --no-color
+```
+
+CUPTI API callback timestamps use host monotonic time while GPU activity uses
+the CUPTI clock. Capture ABI v1 does not contain calibration samples, so the
+measurement command rejects API-to-GPU subtraction.

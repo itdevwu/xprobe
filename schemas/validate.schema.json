@@ -385,6 +385,9 @@
     "ValidationRequirements": {
       "type": "object",
       "properties": {
+        "needs_clock_alignment": {
+          "type": "boolean"
+        },
         "needs_cupti": {
           "type": "boolean"
         },
@@ -410,6 +413,7 @@
         "needs_cupti",
         "needs_cupti_callback",
         "needs_cupti_activity",
+        "needs_clock_alignment",
         "target_restart_required",
         "target_mutation"
       ]

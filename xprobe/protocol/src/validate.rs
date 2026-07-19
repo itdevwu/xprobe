@@ -42,6 +42,7 @@ pub struct ValidationRequirements {
     pub needs_cupti: bool,
     pub needs_cupti_callback: bool,
     pub needs_cupti_activity: bool,
+    pub needs_clock_alignment: bool,
     pub target_restart_required: bool,
     pub target_mutation: bool,
 }

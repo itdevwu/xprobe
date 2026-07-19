@@ -20,7 +20,8 @@ core inspection and measurement orchestration
         +-- host collector (eBPF uprobe entry events)
         +-- device collector (in-process CUPTI agent)
         +-- Event normalization and JSONL export
-        +-- clock normalization and correlation (planned)
+        +-- same-domain correlation and statistics
+        +-- cross-domain clock normalization (planned)
 ```
 
 The caller selects targets and events and interprets results. `xprobe` performs
@@ -35,7 +36,7 @@ cleanup. It does not contain an agent runtime or model integration.
 | `xprobe/core` | Deterministic environment and process logic | Inspection, identity verification, ELF probe resolution |
 | `xprobe/protocol` | Public serde types and schema generation | Implemented |
 | `xprobe/collector` | Host and device collector interfaces | Host uprobe collector and CUPTI decoder |
-| `xprobe/correlator` | Event matching and statistics | Skeleton |
+| `xprobe/correlator` | Event matching and statistics | Completed-capture exact and first-after measurement |
 | `xprobe/exporter` | JSONL and trace export | Event JSONL |
 | `xprobe/daemon` | Future privilege-separated sessions | Skeleton |
 | `bpf/` | eBPF programs and build | PID-scoped uprobe and ring buffer |
@@ -89,7 +90,9 @@ parsing and a correlation-policy compatibility matrix. Input errors fail
 immediately; unavailable runtime requirements produce a successful validation
 report with `valid: false` and structured issues. Heuristic temporal policies
 are always labeled as warnings. Validation performs no collection and reports
-`target_mutation: false`.
+`target_mutation: false`. Cross-domain selectors expose
+`needs_clock_alignment: true` and remain invalid while capture ABI v1 lacks a
+calibration record.
 
 ## Host and device collection
 
@@ -115,6 +118,13 @@ The collector decodes the fixed CUPTI ABI into the same protocol `Event` type
 used by eBPF collectors. The exporter writes either source as compact JSONL.
 Clock domains remain explicit; cross-domain normalization and correlation are
 not yet implemented.
+
+The correlator can measure a completed CUPTI capture within one clock domain.
+Exact matching groups events by CUPTI correlation ID and rejects ambiguous
+groups. First-after matching is chronological, one-to-one, and explicitly
+heuristic. Both paths enforce sample, duration, and event-count bounds and
+report dropped, unmatched, and ambiguous records. Subtracting timestamps from
+different unaligned domains returns `CLOCK_ALIGNMENT_FAILED`.
 
 Supported loading paths are CUDA startup injection through
 `CUDA_INJECTION64_PATH` and explicit application/plugin initialization before

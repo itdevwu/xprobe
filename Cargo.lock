@@ -484,6 +484,11 @@ dependencies = [
 [[package]]
 name = "xprobe-correlator"
 version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "xprobe-protocol",
+]
 
 [[package]]
 name = "xprobe-daemon"
