@@ -3,8 +3,8 @@ use std::{fs, path::PathBuf};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
-    CapabilityReport, ErrorResponse, Event, MeasurementResult, MeasurementSpec, ProcessReport,
-    schema::generated_schemas,
+    CapabilityReport, ErrorResponse, Event, HostCaptureResult, MeasurementResult, MeasurementSpec,
+    ProcessReport, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -44,6 +44,47 @@ fn event_contract_round_trips() {
         },
         "cuda": null,
         "attributes": {}
+    }));
+}
+
+#[test]
+fn host_capture_contract_round_trips() {
+    assert_round_trip::<HostCaptureResult>(&json!({
+        "schema_version": "1.0",
+        "ok": true,
+        "session_id": "xp_uprobe_1234_1000",
+        "target": {"pid": 1234, "process_start_time": 42},
+        "probe_id": 7,
+        "captured": 1,
+        "dropped": 0,
+        "timed_out": false,
+        "events": [{
+            "schema_version": "1.0",
+            "session_id": "xp_uprobe_1234_1000",
+            "event_id": "evt_1",
+            "sequence": 1,
+            "source": "ebpf",
+            "event_type": "host_function_entry",
+            "pid": 1234,
+            "tid": 1234,
+            "cpu": 3,
+            "timestamp_raw": 1000,
+            "timestamp_ns": 1000,
+            "clock_domain": "host_monotonic",
+            "timestamp_error_ns": null,
+            "process_start_time": 42,
+            "host": {
+                "probe_kind": "uprobe",
+                "binary_path": "/srv/app",
+                "build_id": null,
+                "symbol": "handle_request",
+                "offset": null,
+                "return_value": null,
+                "arguments": []
+            },
+            "cuda": null,
+            "attributes": {}
+        }]
     }));
 }
 
