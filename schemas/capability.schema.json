@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapabilityReport",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/Capabilities"
+    },
+    "environment": {
+      "$ref": "#/$defs/Environment"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "capabilities",
+    "environment"
+  ],
+  "$defs": {
+    "Capabilities": {
+      "type": "object",
+      "properties": {
+        "cuda_activity": {
+          "type": "boolean"
+        },
+        "cuda_callback": {
+          "type": "boolean"
+        },
+        "runtime_injection": {
+          "type": "boolean"
+        },
+        "tracepoint": {
+          "type": "boolean"
+        },
+        "uprobe": {
+          "type": "boolean"
+        },
+        "uretprobe": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uprobe",
+        "uretprobe",
+        "tracepoint",
+        "cuda_callback",
+        "cuda_activity",
+        "runtime_injection"
+      ]
+    },
+    "Environment": {
+      "type": "object",
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "container": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effective_uid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kernel_release": {
+          "type": "string"
+        },
+        "operating_system": {
+          "type": "string"
+        },
+        "pid_namespace": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operating_system",
+        "architecture",
+        "kernel_release",
+        "effective_uid",
+        "pid_namespace"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

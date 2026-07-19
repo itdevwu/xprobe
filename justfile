@@ -30,3 +30,5 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
+schemas:
+    cargo run --package xprobe-protocol --bin generate-schemas

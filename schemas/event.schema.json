@@ -1,0 +1,414 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Event",
+  "type": "object",
+  "properties": {
+    "attributes": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "clock_domain": {
+      "$ref": "#/$defs/ClockDomain"
+    },
+    "cpu": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "cuda": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CudaEvent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "event_type": {
+      "$ref": "#/$defs/EventType"
+    },
+    "host": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HostEvent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pid": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "process_start_time": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/EventSource"
+    },
+    "tid": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "timestamp_error_ns": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "timestamp_ns": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "timestamp_raw": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "event_id",
+    "sequence",
+    "source",
+    "event_type",
+    "pid",
+    "tid",
+    "timestamp_raw",
+    "timestamp_ns",
+    "clock_domain"
+  ],
+  "$defs": {
+    "ArgumentValue": {
+      "type": "object",
+      "properties": {
+        "abi_type": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "read_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "abi_type"
+      ]
+    },
+    "ClockDomain": {
+      "type": "string",
+      "enum": [
+        "host_monotonic",
+        "cupti",
+        "cupti_normalized_to_host_monotonic"
+      ]
+    },
+    "CudaEvent": {
+      "type": "object",
+      "properties": {
+        "block": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dim3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "callback_domain": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "callback_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "context_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "correlation_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "device_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "grid": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dim3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kernel_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kernel_name_mangled": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memcpy_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemcpyKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime_correlation_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stream_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Dim3": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "z": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "EventSource": {
+      "type": "string",
+      "enum": [
+        "ebpf",
+        "cupti_callback",
+        "cupti_activity",
+        "marker"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "host_function_entry",
+        "host_function_exit",
+        "kernel_function_entry",
+        "kernel_function_exit",
+        "tracepoint",
+        "syscall_entry",
+        "syscall_exit",
+        "cuda_api_entry",
+        "cuda_api_exit",
+        "gpu_kernel_start",
+        "gpu_kernel_end",
+        "gpu_memcpy_start",
+        "gpu_memcpy_end",
+        "gpu_memset_start",
+        "gpu_memset_end",
+        "marker"
+      ]
+    },
+    "HostEvent": {
+      "type": "object",
+      "properties": {
+        "arguments": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArgumentValue"
+          }
+        },
+        "binary_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "probe_kind": {
+          "$ref": "#/$defs/HostProbeKind"
+        },
+        "return_value": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "probe_kind"
+      ]
+    },
+    "HostProbeKind": {
+      "type": "string",
+      "enum": [
+        "uprobe",
+        "uretprobe",
+        "kprobe",
+        "kretprobe",
+        "tracepoint",
+        "syscall",
+        "usdt"
+      ]
+    },
+    "MemcpyKind": {
+      "type": "string",
+      "enum": [
+        "HtoD",
+        "DtoH",
+        "DtoD",
+        "HtoH",
+        "PtoP",
+        "unknown"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    }
+  }
+}

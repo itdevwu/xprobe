@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ErrorResponse",
+  "type": "object",
+  "properties": {
+    "error": {
+      "$ref": "#/$defs/XprobeError"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "error"
+  ],
+  "$defs": {
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "PERMISSION_DENIED",
+        "TARGET_NOT_FOUND",
+        "TARGET_EXITED",
+        "TARGET_REUSED",
+        "AMBIGUOUS_TARGET",
+        "SYMBOL_NOT_FOUND",
+        "BINARY_NOT_MAPPED",
+        "INVALID_EVENT_SELECTOR",
+        "INVALID_CORRELATION_POLICY",
+        "CUPTI_NOT_AVAILABLE",
+        "CUPTI_AGENT_NOT_LOADED",
+        "CUDA_CONTEXT_NOT_FOUND",
+        "UNSUPPORTED_CUDA_VERSION",
+        "EVENT_RATE_TOO_HIGH",
+        "SESSION_LIMIT_EXCEEDED",
+        "NO_MATCHED_SAMPLES",
+        "HIGH_UNMATCHED_RATE",
+        "EVENTS_DROPPED",
+        "CLOCK_ALIGNMENT_FAILED",
+        "TRACE_EXPORT_FAILED",
+        "CLEANUP_FAILED",
+        "INTERNAL"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "XprobeError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "hints": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "message": {
+          "type": "string"
+        },
+        "recoverable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "recoverable"
+      ]
+    }
+  }
+}

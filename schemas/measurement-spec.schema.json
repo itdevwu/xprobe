@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MeasurementSpec",
+  "type": "object",
+  "properties": {
+    "duration_ms": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "end_selector": {
+      "type": "string"
+    },
+    "match_policy": {
+      "$ref": "#/$defs/MatchPolicy"
+    },
+    "max_events": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "samples": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "start_selector": {
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "target",
+    "start_selector",
+    "end_selector",
+    "match_policy",
+    "timeout_ms",
+    "max_events"
+  ],
+  "$defs": {
+    "MatchPolicy": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "first_after",
+        "nearest",
+        "stack_nested",
+        "stream_order"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    }
+  }
+}

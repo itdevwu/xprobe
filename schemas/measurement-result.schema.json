@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MeasurementResult",
+  "type": "object",
+  "properties": {
+    "clock": {
+      "$ref": "#/$defs/ClockQuality"
+    },
+    "collection": {
+      "$ref": "#/$defs/CollectionSummary"
+    },
+    "correlation": {
+      "$ref": "#/$defs/CorrelationSummary"
+    },
+    "measurement": {
+      "$ref": "#/$defs/Measurement"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "session_id",
+    "status",
+    "measurement",
+    "correlation",
+    "clock",
+    "collection"
+  ],
+  "$defs": {
+    "ClockQuality": {
+      "type": "object",
+      "properties": {
+        "alignment": {
+          "type": "string"
+        },
+        "estimated_error_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "alignment",
+        "estimated_error_ns"
+      ]
+    },
+    "CollectionSummary": {
+      "type": "object",
+      "properties": {
+        "cuda_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "dropped_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "host_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host_events",
+        "cuda_events",
+        "dropped_events"
+      ]
+    },
+    "CorrelationConfidence": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "high",
+        "heuristic",
+        "ambiguous"
+      ]
+    },
+    "CorrelationSummary": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/CorrelationConfidence"
+        },
+        "method": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "confidence",
+        "score"
+      ]
+    },
+    "LatencyStatistics": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mean": {
+          "type": "number",
+          "format": "double"
+        },
+        "min": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p50": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p90": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p95": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p99": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "mean",
+        "p50",
+        "p90",
+        "p95",
+        "p99",
+        "max"
+      ]
+    },
+    "Measurement": {
+      "type": "object",
+      "properties": {
+        "latency_ns": {
+          "$ref": "#/$defs/LatencyStatistics"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "samples": {
+          "$ref": "#/$defs/SampleSummary"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "samples",
+        "latency_ns"
+      ]
+    },
+    "SampleSummary": {
+      "type": "object",
+      "properties": {
+        "ambiguous": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "dropped": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "matched": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unmatched_end": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unmatched_start": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "matched",
+        "unmatched_start",
+        "unmatched_end",
+        "ambiguous",
+        "dropped"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "timed_out",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}
