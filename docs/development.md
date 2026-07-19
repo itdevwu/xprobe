@@ -15,8 +15,8 @@ just test
 The environment contains Clang, CMake, Ninja, pkg-config, Just, Python, and the
 autotools required to compile vendored libbpf, libelf, and zlib. A system C
 compiler and Linux UAPI/multiarch headers are also required. CUDA is not
-installed into the environment because the implemented commands do not compile
-CUPTI or CUDA code.
+installed into the Mamba environment; reproducible CUPTI compilation and live
+GPU tests use the pinned NVIDIA devel container instead.
 
 ## eBPF tests
 
@@ -62,14 +62,25 @@ The image reference includes the NGC digest in `justfile`. This check verifies
 container runtime and driver access only; it does not provide CUDA headers or
 CUPTI development files.
 
-The CUPTI milestone should use an NVIDIA CUDA or NGC `devel` image containing
-the CUDA headers, compiler, and CUPTI development files. When selected:
+The live CUPTI test uses a pinned NVIDIA CUDA 13.3 devel image containing CUDA
+headers, `nvcc`, and CUPTI:
+
+```bash
+just test-cupti-live
+```
+
+The test mounts the workspace read-only, compiles the agent and a CUDA fixture
+inside the container, injects the agent at CUDA startup, and verifies three API
+entries, API exits, kernel starts, and kernel ends with matching correlation
+IDs. It queries the GPU compute capability and compiles matching SASS so an
+older compatible driver does not need to JIT CUDA 13.3 PTX.
+
+Container policy:
 
 - pin a concrete image tag and digest in the repository;
 - verify host-driver compatibility before compiling examples;
 - validate GPU access with `docker run --rm --gpus all <image> nvidia-smi`;
-- mount the repository read-write and build into a dedicated container target
-  directory;
+- mount the repository read-only and build in container-local temporary space;
 - do not use a floating `latest` tag;
 - do not use `--privileged` for GPU-only tests.
 

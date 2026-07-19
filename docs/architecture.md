@@ -18,7 +18,7 @@ xprobe CLI
 core inspection and measurement orchestration
         |
         +-- host collector (eBPF uprobe entry events)
-        +-- device collector (in-process CUPTI agent, planned)
+        +-- device collector (in-process CUPTI agent)
         +-- correlation and exporters (planned)
 ```
 
@@ -38,7 +38,7 @@ cleanup. It does not contain an agent runtime or model integration.
 | `xprobe/exporter` | JSONL and trace export | Skeleton |
 | `xprobe/daemon` | Future privilege-separated sessions | Skeleton |
 | `bpf/` | eBPF programs and build | PID-scoped uprobe and ring buffer |
-| `cupti/` | In-process CUPTI agent | ABI skeleton |
+| `cupti/` | In-process CUPTI agent | Raw launch and kernel capture |
 
 ## Public contracts
 
@@ -81,10 +81,18 @@ The BPF hot path performs only namespace identity filtering, timestamp and CPU
 capture, sequence/drop accounting, and ring-buffer submission. Symbol lookup,
 JSON construction, and timeout handling remain in userspace.
 
-CUPTI callback and activity collection requires code inside the target process.
-The supported direction is startup-time loading or explicit application/plugin
-integration. Runtime `ptrace` plus `dlopen` injection is outside the default
-architecture and requires a separate security design.
+CUPTI callback and activity collection runs inside the target process. The
+agent subscribes only to `cudaLaunchKernel` entry/exit callbacks and concurrent
+kernel activity. Both carry CUPTI correlation IDs, which provide the exact join
+key between API and GPU records. Callback paths reserve slots in a bounded
+in-memory array; activity parsing, draining, and binary output happen outside
+the runtime API callback.
+
+Supported loading paths are CUDA startup injection through
+`CUDA_INJECTION64_PATH` and explicit application/plugin initialization before
+the first CUDA API. Runtime `ptrace` plus `dlopen` injection is outside the
+default architecture and requires a separate security design. See
+[CUPTI agent](cupti-agent.md) for the raw ABI and lifecycle.
 
 ## Failure model
 

@@ -7,8 +7,9 @@ coding agents.
 
 The repository is under active development. The current executable discovers
 local tracing capabilities, inspects target processes, and captures bounded
-userspace function-entry events with eBPF uprobes. CUDA activity collection is
-not implemented yet.
+userspace function-entry events with eBPF uprobes. Its in-process CUPTI agent
+captures CUDA launch boundaries and correlated GPU kernel intervals to a
+versioned binary stream.
 
 ## Current capabilities
 
@@ -19,8 +20,9 @@ not implemented yet.
 | Versioned Event, Error, Capability, Inspect, Host Capture, and Measurement schemas | Implemented |
 | PID-scoped eBPF uprobe collection | Implemented through `dev uprobe` |
 | eBPF build pipeline | Embedded libbpf object and ring buffer |
-| CUPTI agent | ABI skeleton only |
-| CUDA collection, correlation, and export | Planned |
+| CUPTI agent | Runtime launch callbacks and concurrent-kernel activity |
+| CUDA raw capture | Startup injection or explicit application integration |
+| Cross-source correlation and export | Planned |
 
 ## Quick start
 
@@ -54,6 +56,7 @@ are written to stderr.
 - [Architecture](docs/architecture.md)
 - [CLI contract](docs/cli-contract.md)
 - [Development environment](docs/development.md)
+- [CUPTI agent](docs/cupti-agent.md)
 - [Public JSON schemas](schemas/)
 
 [`PLAN.md`](PLAN.md) records design exploration and future ideas. It is useful

@@ -45,4 +45,6 @@
 - Run `just test-bpf-live` after changing BPF maps, records, attachment, or
   userspace ring-buffer handling. This test requires Docker daemon access.
 - Run `just test-cupti` after changing files under `cupti/`.
+- Run `just test-cupti-live` after changing CUPTI callbacks, activity records,
+  capture output, or agent lifecycle. This test requires Docker and a GPU.
 - Use emoji conventional commits, for example `🐛 fix: reject reused pid`.
