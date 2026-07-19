@@ -31,6 +31,16 @@ memory in test output. Do not infer them from the machine description.
 
 ## CUDA container policy
 
+GPU runtime smoke tests use a pinned CUDA 13.3 base image:
+
+```bash
+just gpu-smoke
+```
+
+The image reference includes the NGC digest in `justfile`. This check verifies
+container runtime and driver access only; it does not provide CUDA headers or
+CUPTI development files.
+
 The CUPTI milestone should use an NVIDIA CUDA or NGC `devel` image containing
 the CUDA headers, compiler, and CUPTI development files. When selected:
 
