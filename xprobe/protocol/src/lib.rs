@@ -7,7 +7,9 @@ mod measurement;
 pub mod schema;
 mod version;
 
-pub use capability::{Capabilities, CapabilityReport, Environment, Warning};
+pub use capability::{
+    Capabilities, CapabilityReport, CheckResult, CheckStatus, Environment, SystemChecks, Warning,
+};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{
     ArgumentValue, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, HostEvent,

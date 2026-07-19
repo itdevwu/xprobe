@@ -6,6 +6,9 @@
     "capabilities": {
       "$ref": "#/$defs/Capabilities"
     },
+    "checks": {
+      "$ref": "#/$defs/SystemChecks"
+    },
     "environment": {
       "$ref": "#/$defs/Environment"
     },
@@ -28,7 +31,8 @@
     "schema_version",
     "ok",
     "capabilities",
-    "environment"
+    "environment",
+    "checks"
   ],
   "$defs": {
     "Capabilities": {
@@ -61,6 +65,33 @@
         "cuda_callback",
         "cuda_activity",
         "runtime_injection"
+      ]
+    },
+    "CheckResult": {
+      "type": "object",
+      "properties": {
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/CheckStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ]
+    },
+    "CheckStatus": {
+      "type": "string",
+      "enum": [
+        "available",
+        "restricted",
+        "unavailable",
+        "unknown"
       ]
     },
     "Environment": {
@@ -103,6 +134,50 @@
       "type": "string",
       "enum": [
         "1.0"
+      ]
+    },
+    "SystemChecks": {
+      "type": "object",
+      "properties": {
+        "btf": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "cuda_driver": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "cuda_toolkit": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "cupti": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "ebpf_permissions": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "kernel_lockdown": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "nvidia_driver": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "perf_event_paranoid": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "ptrace_scope": {
+          "$ref": "#/$defs/CheckResult"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "btf",
+        "ebpf_permissions",
+        "kernel_lockdown",
+        "perf_event_paranoid",
+        "ptrace_scope",
+        "nvidia_driver",
+        "cuda_driver",
+        "cuda_toolkit",
+        "cupti"
       ]
     },
     "Warning": {

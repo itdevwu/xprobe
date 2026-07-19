@@ -311,6 +311,7 @@ name = "xprobe-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde_json",
  "xprobe-collector",
  "xprobe-core",
  "xprobe-correlator",
@@ -325,6 +326,9 @@ version = "0.1.0"
 [[package]]
 name = "xprobe-core"
 version = "0.1.0"
+dependencies = [
+ "xprobe-protocol",
+]
 
 [[package]]
 name = "xprobe-correlator"

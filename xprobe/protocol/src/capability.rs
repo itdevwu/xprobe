@@ -18,6 +18,36 @@ pub struct Capabilities {
     pub runtime_injection: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    Available,
+    Restricted,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CheckResult {
+    pub status: CheckStatus,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SystemChecks {
+    pub btf: CheckResult,
+    pub ebpf_permissions: CheckResult,
+    pub kernel_lockdown: CheckResult,
+    pub perf_event_paranoid: CheckResult,
+    pub ptrace_scope: CheckResult,
+    pub nvidia_driver: CheckResult,
+    pub cuda_driver: CheckResult,
+    pub cuda_toolkit: CheckResult,
+    pub cupti: CheckResult,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Environment {
@@ -45,6 +75,7 @@ pub struct CapabilityReport {
     pub ok: bool,
     pub capabilities: Capabilities,
     pub environment: Environment,
+    pub checks: SystemChecks,
     #[serde(default)]
     pub warnings: Vec<Warning>,
 }

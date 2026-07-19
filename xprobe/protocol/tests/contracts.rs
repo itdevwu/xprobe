@@ -83,6 +83,17 @@ fn capability_contract_round_trips() {
             "container": null,
             "pid_namespace": "4026531836"
         },
+        "checks": {
+            "btf": {"status": "available", "detail": "/sys/kernel/btf/vmlinux"},
+            "ebpf_permissions": {"status": "restricted", "detail": "missing CAP_BPF"},
+            "kernel_lockdown": {"status": "unknown", "detail": null},
+            "perf_event_paranoid": {"status": "restricted", "detail": "4"},
+            "ptrace_scope": {"status": "restricted", "detail": "1"},
+            "nvidia_driver": {"status": "unavailable", "detail": null},
+            "cuda_driver": {"status": "unavailable", "detail": null},
+            "cuda_toolkit": {"status": "unavailable", "detail": null},
+            "cupti": {"status": "unavailable", "detail": null}
+        },
         "warnings": []
     }));
 }
@@ -183,6 +194,17 @@ fn unknown_contract_fields_are_rejected() {
             "effective_uid": 1000,
             "container": null,
             "pid_namespace": "4026531836"
+        },
+        "checks": {
+            "btf": {"status": "available", "detail": "/sys/kernel/btf/vmlinux"},
+            "ebpf_permissions": {"status": "restricted", "detail": "missing CAP_BPF"},
+            "kernel_lockdown": {"status": "unknown", "detail": null},
+            "perf_event_paranoid": {"status": "restricted", "detail": "4"},
+            "ptrace_scope": {"status": "restricted", "detail": "1"},
+            "nvidia_driver": {"status": "unavailable", "detail": null},
+            "cuda_driver": {"status": "unavailable", "detail": null},
+            "cuda_toolkit": {"status": "unavailable", "detail": null},
+            "cupti": {"status": "unavailable", "detail": null}
         },
         "warnings": []
     }));
