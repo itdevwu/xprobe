@@ -163,6 +163,20 @@ pub fn run(pid: u32) -> Result<ProcessReport, InspectError> {
     })
 }
 
+/// Verify that a previously inspected target still names the same process.
+///
+/// # Errors
+///
+/// Returns [`InspectError::TargetExited`] if the process no longer exists, or
+/// [`InspectError::TargetReused`] if the PID now belongs to another process.
+pub fn verify_target(target: &TargetIdentity) -> Result<(), InspectError> {
+    let current_start_time = read_start_time(target.pid, false)?;
+    if current_start_time != target.process_start_time {
+        return Err(InspectError::TargetReused { pid: target.pid });
+    }
+    Ok(())
+}
+
 fn proc_path(pid: u32, entry: &str) -> PathBuf {
     PathBuf::from(format!("/proc/{pid}/{entry}"))
 }
