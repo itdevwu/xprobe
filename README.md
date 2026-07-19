@@ -17,6 +17,15 @@ Requirements:
 - Clang with the BPF target for the eBPF object
 - NVIDIA CUDA Toolkit for the future CUPTI collector implementation
 
+Create the isolated native build environment with:
+
+```bash
+mamba env create --file environment.yml
+mamba activate xprobe-dev
+```
+
+Rust is intentionally managed outside this environment with `rustup`.
+
 ```bash
 just build
 just test
@@ -24,4 +33,3 @@ just test
 
 If Clang is unavailable, CMake keeps the host/CUPTI skeleton buildable and
 reports that the eBPF object was skipped.
-
