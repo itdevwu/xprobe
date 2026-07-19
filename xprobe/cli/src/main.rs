@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
-use xprobe_core::doctor;
+use xprobe_core::{doctor, inspect};
 use xprobe_protocol::{
-    CapabilityReport, CheckResult, ErrorCode, ErrorResponse, SchemaVersion, XprobeError,
+    CapabilityReport, CheckResult, ErrorCode, ErrorResponse, ProcessReport, SchemaVersion,
+    XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -17,6 +18,8 @@ struct Cli {
 enum Command {
     /// Inspect local tracing and GPU capabilities.
     Doctor(DoctorArgs),
+    /// Inspect a target process without attaching probes.
+    Inspect(InspectArgs),
 }
 
 #[derive(Debug, Clone, Copy, Args)]
@@ -34,10 +37,30 @@ struct DoctorArgs {
     non_interactive: bool,
 }
 
+#[derive(Debug, Clone, Copy, Args)]
+struct InspectArgs {
+    /// Target process ID.
+    #[arg(long)]
+    pid: u32,
+
+    /// Emit only the versioned JSON result on stdout.
+    #[arg(long)]
+    json: bool,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+
+    /// Never wait for user input.
+    #[arg(long)]
+    non_interactive: bool,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor(args) => run_doctor(args),
+        Command::Inspect(args) => run_inspect(args),
     }
 }
 
@@ -61,24 +84,57 @@ fn run_doctor(args: DoctorArgs) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            let response = ErrorResponse::new(XprobeError {
-                code: ErrorCode::Internal,
-                message: error.to_string(),
-                recoverable: false,
-                details: BTreeMap::new(),
-                hints: Vec::new(),
-            });
+        Err(error) => emit_error(ErrorCode::Internal, error.to_string(), false, json),
+    }
+}
+
+fn run_inspect(args: InspectArgs) -> ExitCode {
+    let InspectArgs {
+        pid,
+        json,
+        no_color: _,
+        non_interactive: _,
+    } = args;
+
+    match inspect::run(pid) {
+        Ok(report) => {
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&response).expect("error response must serialize")
+                    serde_json::to_string_pretty(&report).expect("process report must serialize")
                 );
             } else {
-                eprintln!("xprobe doctor failed: {error}");
+                print_process_report(&report);
             }
-            ExitCode::from(1)
+            ExitCode::SUCCESS
         }
+        Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
+    }
+}
+
+fn emit_error(code: ErrorCode, message: String, recoverable: bool, json: bool) -> ExitCode {
+    let response = ErrorResponse::new(XprobeError {
+        code,
+        message,
+        recoverable,
+        details: BTreeMap::new(),
+        hints: Vec::new(),
+    });
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&response).expect("error response must serialize")
+        );
+    } else {
+        eprintln!("{code}: {}", response.error.message);
+    }
+
+    match code {
+        ErrorCode::TargetNotFound | ErrorCode::TargetExited | ErrorCode::TargetReused => {
+            ExitCode::from(3)
+        }
+        ErrorCode::PermissionDenied => ExitCode::from(4),
+        _ => ExitCode::from(1),
     }
 }
 
@@ -144,6 +200,32 @@ fn print_human_report(report: &CapabilityReport) {
             println!("  {}: {}", warning.code, warning.message);
         }
     }
+}
+
+fn print_process_report(report: &ProcessReport) {
+    println!("Process: PID {}", report.target.pid);
+    println!("Executable: {}", report.executable);
+    println!("Start time: {} ticks", report.target.process_start_time);
+    println!("Namespace PIDs: {:?}", report.namespace_pids);
+    println!("Mount namespace: {}", report.mount_namespace);
+    println!(
+        "Credentials: uid={} gid={}",
+        report.credentials.effective_uid, report.credentials.effective_gid
+    );
+    println!();
+    println!("CUDA:");
+    println!("  libcuda          {}", yes_no(report.cuda.libcuda_loaded));
+    println!(
+        "  libcudart        {}",
+        yes_no(report.cuda.libcudart_loaded)
+    );
+    println!(
+        "  xprobe CUPTI    {}",
+        yes_no(report.cuda.xprobe_cupti_loaded)
+    );
+    println!("  context          {:?}", report.cuda.context.status);
+    println!();
+    println!("Loaded shared libraries: {}", report.loaded_libraries.len());
 }
 
 fn print_check(name: &str, result: &CheckResult) {

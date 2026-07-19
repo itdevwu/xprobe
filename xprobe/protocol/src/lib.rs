@@ -4,6 +4,7 @@ mod capability;
 mod error;
 mod event;
 mod measurement;
+mod process;
 pub mod schema;
 mod version;
 
@@ -20,6 +21,7 @@ pub use measurement::{
     MatchPolicy, Measurement, MeasurementResult, MeasurementSpec, SampleSummary, SessionStatus,
     TargetIdentity,
 };
+pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use version::SchemaVersion;
 
 pub const SCHEMA_VERSION: &str = "1.0";

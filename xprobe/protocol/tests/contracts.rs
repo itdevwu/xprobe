@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
-    CapabilityReport, ErrorResponse, Event, MeasurementResult, MeasurementSpec,
+    CapabilityReport, ErrorResponse, Event, MeasurementResult, MeasurementSpec, ProcessReport,
     schema::generated_schemas,
 };
 
@@ -155,6 +155,52 @@ fn measurement_result_contract_round_trips() {
             "dropped_events": 0
         },
         "warnings": []
+    }));
+}
+
+#[test]
+fn process_report_contract_round_trips() {
+    assert_round_trip::<ProcessReport>(&json!({
+        "schema_version": "1.0",
+        "ok": true,
+        "target": {"pid": 1234, "process_start_time": 42},
+        "executable": "/srv/app/server",
+        "command_line": ["/srv/app/server", "--port", "8080"],
+        "credentials": {
+            "real_uid": 1000,
+            "effective_uid": 1000,
+            "saved_uid": 1000,
+            "filesystem_uid": 1000,
+            "real_gid": 1000,
+            "effective_gid": 1000,
+            "saved_gid": 1000,
+            "filesystem_gid": 1000
+        },
+        "namespace_pids": [1234, 17],
+        "mount_namespace": "mnt:[4026531841]",
+        "cgroups": [{
+            "hierarchy_id": 0,
+            "controllers": [],
+            "path": "/user.slice/user-1000.slice/session-1.scope"
+        }],
+        "loaded_libraries": ["/usr/lib/libcuda.so.1"],
+        "cuda": {
+            "libcuda_loaded": true,
+            "libcudart_loaded": false,
+            "xprobe_cupti_loaded": false,
+            "context": {
+                "status": "unknown",
+                "detail": "CUDA context state is not externally observable"
+            }
+        },
+        "capabilities": {
+            "uprobe": true,
+            "uretprobe": true,
+            "tracepoint": true,
+            "cuda_callback": false,
+            "cuda_activity": false,
+            "runtime_injection": false
+        }
     }));
 }
 
