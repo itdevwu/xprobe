@@ -72,8 +72,9 @@ just test-cupti-live
 The test mounts the workspace read-only, compiles the agent and a CUDA fixture
 inside the container, injects the agent at CUDA startup, and verifies three API
 entries, API exits, kernel starts, and kernel ends with matching correlation
-IDs. It queries the GPU compute capability and compiles matching SASS so an
-older compatible driver does not need to JIT CUDA 13.3 PTX.
+IDs. The resulting capture is then decoded by the host CLI and checked as
+ordered Event JSONL. The fixture queries the GPU compute capability and compiles
+matching SASS so an older compatible driver does not need to JIT CUDA 13.3 PTX.
 
 Container policy:
 

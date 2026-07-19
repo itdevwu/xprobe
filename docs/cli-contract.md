@@ -12,8 +12,9 @@ Implemented commands accept:
 --no-color
 ```
 
-In JSON mode, stdout contains exactly one JSON document. Human diagnostics and
-logs belong on stderr. Commands never prompt for a target or wait for Enter.
+In JSON mode, non-streaming commands write exactly one JSON document. Event
+stream commands write one JSON document per line. Human diagnostics and logs
+belong on stderr. Commands never prompt for a target or wait for Enter.
 
 Every JSON success or error carries `schema_version: "1.0"`. The checked-in
 schemas are the machine-readable contract.
@@ -114,3 +115,26 @@ identity failures use the standard error envelope. Events contain host
 monotonic nanoseconds, a sequence number, namespace-local PID/TID, CPU, probe
 id, binary path, and symbol. Argument capture and return probes are not yet
 implemented.
+
+Use `--jsonl` instead of `--json` to emit only the normalized `Event` values,
+one compact JSON object per line. This is the same event stream format produced
+by the CUPTI decoder.
+
+## `dev cupti`
+
+```bash
+xprobe dev cupti \
+  --input /tmp/xprobe-cupti.bin \
+  --session-id xp_cuda_1 \
+  --json --non-interactive --no-color
+```
+
+The command strictly validates the xprobe CUPTI binary ABI and emits one
+versioned `Event` per line. CUDA API names are stored in
+`attributes.cuda_api_name`; GPU records preserve the name supplied by CUPTI in
+`cuda.kernel_name`. API and GPU records expose the exact CUPTI correlation ID.
+Their clock domains remain explicit until a later clock normalization stage.
+
+Malformed headers, unsupported ABI versions, invalid lengths, unknown record
+kinds, and invalid names return `TRACE_EXPORT_FAILED`. Nonzero dropped or
+unknown record counts are reported on stderr and are never silently discarded.

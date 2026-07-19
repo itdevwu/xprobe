@@ -421,6 +421,7 @@ name = "xprobe-collector"
 version = "0.1.0"
 dependencies = [
  "libbpf-rs",
+ "serde_json",
  "xprobe-protocol",
 ]
 
@@ -442,6 +443,10 @@ version = "0.1.0"
 [[package]]
 name = "xprobe-exporter"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "xprobe-protocol",
+]
 
 [[package]]
 name = "xprobe-protocol"

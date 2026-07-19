@@ -11,6 +11,12 @@ import tempfile
 HEADER = struct.Struct("<8sIIIIQQQ")
 RECORD = struct.Struct("<Q16I128s")
 EXPECTED_KINDS = {1, 2, 3, 4}
+EXPECTED_EVENT_TYPES = {
+    "cuda_api_entry",
+    "cuda_api_exit",
+    "gpu_kernel_start",
+    "gpu_kernel_end",
+}
 
 
 def decode_record(raw: bytes) -> dict[str, int | str]:
@@ -57,10 +63,11 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: test_cupti.py <container-image>")
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: test_cupti.py <container-image> <xprobe-binary>")
 
     workspace = pathlib.Path(__file__).resolve().parents[2]
+    xprobe = workspace / sys.argv[2]
     with tempfile.TemporaryDirectory(prefix="xprobe-cupti-") as output_dir:
         capture = pathlib.Path(output_dir) / "events.bin"
         completed = subprocess.run(
@@ -89,6 +96,29 @@ def main() -> None:
             sys.stderr.write(completed.stderr)
             raise SystemExit(completed.returncode)
         header, records = read_capture(capture)
+        decoded = subprocess.run(
+            [
+                xprobe,
+                "dev",
+                "cupti",
+                "--input",
+                capture,
+                "--session-id",
+                "xp_cupti_live",
+                "--json",
+                "--non-interactive",
+                "--no-color",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if decoded.returncode != 0:
+            sys.stdout.write(decoded.stdout)
+            sys.stderr.write(decoded.stderr)
+            raise SystemExit(decoded.returncode)
+        assert decoded.stderr == ""
+        events = [json.loads(line) for line in decoded.stdout.splitlines()]
 
     counts = collections.Counter(record["kind"] for record in records)
     diagnostics = {"header": header, "counts": counts, "records": records}
@@ -122,7 +152,36 @@ def main() -> None:
         if record["kind"] in {3, 4}
     )
 
-    print(json.dumps({"records": len(records), "kinds": counts}, sort_keys=True))
+    assert len(events) == 12
+    assert {event["event_type"] for event in events} == EXPECTED_EVENT_TYPES
+    assert all(event["session_id"] == "xp_cupti_live" for event in events)
+    assert [event["sequence"] for event in events] == list(range(len(events)))
+    assert [event["timestamp_ns"] for event in events] == sorted(
+        event["timestamp_ns"] for event in events
+    )
+    event_api_correlations = {
+        event["cuda"]["correlation_id"]
+        for event in events
+        if event["event_type"] in {"cuda_api_entry", "cuda_api_exit"}
+    }
+    event_kernel_correlations = {
+        event["cuda"]["correlation_id"]
+        for event in events
+        if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
+    }
+    assert event_api_correlations == event_kernel_correlations
+    assert all(
+        "xprobe_test_kernel" in event["cuda"]["kernel_name"]
+        for event in events
+        if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
+    )
+
+    print(
+        json.dumps(
+            {"records": len(records), "events": len(events), "kinds": counts},
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

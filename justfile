@@ -27,8 +27,8 @@ test-cupti:
     cmake --build build --target xprobe-cupti
     ctest --test-dir build --output-on-failure -R cupti
 
-test-cupti-live:
-    python3 tests/integration/test_cupti.py "{{cuda_devel_image}}"
+test-cupti-live: build
+    python3 tests/integration/test_cupti.py "{{cuda_devel_image}}" target/debug/xprobe
 
 fmt:
     cargo fmt --all

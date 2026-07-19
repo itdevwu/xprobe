@@ -7,8 +7,12 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand};
-use xprobe_collector::uprobe::{self, UprobeRequest};
+use xprobe_collector::{
+    cupti,
+    uprobe::{self, UprobeRequest},
+};
 use xprobe_core::{doctor, inspect};
+use xprobe_exporter::events_to_jsonl;
 use xprobe_protocol::{
     CapabilityReport, CheckResult, ErrorCode, ErrorResponse, HostCaptureResult, ProcessReport,
     SchemaVersion, XprobeError,
@@ -41,6 +45,8 @@ struct DevArgs {
 enum DevCommand {
     /// Capture entries to one userspace function.
     Uprobe(UprobeArgs),
+    /// Decode an xprobe CUPTI capture as Event JSONL.
+    Cupti(CuptiArgs),
 }
 
 #[derive(Debug, Clone, Copy, Args)]
@@ -103,7 +109,40 @@ struct UprobeArgs {
     #[arg(long, default_value_t = 5_000)]
     timeout_ms: u64,
 
+    #[command(flatten)]
+    output: EventOutputArgs,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+
+    /// Never wait for user input.
+    #[arg(long)]
+    non_interactive: bool,
+}
+
+#[derive(Debug, Clone, Copy, Args)]
+struct EventOutputArgs {
     /// Emit only the versioned JSON result on stdout.
+    #[arg(long)]
+    json: bool,
+
+    /// Emit one versioned Event JSON object per line.
+    #[arg(long, conflicts_with = "json")]
+    jsonl: bool,
+}
+
+#[derive(Debug, Args)]
+struct CuptiArgs {
+    /// Raw binary capture written by the xprobe CUPTI agent.
+    #[arg(long)]
+    input: PathBuf,
+
+    /// Session identifier written into every Event.
+    #[arg(long)]
+    session_id: String,
+
+    /// Emit one versioned Event JSON object per line.
     #[arg(long)]
     json: bool,
 
@@ -123,6 +162,7 @@ fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::Dev(args) => match args.command {
             DevCommand::Uprobe(args) => run_uprobe(args),
+            DevCommand::Cupti(args) => run_cupti(args),
         },
     }
 }
@@ -183,20 +223,28 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
         probe_id,
         samples,
         timeout_ms,
-        json,
+        output: EventOutputArgs { json, jsonl },
         no_color: _,
         non_interactive: _,
     } = args;
+    let machine_output = json || jsonl;
 
     let report = match inspect::run(pid) {
         Ok(report) => report,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return emit_error(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+                machine_output,
+            );
         }
     };
     let binary = match mapped_binary(&report, &binary) {
         Ok(binary) => binary,
-        Err(message) => return emit_error(ErrorCode::BinaryNotMapped, message, true, json),
+        Err(message) => {
+            return emit_error(ErrorCode::BinaryNotMapped, message, true, machine_output);
+        }
     };
     let request = UprobeRequest {
         target: report.target.clone(),
@@ -209,14 +257,36 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
     let result = match uprobe::capture(&request) {
         Ok(result) => result,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return emit_error(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+                machine_output,
+            );
         }
     };
     if let Err(error) = inspect::verify_target(&report.target) {
-        return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        return emit_error(
+            error.code(),
+            error.to_string(),
+            error.recoverable(),
+            machine_output,
+        );
     }
 
-    if json {
+    if jsonl {
+        match events_to_jsonl(&result.events) {
+            Ok(output) => print!("{output}"),
+            Err(error) => {
+                return emit_error(
+                    ErrorCode::TraceExportFailed,
+                    format!("failed to serialize host events: {error}"),
+                    false,
+                    true,
+                );
+            }
+        }
+    } else if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&result).expect("host capture result must serialize")
@@ -224,6 +294,53 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
     } else {
         print_host_capture(&result);
     }
+    ExitCode::SUCCESS
+}
+
+fn run_cupti(args: CuptiArgs) -> ExitCode {
+    let CuptiArgs {
+        input,
+        session_id,
+        json,
+        no_color: _,
+        non_interactive: _,
+    } = args;
+    let bytes = match fs::read(&input) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::TraceExportFailed,
+                format!("failed to read {}: {error}", input.display()),
+                false,
+                json,
+            );
+        }
+    };
+    let capture = match cupti::decode_capture(&bytes, &session_id) {
+        Ok(capture) => capture,
+        Err(error) => {
+            return emit_error(ErrorCode::TraceExportFailed, error.to_string(), false, json);
+        }
+    };
+    let output = match events_to_jsonl(&capture.events) {
+        Ok(output) => output,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::TraceExportFailed,
+                format!("failed to serialize CUPTI events: {error}"),
+                false,
+                json,
+            );
+        }
+    };
+
+    if capture.dropped_records != 0 || capture.unknown_records != 0 {
+        eprintln!(
+            "CUPTI capture diagnostics: dropped={}, unknown={}",
+            capture.dropped_records, capture.unknown_records
+        );
+    }
+    print!("{output}");
     ExitCode::SUCCESS
 }
 

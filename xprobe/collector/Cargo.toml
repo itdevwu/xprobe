@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 libbpf-rs.workspace = true
+serde_json.workspace = true
 xprobe-protocol.workspace = true
 
 [lints]

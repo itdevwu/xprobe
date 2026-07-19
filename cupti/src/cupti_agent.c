@@ -181,7 +181,7 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
         return;
     }
 
-    if (clock_gettime(CLOCK_MONOTONIC_RAW, &timestamp) != 0) {
+    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0) {
         atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
                               memory_order_relaxed);
         return;

@@ -57,3 +57,12 @@ just test-cupti-live
 The host test verifies the public ABI even when CUDA development files are not
 installed. The live test uses the digest-pinned NGC devel image and requires
 Docker GPU access.
+
+Decode a completed capture into the shared Event JSONL format:
+
+```bash
+target/debug/xprobe dev cupti \
+  --input /tmp/xprobe-cupti.bin \
+  --session-id xp_cuda_1 \
+  --json --non-interactive --no-color
+```

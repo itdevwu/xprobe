@@ -19,7 +19,8 @@ core inspection and measurement orchestration
         |
         +-- host collector (eBPF uprobe entry events)
         +-- device collector (in-process CUPTI agent)
-        +-- correlation and exporters (planned)
+        +-- Event normalization and JSONL export
+        +-- clock normalization and correlation (planned)
 ```
 
 The caller selects targets and events and interprets results. `xprobe` performs
@@ -33,9 +34,9 @@ cleanup. It does not contain an agent runtime or model integration.
 | `xprobe/cli` | Arguments, rendering, exit codes | `doctor`, `inspect`, `dev uprobe` |
 | `xprobe/core` | Deterministic environment and process logic | Inspection and identity verification |
 | `xprobe/protocol` | Public serde types and schema generation | Implemented |
-| `xprobe/collector` | Host and device collector interfaces | Host uprobe entry collector |
+| `xprobe/collector` | Host and device collector interfaces | Host uprobe collector and CUPTI decoder |
 | `xprobe/correlator` | Event matching and statistics | Skeleton |
-| `xprobe/exporter` | JSONL and trace export | Skeleton |
+| `xprobe/exporter` | JSONL and trace export | Event JSONL |
 | `xprobe/daemon` | Future privilege-separated sessions | Skeleton |
 | `bpf/` | eBPF programs and build | PID-scoped uprobe and ring buffer |
 | `cupti/` | In-process CUPTI agent | Raw launch and kernel capture |
@@ -87,6 +88,11 @@ kernel activity. Both carry CUPTI correlation IDs, which provide the exact join
 key between API and GPU records. Callback paths reserve slots in a bounded
 in-memory array; activity parsing, draining, and binary output happen outside
 the runtime API callback.
+
+The collector decodes the fixed CUPTI ABI into the same protocol `Event` type
+used by eBPF collectors. The exporter writes either source as compact JSONL.
+Clock domains remain explicit; cross-domain normalization and correlation are
+not yet implemented.
 
 Supported loading paths are CUDA startup injection through
 `CUDA_INJECTION64_PATH` and explicit application/plugin initialization before
