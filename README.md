@@ -20,6 +20,7 @@ kernel intervals to a versioned binary stream.
 | `inspect --pid` process inspection | Implemented |
 | Versioned public JSON schemas | Implemented |
 | `resolve` for PIE, shared libraries, symbols, offsets, and Build IDs | Implemented |
+| Deterministic selector and correlation validation | Implemented |
 | PID-scoped eBPF uprobe collection | Implemented through `dev uprobe` |
 | eBPF build pipeline | Embedded libbpf object and ring buffer |
 | CUPTI agent | Runtime launch callbacks and concurrent-kernel activity |
@@ -49,6 +50,10 @@ target/debug/xprobe doctor --json --non-interactive --no-color
 target/debug/xprobe inspect --pid <pid> --json --non-interactive --no-color
 target/debug/xprobe resolve --pid <pid> \
   --selector 'uprobe:/path/to/lib.so:function_name:entry' \
+  --json --non-interactive --no-color
+target/debug/xprobe validate --pid <pid> \
+  --from 'uprobe:/path/to/lib.so:function_name:entry' \
+  --to 'cuda:kernel_start:name~kernel.*' --match first-after \
   --json --non-interactive --no-color
 target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
   --samples 10 --timeout-ms 5000 --json --non-interactive --no-color

@@ -11,11 +11,11 @@ use xprobe_collector::{
     cupti,
     uprobe::{self, UprobeRequest},
 };
-use xprobe_core::{doctor, inspect, resolve};
+use xprobe_core::{doctor, inspect, resolve, validate};
 use xprobe_exporter::events_to_jsonl;
 use xprobe_protocol::{
     CapabilityReport, CheckResult, ErrorCode, ErrorResponse, HostCaptureResult, ProcessReport,
-    ResolvedProbe, SchemaVersion, XprobeError,
+    ResolvedProbe, SchemaVersion, ValidationResult, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -33,6 +33,8 @@ enum Command {
     Inspect(InspectArgs),
     /// Resolve a userspace event selector against a target process.
     Resolve(ResolveArgs),
+    /// Validate two event selectors and their correlation policy.
+    Validate(ValidateArgs),
     /// Run low-level development probes.
     Dev(DevArgs),
 }
@@ -94,6 +96,37 @@ struct ResolveArgs {
     /// Event selector: uprobe:<binary>:<symbol|+0xoffset>:<entry|return>.
     #[arg(long, alias = "event")]
     selector: String,
+
+    /// Emit only the versioned JSON result on stdout.
+    #[arg(long)]
+    json: bool,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+
+    /// Never wait for user input.
+    #[arg(long)]
+    non_interactive: bool,
+}
+
+#[derive(Debug, Args)]
+struct ValidateArgs {
+    /// Target process ID.
+    #[arg(long)]
+    pid: u32,
+
+    /// Start event selector.
+    #[arg(long)]
+    from: String,
+
+    /// End event selector.
+    #[arg(long)]
+    to: String,
+
+    /// Correlation policy.
+    #[arg(long = "match")]
+    match_policy: String,
 
     /// Emit only the versioned JSON result on stdout.
     #[arg(long)]
@@ -186,10 +219,45 @@ fn main() -> ExitCode {
         Command::Doctor(args) => run_doctor(args),
         Command::Inspect(args) => run_inspect(args),
         Command::Resolve(args) => run_resolve(args),
+        Command::Validate(args) => run_validate(args),
         Command::Dev(args) => match args.command {
             DevCommand::Uprobe(args) => run_uprobe(args),
             DevCommand::Cupti(args) => run_cupti(args),
         },
+    }
+}
+
+fn run_validate(args: ValidateArgs) -> ExitCode {
+    let ValidateArgs {
+        pid,
+        from,
+        to,
+        match_policy,
+        json,
+        no_color: _,
+        non_interactive: _,
+    } = args;
+    let report = match inspect::run(pid) {
+        Ok(report) => report,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+
+    match validate::run(&report, &from, &to, &match_policy) {
+        Ok(result) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result)
+                        .expect("validation result must serialize")
+                );
+            } else {
+                print_validation_result(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
     }
 }
 
@@ -572,6 +640,27 @@ fn print_resolved_probe(resolved: &ResolvedProbe) {
         "Mapping: {:#x}-{:#x} (file offset {:#x})",
         resolved.mapping.start_address, resolved.mapping.end_address, resolved.mapping.file_offset
     );
+}
+
+fn print_validation_result(result: &ValidationResult) {
+    println!(
+        "Validation: {}",
+        if result.valid { "valid" } else { "invalid" }
+    );
+    println!("Target: PID {}", result.target.pid);
+    println!("Start: {}", result.start.selector);
+    println!("End: {}", result.end.selector);
+    println!("Match: {:?}", result.match_policy);
+    println!(
+        "Target restart required: {}",
+        result.requirements.target_restart_required
+    );
+    for issue in &result.issues {
+        println!("Issue: {}: {}", issue.code, issue.message);
+    }
+    for warning in &result.warnings {
+        println!("Warning: {}: {}", warning.code, warning.message);
+    }
 }
 
 fn print_check(name: &str, result: &CheckResult) {

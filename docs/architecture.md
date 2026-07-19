@@ -84,6 +84,13 @@ symbol metadata, probe kind, file offset, runtime address, and exact map used as
 evidence. The target identity is checked before and after resolution. Resolution
 does not attach a probe or mutate the target.
 
+Validation composes process inspection and probe resolution with CUDA selector
+parsing and a correlation-policy compatibility matrix. Input errors fail
+immediately; unavailable runtime requirements produce a successful validation
+report with `valid: false` and structured issues. Heuristic temporal policies
+are always labeled as warnings. Validation performs no collection and reports
+`target_mutation: false`.
+
 ## Host and device collection
 
 The implemented host collector embeds a Clang-built BPF object, loads it with

@@ -1,0 +1,439 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ValidationResult",
+  "type": "object",
+  "properties": {
+    "end": {
+      "$ref": "#/$defs/ValidatedEndpoint"
+    },
+    "issues": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ValidationIssue"
+      }
+    },
+    "match_policy": {
+      "$ref": "#/$defs/MatchPolicy"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "requirements": {
+      "$ref": "#/$defs/ValidationRequirements"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "start": {
+      "$ref": "#/$defs/ValidatedEndpoint"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "valid",
+    "target",
+    "start",
+    "end",
+    "match_policy",
+    "requirements"
+  ],
+  "$defs": {
+    "ElfObjectKind": {
+      "type": "string",
+      "enum": [
+        "executable",
+        "position_independent_executable",
+        "shared_library"
+      ]
+    },
+    "EndpointSource": {
+      "type": "string",
+      "enum": [
+        "host",
+        "cuda"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "PERMISSION_DENIED",
+        "TARGET_NOT_FOUND",
+        "TARGET_EXITED",
+        "TARGET_REUSED",
+        "AMBIGUOUS_TARGET",
+        "SYMBOL_NOT_FOUND",
+        "BINARY_NOT_MAPPED",
+        "INVALID_EVENT_SELECTOR",
+        "INVALID_CORRELATION_POLICY",
+        "CUPTI_NOT_AVAILABLE",
+        "CUPTI_AGENT_NOT_LOADED",
+        "CUDA_CONTEXT_NOT_FOUND",
+        "UNSUPPORTED_CUDA_VERSION",
+        "EVENT_RATE_TOO_HIGH",
+        "SESSION_LIMIT_EXCEEDED",
+        "NO_MATCHED_SAMPLES",
+        "HIGH_UNMATCHED_RATE",
+        "EVENTS_DROPPED",
+        "CLOCK_ALIGNMENT_FAILED",
+        "TRACE_EXPORT_FAILED",
+        "CLEANUP_FAILED",
+        "INTERNAL"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "host_function_entry",
+        "host_function_exit",
+        "kernel_function_entry",
+        "kernel_function_exit",
+        "tracepoint",
+        "syscall_entry",
+        "syscall_exit",
+        "cuda_api_entry",
+        "cuda_api_exit",
+        "gpu_kernel_start",
+        "gpu_kernel_end",
+        "gpu_memcpy_start",
+        "gpu_memcpy_end",
+        "gpu_memset_start",
+        "gpu_memset_end",
+        "marker"
+      ]
+    },
+    "HostProbeKind": {
+      "type": "string",
+      "enum": [
+        "uprobe",
+        "uretprobe",
+        "kprobe",
+        "kretprobe",
+        "tracepoint",
+        "syscall",
+        "usdt"
+      ]
+    },
+    "MatchPolicy": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "first_after",
+        "nearest",
+        "stack_nested",
+        "stream_order"
+      ]
+    },
+    "MemcpyKind": {
+      "type": "string",
+      "enum": [
+        "HtoD",
+        "DtoH",
+        "DtoD",
+        "HtoH",
+        "PtoP",
+        "unknown"
+      ]
+    },
+    "ProcessMapping": {
+      "type": "object",
+      "properties": {
+        "end_address": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "file_offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start_address": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start_address",
+        "end_address",
+        "file_offset"
+      ]
+    },
+    "ResolvedCudaSelector": {
+      "type": "object",
+      "properties": {
+        "api_domain": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "kernel_name_regex": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memcpy_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemcpyKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "event_type"
+      ]
+    },
+    "ResolvedProbe": {
+      "type": "object",
+      "properties": {
+        "binary_path": {
+          "type": "string"
+        },
+        "build_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mapping": {
+          "$ref": "#/$defs/ProcessMapping"
+        },
+        "object_kind": {
+          "$ref": "#/$defs/ElfObjectKind"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "probe_kind": {
+          "$ref": "#/$defs/HostProbeKind"
+        },
+        "runtime_address": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "symbol_virtual_address": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "target": {
+          "$ref": "#/$defs/TargetIdentity"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "ok",
+        "target",
+        "selector",
+        "binary_path",
+        "object_kind",
+        "probe_kind",
+        "file_offset",
+        "runtime_address",
+        "mapping"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "ValidatedEndpoint": {
+      "type": "object",
+      "properties": {
+        "collectable": {
+          "type": "boolean"
+        },
+        "cuda": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResolvedCudaSelector"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResolvedProbe"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selector": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/EndpointSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selector",
+        "source",
+        "event_type",
+        "collectable"
+      ]
+    },
+    "ValidationIssue": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ValidationRequirements": {
+      "type": "object",
+      "properties": {
+        "needs_cupti": {
+          "type": "boolean"
+        },
+        "needs_cupti_activity": {
+          "type": "boolean"
+        },
+        "needs_cupti_callback": {
+          "type": "boolean"
+        },
+        "needs_ebpf": {
+          "type": "boolean"
+        },
+        "target_mutation": {
+          "type": "boolean"
+        },
+        "target_restart_required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "needs_ebpf",
+        "needs_cupti",
+        "needs_cupti_callback",
+        "needs_cupti_activity",
+        "target_restart_required",
+        "target_mutation"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

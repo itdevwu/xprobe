@@ -152,6 +152,42 @@ missing symbols, unmapped binaries, and offsets outside loadable or mapped
 regions use the standard error envelope. An absent Build ID is represented by
 `null`; invalid ELF metadata is an error.
 
+## `validate`
+
+```bash
+xprobe validate \
+  --pid 1234 \
+  --from 'uprobe:/srv/app/libserver.so:handle_request:entry' \
+  --to 'cuda:kernel_start:name~flash.*' \
+  --match first-after \
+  --json --non-interactive --no-color
+```
+
+`validate` reads process and ELF metadata but does not attach probes, initialize
+CUPTI, or modify the target. It resolves host selectors, validates CUDA filters
+and regular expressions, checks the correlation policy against available keys,
+and reports required eBPF and CUPTI capabilities.
+
+The current selector grammar recognizes CUDA runtime and driver API callbacks,
+kernel, memcpy, and memset activity. This build can collect
+`cudaLaunchKernel` runtime callbacks and kernel activity. Other recognized CUDA
+events and host return probes are returned with `collectable: false` and make
+the result invalid until their collectors are implemented.
+
+Supported match policy spellings are `exact`, `first-after`, `nearest`,
+`stack-nested`, and `stream-order`. `exact` is valid only when both endpoints
+share a deterministic CUPTI correlation key. `stack-nested` requires entry and
+return selectors for the same host function. `stream-order` requires two GPU
+activity endpoints. Temporal policies emit `HEURISTIC_CORRELATION`; broad
+kernel selectors emit `BROAD_EVENT_SELECTOR`.
+
+Malformed input, invalid regex syntax, unresolved symbols, and unknown policies
+use the error envelope and a nonzero exit code. A well-formed request that
+cannot run in the current target returns exit code zero with `ok: true`,
+`valid: false`, and explicit issues. A missing CUPTI agent also reports whether
+a target restart is required. Results conform to
+`schemas/validate.schema.json`.
+
 ## `dev cupti`
 
 ```bash

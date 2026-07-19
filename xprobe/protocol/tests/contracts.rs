@@ -4,7 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
     CapabilityReport, ErrorResponse, Event, HostCaptureResult, MeasurementResult, MeasurementSpec,
-    ProcessReport, ResolvedProbe, schema::generated_schemas,
+    ProcessReport, ResolvedProbe, ValidationResult, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -266,6 +266,58 @@ fn resolved_probe_contract_round_trips() {
             "end_address": 140_737_488_420_864_u64,
             "file_offset": 0
         }
+    }));
+}
+
+#[test]
+fn validation_result_contract_round_trips() {
+    assert_round_trip::<ValidationResult>(&json!({
+        "schema_version": "1.0",
+        "ok": true,
+        "valid": false,
+        "target": {"pid": 1234, "process_start_time": 42},
+        "start": {
+            "selector": "cuda:runtime_api:cudaLaunchKernel:exit",
+            "source": "cuda",
+            "event_type": "cuda_api_exit",
+            "collectable": true,
+            "host": null,
+            "cuda": {
+                "event_type": "cuda_api_exit",
+                "api_domain": "runtime_api",
+                "api_name": "cudaLaunchKernel",
+                "kernel_name_regex": null,
+                "memcpy_kind": null
+            }
+        },
+        "end": {
+            "selector": "cuda:kernel_start:name~flash.*",
+            "source": "cuda",
+            "event_type": "gpu_kernel_start",
+            "collectable": true,
+            "host": null,
+            "cuda": {
+                "event_type": "gpu_kernel_start",
+                "api_domain": null,
+                "api_name": null,
+                "kernel_name_regex": "flash.*",
+                "memcpy_kind": null
+            }
+        },
+        "match_policy": "exact",
+        "requirements": {
+            "needs_ebpf": false,
+            "needs_cupti": true,
+            "needs_cupti_callback": true,
+            "needs_cupti_activity": true,
+            "target_restart_required": true,
+            "target_mutation": false
+        },
+        "issues": [{
+            "code": "CUPTI_AGENT_NOT_LOADED",
+            "message": "xprobe CUPTI agent is not loaded in the target process"
+        }],
+        "warnings": []
     }));
 }
 

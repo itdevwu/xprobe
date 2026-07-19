@@ -6,7 +6,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use xprobe_protocol::{ElfObjectKind, ErrorCode, ErrorResponse, HostProbeKind, ResolvedProbe};
+use xprobe_protocol::{
+    ElfObjectKind, ErrorCode, ErrorResponse, HostProbeKind, ResolvedProbe, ValidationResult,
+};
 
 static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -188,4 +190,51 @@ fn rejects_an_unknown_symbol_with_a_structured_error() {
         serde_json::from_slice(&output.stdout).expect("stdout must contain error JSON");
     assert_eq!(error.error.code, ErrorCode::SymbolNotFound);
     assert!(error.error.recoverable);
+}
+
+#[test]
+fn validate_resolves_a_host_endpoint_without_attaching() {
+    let target = ResolveTarget::spawn();
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "validate",
+            "--pid",
+            &target.child.id().to_string(),
+            "--from",
+            &format!(
+                "uprobe:{}:xprobe_resolve_executable_marker:entry",
+                target.executable.display()
+            ),
+            "--to",
+            "cuda:kernel_start:name~test.*",
+            "--match",
+            "first-after",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe validate must run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let result: ValidationResult =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
+    assert!(result.requirements.needs_ebpf);
+    assert!(result.requirements.needs_cupti_activity);
+    assert_eq!(
+        result
+            .start
+            .host
+            .as_ref()
+            .and_then(|host| host.symbol.as_deref()),
+        Some("xprobe_resolve_executable_marker")
+    );
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "HEURISTIC_CORRELATION")
+    );
 }

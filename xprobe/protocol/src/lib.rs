@@ -8,6 +8,7 @@ mod measurement;
 mod process;
 mod resolve;
 pub mod schema;
+mod validate;
 mod version;
 
 pub use capability::{
@@ -26,6 +27,10 @@ pub use measurement::{
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};
+pub use validate::{
+    EndpointSource, ResolvedCudaSelector, ValidatedEndpoint, ValidationIssue,
+    ValidationRequirements, ValidationResult,
+};
 pub use version::SchemaVersion;
 
 pub const SCHEMA_VERSION: &str = "1.0";
