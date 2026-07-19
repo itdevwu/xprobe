@@ -18,6 +18,9 @@ test-bpf:
     cmake -S . -B build -G Ninja -DXPROBE_BUILD_BPF=ON
     cmake --build build --target xprobe-bpf
 
+test-bpf-live: build
+    python3 tests/integration/test_uprobe.py "{{cuda_smoke_image}}"
+
 test-cupti:
     cmake -S . -B build -G Ninja -DXPROBE_BUILD_CUPTI=ON
     cmake --build build --target xprobe-cupti

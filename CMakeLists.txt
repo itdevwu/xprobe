@@ -15,3 +15,4 @@ if(XPROBE_BUILD_CUPTI)
   add_subdirectory(cupti)
 endif()
 
+add_subdirectory(tests)

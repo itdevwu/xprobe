@@ -3,7 +3,8 @@ use std::{
     collections::BTreeMap,
     error::Error,
     ffi::OsStr,
-    fmt,
+    fmt, fs, io,
+    os::unix::fs::MetadataExt,
     path::PathBuf,
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
@@ -36,6 +37,10 @@ pub struct UprobeRequest {
 #[derive(Debug)]
 pub enum UprobeError {
     InvalidRequest(String),
+    TargetNamespace {
+        path: PathBuf,
+        source: io::Error,
+    },
     MissingObjectMember {
         kind: &'static str,
         name: &'static str,
@@ -55,6 +60,14 @@ impl UprobeError {
     pub fn code(&self) -> ErrorCode {
         match self {
             Self::InvalidRequest(_) => ErrorCode::InvalidEventSelector,
+            Self::TargetNamespace { source, .. }
+                if source.kind() == io::ErrorKind::PermissionDenied =>
+            {
+                ErrorCode::PermissionDenied
+            }
+            Self::TargetNamespace { source, .. } if source.kind() == io::ErrorKind::NotFound => {
+                ErrorCode::TargetExited
+            }
             Self::Libbpf { source, .. } if source.kind() == ErrorKind::PermissionDenied => {
                 ErrorCode::PermissionDenied
             }
@@ -62,7 +75,8 @@ impl UprobeError {
                 operation: "attach uprobe",
                 source,
             } if source.kind() == ErrorKind::NotFound => ErrorCode::SymbolNotFound,
-            Self::MissingObjectMember { .. }
+            Self::TargetNamespace { .. }
+            | Self::MissingObjectMember { .. }
             | Self::Libbpf { .. }
             | Self::MalformedEvent { .. } => ErrorCode::Internal,
         }
@@ -72,7 +86,7 @@ impl UprobeError {
     pub fn recoverable(&self) -> bool {
         matches!(
             self.code(),
-            ErrorCode::PermissionDenied | ErrorCode::SymbolNotFound
+            ErrorCode::PermissionDenied | ErrorCode::SymbolNotFound | ErrorCode::TargetExited
         )
     }
 }
@@ -81,6 +95,11 @@ impl fmt::Display for UprobeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidRequest(message) => formatter.write_str(message),
+            Self::TargetNamespace { path, source } => write!(
+                formatter,
+                "failed to inspect target PID namespace at {}: {source}",
+                path.display()
+            ),
             Self::MissingObjectMember { kind, name } => {
                 write!(formatter, "BPF object is missing {kind} {name}")
             }
@@ -98,6 +117,7 @@ impl fmt::Display for UprobeError {
 impl Error for UprobeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::TargetNamespace { source, .. } => Some(source),
             Self::Libbpf { source, .. } => Some(source),
             Self::InvalidRequest(_)
             | Self::MissingObjectMember { .. }
@@ -195,10 +215,18 @@ fn load_object() -> Result<Object, UprobeError> {
 }
 
 fn configure_object(object: &Object, request: &UprobeRequest) -> Result<(), UprobeError> {
+    let namespace_path = PathBuf::from(format!("/proc/{}/ns/pid", request.target.pid));
+    let namespace =
+        fs::metadata(&namespace_path).map_err(|source| UprobeError::TargetNamespace {
+            path: namespace_path,
+            source,
+        })?;
     let key = 0_u32.to_ne_bytes();
-    let mut config = [0_u8; 8];
-    config[0..4].copy_from_slice(&request.target.pid.to_ne_bytes());
-    config[4..8].copy_from_slice(&request.probe_id.to_ne_bytes());
+    let mut config = [0_u8; 24];
+    config[0..8].copy_from_slice(&namespace.dev().to_ne_bytes());
+    config[8..16].copy_from_slice(&namespace.ino().to_ne_bytes());
+    config[16..20].copy_from_slice(&request.target.pid.to_ne_bytes());
+    config[20..24].copy_from_slice(&request.probe_id.to_ne_bytes());
     object
         .maps()
         .find(|map| map.name() == OsStr::new("config"))
