@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+libbpf-rs.workspace = true
+xprobe-protocol.workspace = true
+
 [lints]
 workspace = true
-
