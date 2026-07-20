@@ -38,10 +38,14 @@ int main()
         std::fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(result));
         return 13;
     }
-    result = cudaMemcpy(device_left, host_left.data(), byte_count, cudaMemcpyHostToDevice);
+    result = cudaMemset(device_output, 0, byte_count);
     if (result == cudaSuccess) {
-        result =
-            cudaMemcpy(device_right, host_right.data(), byte_count, cudaMemcpyHostToDevice);
+        result = cudaMemcpy(device_left, host_left.data(), byte_count,
+                            cudaMemcpyHostToDevice);
+    }
+    if (result == cudaSuccess) {
+        result = cudaMemcpy(device_right, host_right.data(), byte_count,
+                            cudaMemcpyHostToDevice);
     }
     if (result != cudaSuccess) {
         std::fprintf(stderr, "cudaMemcpy H2D failed: %s\n", cudaGetErrorString(result));

@@ -4,7 +4,9 @@ The CUPTI agent is a bounded in-process collector. It records:
 
 - `cudaLaunchKernel` API entry and exit;
 - concurrent GPU kernel start and end;
+- GPU memcpy and memset start and end;
 - CUPTI correlation, context, stream, device, grid, and block identifiers.
+- transfer byte counts, memcpy direction, and memset value.
 
 The agent does not read kernel arguments or GPU memory.
 
@@ -36,17 +38,17 @@ The output begins with a 48-byte `xprobe_cupti_output_header`, followed by
 and enum values are defined in `cupti/include/xprobe/cupti_agent.h` and versioned
 by `XPROBE_CUPTI_AGENT_ABI_VERSION`.
 
-Record kinds are API entry, API exit, GPU kernel start, and GPU kernel end. API
-and kernel records use the same CUPTI correlation ID. Unknown numeric fields are
+Record kinds are API entry/exit and GPU kernel, memcpy, and memset start/end.
+Related records use the same CUPTI correlation ID. Unknown numeric fields are
 `UINT32_MAX`; names are bounded, null-terminated byte strings. The header
 reports records dropped after the fixed 65,536-record capacity and unexpected
 activity kinds.
 
 ABI v2 registers a `CLOCK_MONOTONIC` timestamp callback before enabling any
 activity kind. CUPTI uses that callback to linearly normalize GPU activity
-timestamps during post-processing. The record layout is unchanged from ABI v1;
-the version distinguishes this normalized timestamp semantic. ABI v1 remains
-supported for existing captures.
+timestamps during post-processing. ABI v3 adds transfer record kinds and
+kind-dependent payload fields while retaining the 48-byte header and 200-byte
+record layout. ABI v1 and v2 remain supported for existing captures.
 
 The runtime callback performs no allocation or file I/O. It captures a host
 timestamp and reserves a record slot atomically. CUPTI activity buffers are
@@ -84,6 +86,7 @@ target/debug/xprobe measure \
   --json --non-interactive --no-color
 ```
 
-CUPTI API callback timestamps use host monotonic time. In capture ABI v2, CUPTI
-normalizes GPU activity to the same clock before the agent writes the record.
-The measurement command therefore supports exact API-to-GPU subtraction.
+CUPTI API callback timestamps use host monotonic time. In capture ABI v2 and
+newer, CUPTI normalizes GPU activity to the same clock before the agent writes
+the record. The measurement command therefore supports exact API-to-GPU
+subtraction and exact kernel/transfer duration measurement.

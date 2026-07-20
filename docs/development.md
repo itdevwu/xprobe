@@ -79,10 +79,12 @@ just test-multisource-live
 
 The test mounts the workspace read-only, compiles the agent and a CUDA fixture
 inside the container, injects the agent at CUDA startup, and verifies three API
-entries, API exits, kernel starts, and kernel ends with matching correlation
-IDs. The resulting capture is then decoded by the host CLI and checked as
-ordered Event JSONL. The fixture queries the GPU compute capability and compiles
-matching SASS so an older compatible driver does not need to JIT CUDA 13.3 PTX.
+entries, API exits, kernel starts, and kernel ends, three memcpy intervals, and
+one memset interval with matching correlation IDs. The resulting capture is
+decoded by the host CLI and checked as ordered Event JSONL, then measured for
+exact kernel, memcpy, memset, and API-to-kernel durations. The fixture queries
+the GPU compute capability and compiles matching SASS so an older compatible
+driver does not need to JIT CUDA 13.3 PTX.
 
 Container policy:
 

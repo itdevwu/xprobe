@@ -6,7 +6,8 @@ use regex::Regex;
 use xprobe_protocol::{
     ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary,
     ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics, MatchPolicy,
-    Measurement, MeasurementResult, SampleSummary, SchemaVersion, SessionStatus, Warning,
+    Measurement, MeasurementResult, MemcpyKind, SampleSummary, SchemaVersion, SessionStatus,
+    Warning,
 };
 
 #[derive(Debug, Clone)]
@@ -96,6 +97,13 @@ enum Selector {
         event_type: EventType,
         name: Option<Regex>,
     },
+    Memcpy {
+        event_type: EventType,
+        kind: Option<MemcpyKind>,
+    },
+    Memset {
+        event_type: EventType,
+    },
 }
 
 #[derive(Debug)]
@@ -118,6 +126,8 @@ impl Selector {
         match fields[1] {
             "runtime_api" => Self::parse_runtime_api(text),
             "kernel_start" | "kernel_end" => Self::parse_kernel(&fields),
+            "memcpy_start" | "memcpy_end" => Self::parse_memcpy(&fields),
+            "memset_start" | "memset_end" => Self::parse_memset(text, &fields),
             event => Err(MeasureError::InvalidSelector(format!(
                 "event {event:?} is not present in completed CUPTI captures"
             ))),
@@ -230,6 +240,51 @@ impl Selector {
         Ok(Self::Kernel { event_type, name })
     }
 
+    fn parse_memcpy(fields: &[&str]) -> Result<Self, MeasureError> {
+        let event_type = match fields[1] {
+            "memcpy_start" => EventType::GpuMemcpyStart,
+            "memcpy_end" => EventType::GpuMemcpyEnd,
+            _ => unreachable!("memcpy parser only receives memcpy selectors"),
+        };
+        let kind = match fields.get(2) {
+            None => None,
+            Some(filter) => {
+                let kind = filter.strip_prefix("kind=").ok_or_else(|| {
+                    MeasureError::InvalidSelector(
+                        "memcpy filter must use kind=<HtoD|DtoH|DtoD|HtoH|PtoP>".to_owned(),
+                    )
+                })?;
+                Some(match kind {
+                    "HtoD" => MemcpyKind::HostToDevice,
+                    "DtoH" => MemcpyKind::DeviceToHost,
+                    "DtoD" => MemcpyKind::DeviceToDevice,
+                    "HtoH" => MemcpyKind::HostToHost,
+                    "PtoP" => MemcpyKind::PeerToPeer,
+                    _ => {
+                        return Err(MeasureError::InvalidSelector(format!(
+                            "unsupported memcpy kind {kind:?}"
+                        )));
+                    }
+                })
+            }
+        };
+        Ok(Self::Memcpy { event_type, kind })
+    }
+
+    fn parse_memset(text: &str, fields: &[&str]) -> Result<Self, MeasureError> {
+        if fields.len() != 2 {
+            return Err(MeasureError::InvalidSelector(format!(
+                "memset selector {text:?} does not accept a filter"
+            )));
+        }
+        let event_type = match fields[1] {
+            "memset_start" => EventType::GpuMemsetStart,
+            "memset_end" => EventType::GpuMemsetEnd,
+            _ => unreachable!("memset parser only receives memset selectors"),
+        };
+        Ok(Self::Memset { event_type })
+    }
+
     fn matches(&self, event: &Event) -> bool {
         match self {
             Self::Host {
@@ -268,6 +323,17 @@ impl Selector {
                             .is_some_and(|kernel| pattern.is_match(kernel))
                     })
             }
+            Self::Memcpy { event_type, kind } => {
+                event.event_type == *event_type
+                    && kind.as_ref().is_none_or(|kind| {
+                        event
+                            .cuda
+                            .as_ref()
+                            .and_then(|cuda| cuda.memcpy_kind.as_ref())
+                            == Some(kind)
+                    })
+            }
+            Self::Memset { event_type } => event.event_type == *event_type,
         }
     }
 
@@ -656,7 +722,7 @@ mod tests {
 
     use xprobe_protocol::{
         ClockDomain, CorrelationConfidence, CudaEvent, Event, EventSource, EventType, HostEvent,
-        HostProbeKind, MatchPolicy, SchemaVersion,
+        HostProbeKind, MatchPolicy, MemcpyKind, SchemaVersion,
     };
 
     use super::{MeasureError, MeasureOptions, measure};
@@ -713,6 +779,20 @@ mod tests {
         }
     }
 
+    fn memcpy_event(
+        event_type: EventType,
+        timestamp: u64,
+        correlation_id: u32,
+        kind: MemcpyKind,
+    ) -> Event {
+        let mut event = event(event_type, timestamp, correlation_id);
+        let cuda = event.cuda.as_mut().expect("CUDA payload");
+        cuda.kernel_name = None;
+        cuda.bytes = Some(4096);
+        cuda.memcpy_kind = Some(kind);
+        event
+    }
+
     fn host_event(timestamp: u64) -> Event {
         let mut event = event(EventType::HostFunctionEntry, timestamp, 0);
         event.source = EventSource::Ebpf;
@@ -743,6 +823,24 @@ mod tests {
         assert_eq!(result.measurement.latency_ns.min, 50);
         assert_eq!(result.measurement.latency_ns.max, 80);
         assert_eq!(result.correlation.method, "exact_cupti_correlation_id");
+    }
+
+    #[test]
+    fn exact_matching_filters_memcpy_kind() {
+        let events = vec![
+            memcpy_event(EventType::GpuMemcpyStart, 100, 1, MemcpyKind::HostToDevice),
+            memcpy_event(EventType::GpuMemcpyEnd, 160, 1, MemcpyKind::HostToDevice),
+            memcpy_event(EventType::GpuMemcpyStart, 200, 2, MemcpyKind::DeviceToHost),
+            memcpy_event(EventType::GpuMemcpyEnd, 290, 2, MemcpyKind::DeviceToHost),
+        ];
+        let mut options = options(MatchPolicy::Exact);
+        options.start_selector = "cuda:memcpy_start:kind=HtoD".to_owned();
+        options.end_selector = "cuda:memcpy_end:kind=HtoD".to_owned();
+        options.samples = Some(1);
+
+        let result = measure(&events, &options).unwrap();
+        assert_eq!(result.measurement.samples.matched, 1);
+        assert_eq!(result.measurement.latency_ns.min, 60);
     }
 
     #[test]

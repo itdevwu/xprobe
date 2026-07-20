@@ -315,7 +315,7 @@ fn parse_memcpy_selector(
             memcpy_kind,
         },
         EndpointKind::Memcpy,
-        false,
+        true,
     ))
 }
 
@@ -342,7 +342,7 @@ fn parse_memset_selector(
             memcpy_kind: None,
         },
         EndpointKind::Memset,
-        false,
+        true,
     ))
 }
 
@@ -557,7 +557,7 @@ fn warning(code: &str, message: &str) -> Warning {
 
 #[cfg(test)]
 mod tests {
-    use xprobe_protocol::{ErrorCode, MatchPolicy};
+    use xprobe_protocol::{ErrorCode, EventType, MatchPolicy, MemcpyKind};
 
     use super::{parse_cuda_selector, parse_match_policy, run};
     use crate::inspect;
@@ -575,6 +575,14 @@ mod tests {
             kernel.kernel_name_regex.as_deref(),
             Some("flash_(fwd|bwd):sm90")
         );
+        assert!(collectable);
+
+        let (memcpy, _, collectable) = parse_cuda_selector("cuda:memcpy_end:kind=HtoD").unwrap();
+        assert_eq!(memcpy.memcpy_kind, Some(MemcpyKind::HostToDevice));
+        assert!(collectable);
+
+        let (memset, _, collectable) = parse_cuda_selector("cuda:memset_start").unwrap();
+        assert_eq!(memset.event_type, EventType::GpuMemsetStart);
         assert!(collectable);
         assert_eq!(
             parse_match_policy("first-after").unwrap(),

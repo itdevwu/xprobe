@@ -10,8 +10,8 @@ local tracing capabilities, inspects target processes, and captures bounded
 userspace function entry and return events with eBPF uprobes and uretprobes. It
 also resolves symbol and file-offset probe selectors against live PIE
 executables and shared libraries. Its in-process CUPTI agent captures CUDA
-launch boundaries and correlated GPU kernel intervals to a versioned binary
-stream.
+launch boundaries and correlated GPU kernel, memcpy, and memset intervals to a
+versioned binary stream.
 
 ## Current capabilities
 
@@ -24,11 +24,11 @@ stream.
 | Deterministic selector and correlation validation | Implemented |
 | PID-scoped eBPF uprobe and uretprobe collection | Implemented through `dev uprobe` |
 | eBPF build pipeline | Embedded libbpf object and ring buffer |
-| CUPTI agent | Runtime launch callbacks and concurrent-kernel activity |
+| CUPTI agent | Runtime launch callbacks plus kernel and transfer activity |
 | CUDA raw capture | Startup injection or explicit application integration |
 | Unified Event JSONL | Implemented for uprobe and CUPTI captures |
 | Completed-capture exact and first-after measurement | Implemented across host and CUDA inputs |
-| CUPTI-to-host clock normalization | Implemented in capture ABI v2 |
+| CUPTI-to-host clock normalization | Implemented in capture ABI v2 and newer |
 | Live host and CUDA capture correlation | Implemented for completed captures |
 
 ## Quick start

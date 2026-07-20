@@ -91,7 +91,7 @@ immediately; unavailable runtime requirements produce a successful validation
 report with `valid: false` and structured issues. Heuristic temporal policies
 are always labeled as warnings. Validation performs no collection and reports
 `target_mutation: false`. Cross-domain selectors expose
-`needs_clock_alignment: true`. Capture ABI v2 provides the required
+`needs_clock_alignment: true`. Capture ABI v2 and newer provide the required
 CUPTI-to-host normalization; validation retains the requirement so orchestration
 can select a compatible collector.
 
@@ -110,16 +110,17 @@ capture, sequence/drop accounting, and ring-buffer submission. Symbol lookup,
 JSON construction, and timeout handling remain in userspace.
 
 CUPTI callback and activity collection runs inside the target process. The
-agent subscribes only to `cudaLaunchKernel` entry/exit callbacks and concurrent
-kernel activity. Both carry CUPTI correlation IDs, which provide the exact join
-key between API and GPU records. Callback paths reserve slots in a bounded
-in-memory array; activity parsing, draining, and binary output happen outside
-the runtime API callback.
+agent subscribes to `cudaLaunchKernel` entry/exit callbacks and concurrent
+kernel, memcpy, and memset activity. CUPTI correlation IDs provide the exact
+join key for start/end intervals and API-to-kernel records. Callback paths
+reserve slots in a bounded in-memory array; activity parsing, draining, and
+binary output happen outside the runtime API callback.
 
 The collector decodes the fixed CUPTI ABI into the same protocol `Event` type
-used by eBPF collectors. Before enabling activity collection, the v2 agent
-registers `CLOCK_MONOTONIC` as CUPTI's timestamp callback. CUPTI linearly maps
-GPU timestamps into that clock during activity post-processing. The exporter
+used by eBPF collectors. Before enabling activity collection, ABI v2 and newer
+agents register `CLOCK_MONOTONIC` as CUPTI's timestamp callback. CUPTI linearly
+maps GPU timestamps into that clock during activity post-processing. ABI v3
+adds transfer records while retaining the 200-byte record layout. The exporter
 writes either source as compact JSONL.
 
 The correlator can measure a completed CUPTI capture within one clock domain or

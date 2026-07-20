@@ -1,11 +1,14 @@
 use std::{collections::BTreeMap, error::Error, fmt, str};
 
 use serde_json::Value;
-use xprobe_protocol::{ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, SchemaVersion};
+use xprobe_protocol::{
+    ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, MemcpyKind, SchemaVersion,
+};
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const ABI_VERSION_V1: u32 = 1;
 const ABI_VERSION_V2: u32 = 2;
+const ABI_VERSION_V3: u32 = 3;
 const HEADER_SIZE_V1: usize = 48;
 const HEADER_SIZE_V1_U32: u32 = 48;
 const RECORD_SIZE: usize = 200;
@@ -94,9 +97,10 @@ impl Error for CuptiDecodeError {}
 
 /// Decode an xprobe CUPTI binary capture into versioned protocol events.
 ///
-/// ABI v2 GPU timestamps have already been normalized by CUPTI using the
-/// agent's host monotonic timestamp callback. ABI v1 remains readable and
-/// keeps GPU timestamps in the legacy CUPTI clock domain.
+/// ABI v2 and v3 GPU timestamps have already been normalized by CUPTI using
+/// the agent's host monotonic timestamp callback. ABI v1 remains readable and
+/// keeps GPU timestamps in the legacy CUPTI clock domain. ABI v3 adds memcpy
+/// and memset records without changing the fixed record size.
 ///
 /// # Errors
 ///
@@ -114,7 +118,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
 
     let abi_version = read_u32(bytes, 8);
     let (expected_header_size, expected_header_size_u32) = match abi_version {
-        ABI_VERSION_V1 | ABI_VERSION_V2 => (HEADER_SIZE_V1, HEADER_SIZE_V1_U32),
+        ABI_VERSION_V1 | ABI_VERSION_V2 | ABI_VERSION_V3 => (HEADER_SIZE_V1, HEADER_SIZE_V1_U32),
         _ => return Err(CuptiDecodeError::UnsupportedAbi(abi_version)),
     };
     let header_size = read_u32(bytes, 12);
@@ -155,12 +159,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         .chunks_exact(RECORD_SIZE)
         .enumerate()
     {
-        events.push(decode_record(
-            record,
-            index,
-            session_id,
-            abi_version == ABI_VERSION_V2,
-        )?);
+        events.push(decode_record(record, index, session_id, abi_version)?);
     }
     events.sort_by_key(|event| event.timestamp_ns);
     let mut sequence = 0_u64;
@@ -183,7 +182,7 @@ fn decode_record(
     record: &[u8],
     index: usize,
     session_id: &str,
-    activity_is_host_monotonic: bool,
+    abi_version: u32,
 ) -> Result<Event, CuptiDecodeError> {
     let kind = read_u32(record, 8);
     let (source, event_type) = match kind {
@@ -191,6 +190,14 @@ fn decode_record(
         2 => (EventSource::CuptiCallback, EventType::CudaApiExit),
         3 => (EventSource::CuptiActivity, EventType::GpuKernelStart),
         4 => (EventSource::CuptiActivity, EventType::GpuKernelEnd),
+        5 if abi_version >= ABI_VERSION_V3 => {
+            (EventSource::CuptiActivity, EventType::GpuMemcpyStart)
+        }
+        6 if abi_version >= ABI_VERSION_V3 => (EventSource::CuptiActivity, EventType::GpuMemcpyEnd),
+        7 if abi_version >= ABI_VERSION_V3 => {
+            (EventSource::CuptiActivity, EventType::GpuMemsetStart)
+        }
+        8 if abi_version >= ABI_VERSION_V3 => (EventSource::CuptiActivity, EventType::GpuMemsetEnd),
         _ => return Err(CuptiDecodeError::UnknownRecordKind { index, kind }),
     };
     let timestamp_raw = read_u64(record, 0);
@@ -201,12 +208,15 @@ fn decode_record(
         .unwrap_or(name_bytes.len());
     let name = str::from_utf8(&name_bytes[..name_length])
         .map_err(|_| CuptiDecodeError::InvalidName { index })?;
-    let is_api = kind <= 2;
-    let is_kernel_start = kind == 3;
-    let is_kernel_end = kind == 4;
+    let is_api = matches!(kind, 1 | 2);
+    let is_kernel = matches!(kind, 3 | 4);
+    let is_memcpy = matches!(kind, 5 | 6);
+    let is_transfer = matches!(kind, 5..=8);
+    let is_start = matches!(kind, 3 | 5 | 7);
+    let is_end = matches!(kind, 4 | 6 | 8);
     let (timestamp_ns, clock_domain, timestamp_error_ns) = if is_api {
         (timestamp_raw, ClockDomain::HostMonotonic, None)
-    } else if activity_is_host_monotonic {
+    } else if abi_version >= ABI_VERSION_V2 {
         (
             timestamp_raw,
             ClockDomain::CuptiNormalizedToHostMonotonic,
@@ -218,6 +228,9 @@ fn decode_record(
     let mut attributes = BTreeMap::new();
     if is_api {
         attributes.insert("cuda_api_name".to_owned(), Value::String(name.to_owned()));
+    }
+    if matches!(kind, 7 | 8) {
+        attributes.insert("memset_value".to_owned(), Value::from(read_u32(record, 56)));
     }
 
     Ok(Event {
@@ -244,17 +257,32 @@ fn decode_record(
             runtime_correlation_id: optional_nonzero(read_u32(record, 68)),
             callback_domain: optional_nonzero(read_u32(record, 36)),
             callback_id: optional_nonzero(read_u32(record, 40)),
-            kernel_name: (!is_api).then(|| name.to_owned()),
+            kernel_name: is_kernel.then(|| name.to_owned()),
             kernel_name_mangled: None,
-            start_ns: is_kernel_start.then_some(timestamp_ns),
-            end_ns: is_kernel_end.then_some(timestamp_ns),
-            grid: decode_dim(record, 44),
-            block: decode_dim(record, 56),
-            bytes: None,
-            memcpy_kind: None,
+            start_ns: is_start.then_some(timestamp_ns),
+            end_ns: is_end.then_some(timestamp_ns),
+            grid: is_kernel.then(|| decode_dim(record, 44)).flatten(),
+            block: is_kernel.then(|| decode_dim(record, 56)).flatten(),
+            bytes: is_transfer.then(|| read_split_u64(record, 44)),
+            memcpy_kind: is_memcpy.then(|| decode_memcpy_kind(read_u32(record, 52))),
         }),
         attributes,
     })
+}
+
+fn read_split_u64(record: &[u8], offset: usize) -> u64 {
+    u64::from(read_u32(record, offset)) | (u64::from(read_u32(record, offset + 4)) << 32)
+}
+
+const fn decode_memcpy_kind(kind: u32) -> MemcpyKind {
+    match kind {
+        1 | 3 => MemcpyKind::HostToDevice,
+        2 | 4 => MemcpyKind::DeviceToHost,
+        5..=8 => MemcpyKind::DeviceToDevice,
+        9 => MemcpyKind::HostToHost,
+        10 => MemcpyKind::PeerToPeer,
+        _ => MemcpyKind::Unknown,
+    }
 }
 
 fn decode_dim(record: &[u8], offset: usize) -> Option<Dim3> {
@@ -297,7 +325,7 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{CuptiDecodeError, HEADER_SIZE_V1, OUTPUT_MAGIC, RECORD_SIZE, decode_capture};
-    use xprobe_protocol::{ClockDomain, EventSource, EventType};
+    use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind};
 
     fn capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
         let mut bytes = vec![0_u8; HEADER_SIZE_V1 + records.len() * RECORD_SIZE];
@@ -335,6 +363,12 @@ mod tests {
         bytes
     }
 
+    fn transfer_capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
+        let mut bytes = normalized_capture(records);
+        bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+        bytes
+    }
+
     fn record(kind: u32, timestamp: u64, correlation: u32, name: &str) -> [u8; RECORD_SIZE] {
         let mut record = [0_u8; RECORD_SIZE];
         record[0..8].copy_from_slice(&timestamp.to_le_bytes());
@@ -352,6 +386,23 @@ mod tests {
         record[60..64].copy_from_slice(&1_u32.to_le_bytes());
         record[64..68].copy_from_slice(&1_u32.to_le_bytes());
         record[72..72 + name.len()].copy_from_slice(name.as_bytes());
+        record
+    }
+
+    fn transfer_record(
+        kind: u32,
+        timestamp: u64,
+        correlation: u32,
+        bytes: u64,
+        payload_kind: u32,
+    ) -> [u8; RECORD_SIZE] {
+        let mut record = record(kind, timestamp, correlation, "");
+        record[44..52].copy_from_slice(&bytes.to_le_bytes());
+        if matches!(kind, 5 | 6) {
+            record[52..56].copy_from_slice(&payload_kind.to_le_bytes());
+        } else {
+            record[56..60].copy_from_slice(&payload_kind.to_le_bytes());
+        }
         record
     }
 
@@ -395,6 +446,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_v3_record_kinds_in_older_captures() {
+        let memcpy = transfer_record(5, 100, 1, 4096, 1);
+        let error = decode_capture(&normalized_capture(&[memcpy]), "xp_test")
+            .expect_err("ABI v2 must not decode ABI v3 record kinds");
+        assert_eq!(
+            error,
+            CuptiDecodeError::UnknownRecordKind { index: 0, kind: 5 }
+        );
+    }
+
+    #[test]
     fn normalizes_v2_gpu_timestamps_to_host_monotonic() {
         let api = record(1, 10_400, 42, "cudaLaunchKernel");
         let kernel = record(3, 10_525, 42, "test_kernel");
@@ -418,6 +480,30 @@ mod tests {
                 .start_ns,
             Some(10_525)
         );
+    }
+
+    #[test]
+    fn decodes_v3_memcpy_and_memset_activity() {
+        let bytes = (1_u64 << 32) + 99;
+        let memcpy = transfer_record(5, 10_500, 43, bytes, 1);
+        let memset = transfer_record(8, 10_700, 44, 4096, 0xab);
+        let decoded = decode_capture(&transfer_capture(&[memcpy, memset]), "xp_test")
+            .expect("transfer capture must decode");
+
+        let memcpy_event = &decoded.events[0];
+        assert_eq!(memcpy_event.event_type, EventType::GpuMemcpyStart);
+        let memcpy_payload = memcpy_event.cuda.as_ref().expect("CUDA payload");
+        assert_eq!(memcpy_payload.bytes, Some(bytes));
+        assert_eq!(memcpy_payload.memcpy_kind, Some(MemcpyKind::HostToDevice));
+        assert_eq!(memcpy_payload.start_ns, Some(10_500));
+        assert_eq!(memcpy_payload.grid, None);
+
+        let memset_event = &decoded.events[1];
+        assert_eq!(memset_event.event_type, EventType::GpuMemsetEnd);
+        let memset_payload = memset_event.cuda.as_ref().expect("CUDA payload");
+        assert_eq!(memset_payload.bytes, Some(4096));
+        assert_eq!(memset_payload.end_ns, Some(10_700));
+        assert_eq!(memset_event.attributes["memset_value"], 0xab);
     }
 
     #[test]

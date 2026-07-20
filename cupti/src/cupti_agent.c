@@ -76,6 +76,8 @@ static size_t enabled_activity_count;
 static char output_path[PATH_MAX];
 static const CUpti_ActivityKind enabled_activity_kinds[] = {
     CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
+    CUPTI_ACTIVITY_KIND_MEMCPY,
+    CUPTI_ACTIVITY_KIND_MEMSET,
 };
 
 static void remember_cupti_error(CUptiResult result)
@@ -256,6 +258,43 @@ static void enqueue_kernel_record(const CUpti_ActivityKernel12 *kernel, uint32_t
     enqueue_record(&record);
 }
 
+static void set_transfer_bytes(struct xprobe_cupti_record *record, uint64_t bytes)
+{
+    record->grid_x = (uint32_t)bytes;
+    record->grid_y = (uint32_t)(bytes >> 32U);
+}
+
+static void enqueue_memcpy_record(const CUpti_ActivityMemcpy6 *memcpy_record,
+                                  uint32_t kind, uint64_t timestamp_ns)
+{
+    struct xprobe_cupti_record record;
+
+    initialize_record(&record, kind, timestamp_ns);
+    record.device_id = memcpy_record->deviceId;
+    record.context_id = memcpy_record->contextId;
+    record.stream_id = memcpy_record->streamId;
+    record.correlation_id = memcpy_record->correlationId;
+    record.runtime_correlation_id = memcpy_record->runtimeCorrelationId;
+    set_transfer_bytes(&record, memcpy_record->bytes);
+    record.grid_z = (uint32_t)memcpy_record->copyKind;
+    enqueue_record(&record);
+}
+
+static void enqueue_memset_record(const CUpti_ActivityMemset4 *memset_record,
+                                  uint32_t kind, uint64_t timestamp_ns)
+{
+    struct xprobe_cupti_record record;
+
+    initialize_record(&record, kind, timestamp_ns);
+    record.device_id = memset_record->deviceId;
+    record.context_id = memset_record->contextId;
+    record.stream_id = memset_record->streamId;
+    record.correlation_id = memset_record->correlationId;
+    set_transfer_bytes(&record, memset_record->bytes);
+    record.block_x = memset_record->value;
+    enqueue_record(&record);
+}
+
 static void CUPTIAPI activity_buffer_completed(
     uint8_t *buffer, size_t size, size_t valid_size,
     CUpti_BufferCallbackCompleteInfo *complete_info)
@@ -279,6 +318,20 @@ static void CUPTIAPI activity_buffer_completed(
                 (const CUpti_ActivityKernel12 *)activity;
             enqueue_kernel_record(kernel, XPROBE_CUPTI_GPU_KERNEL_START, kernel->start);
             enqueue_kernel_record(kernel, XPROBE_CUPTI_GPU_KERNEL_END, kernel->end);
+        } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
+            const CUpti_ActivityMemcpy6 *memcpy_record =
+                (const CUpti_ActivityMemcpy6 *)activity;
+            enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_START,
+                                  memcpy_record->start);
+            enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_END,
+                                  memcpy_record->end);
+        } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMSET) {
+            const CUpti_ActivityMemset4 *memset_record =
+                (const CUpti_ActivityMemset4 *)activity;
+            enqueue_memset_record(memset_record, XPROBE_CUPTI_GPU_MEMSET_START,
+                                  memset_record->start);
+            enqueue_memset_record(memset_record, XPROBE_CUPTI_GPU_MEMSET_END,
+                                  memset_record->end);
         } else {
             atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
         }

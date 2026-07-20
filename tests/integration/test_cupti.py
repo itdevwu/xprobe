@@ -10,12 +10,16 @@ import tempfile
 
 HEADER_V1 = struct.Struct("<8sIIIIQQQ")
 RECORD = struct.Struct("<Q16I128s")
-EXPECTED_KINDS = {1, 2, 3, 4}
+EXPECTED_COUNTS = {1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 1, 8: 1}
 EXPECTED_EVENT_TYPES = {
     "cuda_api_entry",
     "cuda_api_exit",
     "gpu_kernel_start",
     "gpu_kernel_end",
+    "gpu_memcpy_start",
+    "gpu_memcpy_end",
+    "gpu_memset_start",
+    "gpu_memset_end",
 }
 
 
@@ -32,6 +36,9 @@ def decode_record(raw: bytes) -> dict[str, int | str]:
         "correlation_id": fields[7],
         "callback_domain": fields[8],
         "callback_id": fields[9],
+        "bytes": fields[10] | (fields[11] << 32),
+        "copy_kind": fields[12],
+        "memset_value": fields[13],
         "runtime_correlation_id": fields[16],
         "name": fields[17].split(b"\0", 1)[0].decode("utf-8"),
     }
@@ -42,8 +49,8 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
     if len(data) < HEADER_V1.size:
         raise AssertionError("CUPTI capture is shorter than its header")
     fields = HEADER_V1.unpack_from(data)
-    if fields[1] != 2:
-        raise AssertionError(f"expected capture ABI 2, found {fields[1]}")
+    if fields[1] != 3:
+        raise AssertionError(f"expected capture ABI 3, found {fields[1]}")
     header = {
         "abi_version": fields[1],
         "header_size": fields[2],
@@ -53,7 +60,7 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         "unknown_records": fields[7],
     }
     assert fields[0] == b"XPCUPTI\0"
-    assert header["abi_version"] == 2
+    assert header["abi_version"] == 3
     assert header["header_size"] == HEADER_V1.size
     assert header["record_size"] == RECORD.size
     assert len(data) == header["header_size"] + header["record_count"] * RECORD.size
@@ -62,6 +69,43 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         for offset in range(header["header_size"], len(data), RECORD.size)
     ]
     return header, records
+
+
+def measure(
+    xprobe: pathlib.Path,
+    capture: pathlib.Path,
+    start_selector: str,
+    end_selector: str,
+    samples: str,
+) -> dict:
+    completed = subprocess.run(
+        [
+            xprobe,
+            "measure",
+            "--input",
+            capture,
+            "--from",
+            start_selector,
+            "--to",
+            end_selector,
+            "--match",
+            "exact",
+            "--samples",
+            samples,
+            "--json",
+            "--non-interactive",
+            "--no-color",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        raise SystemExit(completed.returncode)
+    assert completed.stderr == ""
+    return json.loads(completed.stdout)
 
 
 def main() -> None:
@@ -177,11 +221,24 @@ def main() -> None:
             raise SystemExit(cross_domain.returncode)
         assert cross_domain.stderr == ""
         cross_measurement = json.loads(cross_domain.stdout)
+        memcpy_measurement = measure(
+            xprobe,
+            capture,
+            "cuda:memcpy_start:kind=HtoD",
+            "cuda:memcpy_end:kind=HtoD",
+            "2",
+        )
+        memset_measurement = measure(
+            xprobe,
+            capture,
+            "cuda:memset_start",
+            "cuda:memset_end",
+            "1",
+        )
 
     counts = collections.Counter(record["kind"] for record in records)
     diagnostics = {"header": header, "counts": counts, "records": records}
-    assert set(counts) == EXPECTED_KINDS, diagnostics
-    assert all(counts[kind] == 3 for kind in EXPECTED_KINDS), diagnostics
+    assert counts == EXPECTED_COUNTS, diagnostics
     assert header["dropped_records"] == 0
     assert header["unknown_records"] == 0
     assert all(record["timestamp_ns"] > 0 for record in records)
@@ -200,6 +257,11 @@ def main() -> None:
         if record["kind"] in {1, 2}
     )
     assert all(
+        record["correlation_id"] > 0
+        for record in records
+        if record["kind"] in {5, 6, 7, 8}
+    )
+    assert all(
         "cudaLaunchKernel" in record["name"]
         for record in records
         if record["kind"] in {1, 2}
@@ -209,8 +271,20 @@ def main() -> None:
         for record in records
         if record["kind"] in {3, 4}
     )
+    transfer_records = [
+        record for record in records if record["kind"] in {5, 6, 7, 8}
+    ]
+    assert all(record["bytes"] == 4 * (1 << 20) for record in transfer_records)
+    assert collections.Counter(
+        record["copy_kind"] for record in records if record["kind"] in {5, 6}
+    ) == {1: 4, 2: 2}
+    assert all(
+        record["memset_value"] == 0
+        for record in records
+        if record["kind"] in {7, 8}
+    )
 
-    assert len(events) == 12
+    assert len(events) == 20
     assert {event["event_type"] for event in events} == EXPECTED_EVENT_TYPES
     assert all(event["session_id"] == "xp_cupti_live" for event in events)
     assert [event["sequence"] for event in events] == list(range(len(events)))
@@ -238,12 +312,43 @@ def main() -> None:
         and event["timestamp_error_ns"] is None
         and event["timestamp_raw"] == event["timestamp_ns"]
         for event in events
-        if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
+        if event["event_type"]
+        in {
+            "gpu_kernel_start",
+            "gpu_kernel_end",
+            "gpu_memcpy_start",
+            "gpu_memcpy_end",
+            "gpu_memset_start",
+            "gpu_memset_end",
+        }
     )
     assert all(
         "xprobe_test_kernel" in event["cuda"]["kernel_name"]
         for event in events
         if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
+    )
+    transfer_events = [
+        event
+        for event in events
+        if event["event_type"]
+        in {
+            "gpu_memcpy_start",
+            "gpu_memcpy_end",
+            "gpu_memset_start",
+            "gpu_memset_end",
+        }
+    ]
+    assert all(event["cuda"]["bytes"] == 4 * (1 << 20) for event in transfer_events)
+    assert all(event["cuda"]["kernel_name"] is None for event in transfer_events)
+    assert {
+        event["cuda"]["memcpy_kind"]
+        for event in events
+        if event["event_type"] in {"gpu_memcpy_start", "gpu_memcpy_end"}
+    } == {"HtoD", "DtoH"}
+    assert all(
+        event["attributes"]["memset_value"] == 0
+        for event in events
+        if event["event_type"] in {"gpu_memset_start", "gpu_memset_end"}
     )
     assert measurement["measurement"]["samples"]["matched"] == 3
     assert measurement["measurement"]["latency_ns"]["min"] > 0
@@ -268,6 +373,12 @@ def main() -> None:
     assert [warning["code"] for warning in cross_measurement["warnings"]] == [
         "CLOCK_ERROR_UNAVAILABLE"
     ]
+    assert memcpy_measurement["measurement"]["samples"]["matched"] == 2
+    assert memcpy_measurement["measurement"]["latency_ns"]["min"] > 0
+    assert memcpy_measurement["correlation"]["confidence"] == "exact"
+    assert memset_measurement["measurement"]["samples"]["matched"] == 1
+    assert memset_measurement["measurement"]["latency_ns"]["min"] > 0
+    assert memset_measurement["correlation"]["confidence"] == "exact"
 
     print(
         json.dumps(
@@ -280,6 +391,12 @@ def main() -> None:
                 ],
                 "api_to_kernel_min_ns": cross_measurement["measurement"]["latency_ns"][
                     "min"
+                ],
+                "memcpy_matched": memcpy_measurement["measurement"]["samples"][
+                    "matched"
+                ],
+                "memset_matched": memset_measurement["measurement"]["samples"][
+                    "matched"
                 ],
                 "kinds": counts,
             },

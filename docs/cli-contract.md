@@ -172,9 +172,10 @@ and reports required eBPF, CUPTI, and clock-alignment capabilities.
 
 The current selector grammar recognizes CUDA runtime and driver API callbacks,
 kernel, memcpy, and memset activity. This build can collect
-`cudaLaunchKernel` runtime callbacks, kernel activity, and host entry/return
-probes. Other recognized CUDA events are returned with `collectable: false` and
-make the result invalid until their collectors are implemented.
+`cudaLaunchKernel` runtime callbacks, kernel, memcpy, and memset activity, and
+host entry/return probes. Other recognized CUDA API events are returned with
+`collectable: false` and make the result invalid until their collectors are
+implemented.
 
 Supported match policy spellings are `exact`, `first-after`, `nearest`,
 `stack-nested`, and `stream-order`. `exact` is valid only when both endpoints
@@ -223,11 +224,12 @@ PID; events are sorted and assigned a new measurement session identity. Drop
 counters from capture envelopes are accumulated. Event JSONL has no envelope,
 so it cannot carry a source-level drop count.
 
-Host function entry/return, `cudaLaunchKernel` runtime API, and kernel start/end
-selectors are supported. `exact` joins CUDA endpoints on CUPTI correlation ID;
-host endpoints do not have that key and reject `exact`. `first-after` performs a
-chronological one-to-one greedy match and is always labeled
-`HEURISTIC_CORRELATION`.
+Host function entry/return, `cudaLaunchKernel` runtime API, kernel start/end,
+memcpy start/end, and memset start/end selectors are supported. Memcpy
+selectors accept the optional `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>` filter. `exact`
+joins CUDA endpoints on CUPTI correlation ID; host endpoints do not have that
+key and reject `exact`. `first-after` performs a chronological one-to-one greedy
+match and is always labeled `HEURISTIC_CORRELATION`.
 
 At least one of `--samples` or `--duration-ms` is required. `--max-events`
 defaults to 100,000 and rejects larger captures before correlation. Source
@@ -235,8 +237,8 @@ drops are included in the result and produce an `EVENTS_DROPPED` warning.
 Unknown source records fail instead of being ignored.
 
 Latency is calculated only when both endpoints use the same clock domain or
-have already been normalized. Capture ABI v2 normalizes GPU activity to host
-monotonic time, so API-to-kernel measurement is supported. Legacy ABI v1
+have already been normalized. Capture ABI v2 and newer normalize GPU activity
+to host monotonic time, so API-to-GPU measurement is supported. Legacy ABI v1
 captures remain readable, but API-to-kernel subtraction returns
 `CLOCK_ALIGNMENT_FAILED`. Live multi-source collection from an arbitrary
 running PID is not part of this completed-capture path; the CUPTI agent must
@@ -258,12 +260,13 @@ xprobe dev cupti \
 The command strictly validates the xprobe CUPTI binary ABI and emits one
 versioned `Event` per line. CUDA API names are stored in
 `attributes.cuda_api_name`; GPU records preserve the name supplied by CUPTI in
-`cuda.kernel_name`. API and GPU records expose the exact CUPTI correlation ID.
-ABI v2 GPU records are marked as CUPTI-normalized host monotonic timestamps.
-The serialized activity value is preserved in `timestamp_raw`; CUPTI does not
-expose an interpolation error bound, so `timestamp_error_ns` is null and
-measurement emits `CLOCK_ERROR_UNAVAILABLE`. ABI v1 records retain the legacy
-CUPTI clock domain.
+`cuda.kernel_name`. Transfer records expose byte count, memcpy kind, and memset
+value; the latter is stored in `attributes.memset_value`. API and GPU records
+expose the exact CUPTI correlation ID. ABI v2 and v3 GPU records are marked as
+CUPTI-normalized host monotonic timestamps. The serialized activity value is
+preserved in `timestamp_raw`; CUPTI does not expose an interpolation error
+bound, so `timestamp_error_ns` is null and measurement emits
+`CLOCK_ERROR_UNAVAILABLE`. ABI v1 records retain the legacy CUPTI clock domain.
 
 Malformed headers, unsupported ABI versions, invalid lengths, unknown record
 kinds, and invalid names return `TRACE_EXPORT_FAILED`. Nonzero dropped or
