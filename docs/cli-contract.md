@@ -170,12 +170,9 @@ CUPTI, or modify the target. It resolves host selectors, validates CUDA filters
 and regular expressions, checks the correlation policy against available keys,
 and reports required eBPF, CUPTI, and clock-alignment capabilities.
 
-The current selector grammar recognizes CUDA runtime and driver API callbacks,
-kernel, memcpy, and memset activity. This build can collect
-`cudaLaunchKernel` runtime callbacks, kernel, memcpy, and memset activity, and
-host entry/return probes. Other recognized CUDA API events are returned with
-`collectable: false` and make the result invalid until their collectors are
-implemented.
+The current selector grammar and collector support CUDA Runtime and Driver API
+callbacks, kernel, memcpy, and memset activity, and host entry/return probes.
+API selectors filter both callback domain and exact CUPTI function name.
 
 Supported match policy spellings are `exact`, `first-after`, `nearest`,
 `stack-nested`, and `stream-order`. `exact` is valid only when both endpoints
@@ -253,6 +250,10 @@ selectors accept the optional `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>` filter. `exact`
 joins CUDA endpoints on CUPTI correlation ID; host endpoints do not have that
 key and reject `exact`. `first-after` performs a chronological one-to-one greedy
 match and is always labeled `HEURISTIC_CORRELATION`.
+`nearest` consumes the nearest unused event by absolute timestamp distance and
+is also heuristic. `stack-nested` pairs host entry/return events with a LIFO
+stack per PID/TID. `stream-order` pairs GPU activity only within the same CUDA
+device, context, and stream; both structural policies report `high` confidence.
 
 At least one of `--samples` or `--duration-ms` is required. `--max-events`
 defaults to 100,000 and rejects larger captures before correlation. Source

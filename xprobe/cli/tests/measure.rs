@@ -23,6 +23,9 @@ fn record(kind: u32, timestamp: u64, correlation_id: u32, name: &str) -> [u8; RE
     record[24..28].copy_from_slice(&7_u32.to_le_bytes());
     record[28..32].copy_from_slice(&9_u32.to_le_bytes());
     record[32..36].copy_from_slice(&correlation_id.to_le_bytes());
+    if matches!(kind, 1 | 2) {
+        record[36..40].copy_from_slice(&2_u32.to_le_bytes());
+    }
     record[72..72 + name.len()].copy_from_slice(name.as_bytes());
     record
 }

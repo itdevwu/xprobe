@@ -2,7 +2,7 @@
 
 The CUPTI agent is a bounded in-process collector. It records:
 
-- `cudaLaunchKernel` API entry and exit;
+- all CUDA Runtime and Driver API entry and exit callbacks;
 - concurrent GPU kernel start and end;
 - GPU memcpy and memset start and end;
 - CUPTI correlation, context, stream, device, grid, and block identifiers.
@@ -61,8 +61,9 @@ timestamps during post-processing and the header declares that semantic with
 kind-dependent payload fields and are declared with
 `XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS`.
 
-The runtime callback performs no allocation or file I/O. It captures a host
-timestamp and reserves a record slot atomically. CUPTI activity buffers are
+The API callback performs no allocation or file I/O. It captures a host
+timestamp, callback domain, callback ID, function name, and correlation ID,
+then reserves a record slot atomically. CUPTI activity buffers are
 parsed by the activity completion callback. Final flush waits for asynchronous
 buffer completion before writing the capture with mode `0600`.
 
@@ -107,7 +108,7 @@ target/debug/xprobe measure \
   --json --non-interactive --no-color
 ```
 
-CUPTI API callback timestamps use host monotonic time. The current agent
+CUPTI Runtime and Driver callback timestamps use host monotonic time. The agent
 normalizes GPU activity to the same clock before writing records. The
 measurement command therefore supports exact API-to-GPU subtraction and exact
 kernel/transfer duration measurement.

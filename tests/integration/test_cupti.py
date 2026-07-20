@@ -10,7 +10,7 @@ import tempfile
 
 HEADER = struct.Struct("<8sIIIIQQQ")
 RECORD = struct.Struct("<Q16I128s")
-EXPECTED_COUNTS = {1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 1, 8: 1}
+EXPECTED_ACTIVITY_COUNTS = {3: 3, 4: 3, 5: 3, 6: 3, 7: 1, 8: 1}
 EXPECTED_EVENT_TYPES = {
     "cuda_api_entry",
     "cuda_api_exit",
@@ -223,6 +223,13 @@ def main() -> None:
             raise SystemExit(cross_domain.returncode)
         assert cross_domain.stderr == ""
         cross_measurement = json.loads(cross_domain.stdout)
+        driver_measurement = measure(
+            xprobe,
+            capture,
+            "cuda:driver_api:cuLaunchKernel:entry",
+            "cuda:kernel_start:name~xprobe_test_kernel.*",
+            "3",
+        )
         memcpy_measurement = measure(
             xprobe,
             capture,
@@ -240,19 +247,26 @@ def main() -> None:
 
     counts = collections.Counter(record["kind"] for record in records)
     diagnostics = {"header": header, "counts": counts, "records": records}
-    assert counts == EXPECTED_COUNTS, diagnostics
+    assert counts[1] == counts[2] and counts[1] > 3, diagnostics
+    assert {kind: counts[kind] for kind in EXPECTED_ACTIVITY_COUNTS} == (
+        EXPECTED_ACTIVITY_COUNTS
+    ), diagnostics
     assert header["dropped_records"] == 0
     assert header["unknown_records"] == 0
     assert all(record["timestamp_ns"] > 0 for record in records)
     assert all(record["pid"] > 0 and record["tid"] > 0 for record in records)
 
-    api_correlations = {
-        record["correlation_id"] for record in records if record["kind"] in {1, 2}
+    runtime_launch_correlations = {
+        record["correlation_id"]
+        for record in records
+        if record["kind"] in {1, 2}
+        and record["callback_domain"] == 2
+        and "cudaLaunchKernel" in record["name"]
     }
     kernel_correlations = {
         record["correlation_id"] for record in records if record["kind"] in {3, 4}
     }
-    assert api_correlations == kernel_correlations
+    assert runtime_launch_correlations == kernel_correlations
     assert all(
         record["runtime_correlation_id"] > 0
         for record in records
@@ -263,10 +277,14 @@ def main() -> None:
         for record in records
         if record["kind"] in {5, 6, 7, 8}
     )
-    assert all(
-        "cudaLaunchKernel" in record["name"]
+    assert {record["callback_domain"] for record in records if record["kind"] in {1, 2}} == {
+        1,
+        2,
+    }
+    assert any(
+        "cuLaunchKernel" in record["name"]
         for record in records
-        if record["kind"] in {1, 2}
+        if record["kind"] in {1, 2} and record["callback_domain"] == 1
     )
     assert all(
         "xprobe_test_kernel" in record["name"]
@@ -286,24 +304,31 @@ def main() -> None:
         if record["kind"] in {7, 8}
     )
 
-    assert len(events) == 20
+    assert len(events) == len(records)
     assert {event["event_type"] for event in events} == EXPECTED_EVENT_TYPES
     assert all(event["session_id"] == "xp_cupti_live" for event in events)
     assert [event["sequence"] for event in events] == list(range(len(events)))
     assert [event["timestamp_ns"] for event in events] == sorted(
         event["timestamp_ns"] for event in events
     )
-    event_api_correlations = {
+    event_runtime_launch_correlations = {
         event["cuda"]["correlation_id"]
         for event in events
         if event["event_type"] in {"cuda_api_entry", "cuda_api_exit"}
+        and event["attributes"]["cuda_api_domain"] == "runtime_api"
+        and "cudaLaunchKernel" in event["attributes"]["cuda_api_name"]
     }
     event_kernel_correlations = {
         event["cuda"]["correlation_id"]
         for event in events
         if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
     }
-    assert event_api_correlations == event_kernel_correlations
+    assert event_runtime_launch_correlations == event_kernel_correlations
+    assert {
+        event["attributes"]["cuda_api_domain"]
+        for event in events
+        if event["event_type"] in {"cuda_api_entry", "cuda_api_exit"}
+    } == {"runtime_api", "driver_api"}
     assert all(
         event["clock_domain"] == "host_monotonic"
         for event in events
@@ -375,6 +400,9 @@ def main() -> None:
     assert [warning["code"] for warning in cross_measurement["warnings"]] == [
         "CLOCK_ERROR_UNAVAILABLE"
     ]
+    assert driver_measurement["measurement"]["samples"]["matched"] == 3
+    assert driver_measurement["measurement"]["latency_ns"]["min"] > 0
+    assert driver_measurement["correlation"]["confidence"] == "exact"
     assert memcpy_measurement["measurement"]["samples"]["matched"] == 2
     assert memcpy_measurement["measurement"]["latency_ns"]["min"] > 0
     assert memcpy_measurement["correlation"]["confidence"] == "exact"
@@ -393,6 +421,9 @@ def main() -> None:
                 ],
                 "api_to_kernel_min_ns": cross_measurement["measurement"]["latency_ns"][
                     "min"
+                ],
+                "driver_to_kernel_matched": driver_measurement["measurement"]["samples"][
+                    "matched"
                 ],
                 "memcpy_matched": memcpy_measurement["measurement"]["samples"][
                     "matched"

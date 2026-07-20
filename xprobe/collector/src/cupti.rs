@@ -321,6 +321,15 @@ fn decode_record(
     let mut attributes = BTreeMap::new();
     if is_api {
         attributes.insert("cuda_api_name".to_owned(), Value::String(name.to_owned()));
+        let domain = match read_u32(record, 36) {
+            1 => "driver_api",
+            2 => "runtime_api",
+            _ => "unknown",
+        };
+        attributes.insert(
+            "cuda_api_domain".to_owned(),
+            Value::String(domain.to_owned()),
+        );
     }
     if matches!(kind, 7 | 8) {
         attributes.insert("memset_value".to_owned(), Value::from(read_u32(record, 56)));
@@ -464,6 +473,9 @@ mod tests {
         record[24..28].copy_from_slice(&7_u32.to_le_bytes());
         record[28..32].copy_from_slice(&9_u32.to_le_bytes());
         record[32..36].copy_from_slice(&correlation.to_le_bytes());
+        if matches!(kind, 1 | 2) {
+            record[36..40].copy_from_slice(&2_u32.to_le_bytes());
+        }
         record[44..48].copy_from_slice(&2_u32.to_le_bytes());
         record[48..52].copy_from_slice(&3_u32.to_le_bytes());
         record[52..56].copy_from_slice(&4_u32.to_le_bytes());
@@ -509,6 +521,10 @@ mod tests {
         assert_eq!(
             decoded.events[1].attributes["cuda_api_name"],
             "cudaLaunchKernel"
+        );
+        assert_eq!(
+            decoded.events[1].attributes["cuda_api_domain"],
+            "runtime_api"
         );
         assert_eq!(
             decoded.events[0]

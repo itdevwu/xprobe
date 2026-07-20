@@ -37,7 +37,6 @@ int xprobe_cupti_agent_flush(void)
 #include <cupti.h>
 #include <cupti_activity.h>
 #include <cupti_callbacks.h>
-#include <cupti_runtime_cbid.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -196,15 +195,10 @@ static void initialize_record(struct xprobe_cupti_record *record, uint32_t kind,
     record->stream_id = XPROBE_CUPTI_VALUE_UNKNOWN;
 }
 
-static int is_launch_callback(CUpti_CallbackId callback_id)
-{
-    return callback_id == CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernel_v7000 ||
-           callback_id == CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernel_ptsz_v7000;
-}
-
-static void enqueue_runtime_record(const CUpti_CallbackData *data,
-                                   CUpti_CallbackId callback_id, uint32_t kind,
-                                   uint64_t timestamp_ns)
+static void enqueue_api_record(const CUpti_CallbackData *data,
+                               CUpti_CallbackDomain domain,
+                               CUpti_CallbackId callback_id, uint32_t kind,
+                               uint64_t timestamp_ns)
 {
     struct xprobe_cupti_record record;
 
@@ -212,7 +206,7 @@ static void enqueue_runtime_record(const CUpti_CallbackData *data,
     record.context_id = data->contextUid;
     record.correlation_id = data->correlationId;
     record.runtime_correlation_id = data->correlationId;
-    record.callback_domain = (uint32_t)CUPTI_CB_DOMAIN_RUNTIME_API;
+    record.callback_domain = (uint32_t)domain;
     record.callback_id = callback_id;
     copy_name(record.name, data->functionName);
     enqueue_record(&record);
@@ -226,7 +220,8 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
     uint64_t timestamp_ns;
 
     (void)userdata;
-    if (domain != CUPTI_CB_DOMAIN_RUNTIME_API || !is_launch_callback(callback_id)) {
+    if (domain != CUPTI_CB_DOMAIN_RUNTIME_API &&
+        domain != CUPTI_CB_DOMAIN_DRIVER_API) {
         return;
     }
 
@@ -234,11 +229,11 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
         return;
     }
     if (data->callbackSite == CUPTI_API_ENTER) {
-        enqueue_runtime_record(data, callback_id, XPROBE_CUPTI_CUDA_API_ENTRY,
-                               timestamp_ns);
+        enqueue_api_record(data, domain, callback_id,
+                           XPROBE_CUPTI_CUDA_API_ENTRY, timestamp_ns);
     } else {
-        enqueue_runtime_record(data, callback_id, XPROBE_CUPTI_CUDA_API_EXIT,
-                               timestamp_ns);
+        enqueue_api_record(data, domain, callback_id,
+                           XPROBE_CUPTI_CUDA_API_EXIT, timestamp_ns);
     }
 }
 
@@ -747,19 +742,12 @@ static int initialize_agent(void)
         }
         ++enabled_activity_count;
     }
-    result = cuptiEnableCallback(1U, subscriber, CUPTI_CB_DOMAIN_STATE,
-                                 CUPTI_CBID_STATE_FATAL_ERROR);
+    result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_RUNTIME_API);
     if (result == CUPTI_SUCCESS) {
-        result = cuptiEnableCallback(1U, subscriber, CUPTI_CB_DOMAIN_RUNTIME_API,
-                                     CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernel_v7000);
-    }
-    if (result == CUPTI_SUCCESS) {
-        result = cuptiEnableCallback(
-            1U, subscriber, CUPTI_CB_DOMAIN_RUNTIME_API,
-            CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernel_ptsz_v7000);
+        result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_DRIVER_API);
     }
     if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiEnableCallback", result);
+        report_cupti_error("cuptiEnableDomain", result);
         shutdown_agent();
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }

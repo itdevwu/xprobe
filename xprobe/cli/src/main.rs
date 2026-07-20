@@ -329,10 +329,13 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
     let match_policy = match match_policy.as_str() {
         "exact" => MatchPolicy::Exact,
         "first-after" | "first_after" => MatchPolicy::FirstAfter,
+        "nearest" => MatchPolicy::Nearest,
+        "stack-nested" | "stack_nested" => MatchPolicy::StackNested,
+        "stream-order" | "stream_order" => MatchPolicy::StreamOrder,
         _ => {
             return emit_error(
                 ErrorCode::InvalidCorrelationPolicy,
-                "completed-capture measurement supports exact and first-after".to_owned(),
+                "unsupported measurement correlation policy".to_owned(),
                 true,
                 json,
             );

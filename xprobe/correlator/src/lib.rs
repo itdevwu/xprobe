@@ -89,8 +89,9 @@ enum Selector {
         binary_path: String,
         target: HostTarget,
     },
-    RuntimeApi {
+    Api {
         event_type: EventType,
+        domain: String,
         name: String,
     },
     Kernel {
@@ -106,7 +107,7 @@ enum Selector {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum HostTarget {
     Symbol(String),
     Offset(u64),
@@ -124,7 +125,7 @@ impl Selector {
             ));
         }
         match fields[1] {
-            "runtime_api" => Self::parse_runtime_api(text),
+            "runtime_api" | "driver_api" => Self::parse_api(text),
             "kernel_start" | "kernel_end" => Self::parse_kernel(&fields),
             "memcpy_start" | "memcpy_end" => Self::parse_memcpy(&fields),
             "memset_start" | "memset_end" => Self::parse_memset(text, &fields),
@@ -183,30 +184,25 @@ impl Selector {
         })
     }
 
-    fn parse_runtime_api(text: &str) -> Result<Self, MeasureError> {
+    fn parse_api(text: &str) -> Result<Self, MeasureError> {
         let fields: Vec<&str> = text.split(':').collect();
         if fields.len() != 4 || fields[2].is_empty() {
             return Err(MeasureError::InvalidSelector(
-                "runtime API selector must be cuda:runtime_api:<name>:<entry|exit>".to_owned(),
+                "API selector must be cuda:<runtime_api|driver_api>:<name>:<entry|exit>".to_owned(),
             ));
-        }
-        if fields[2] != "cudaLaunchKernel" {
-            return Err(MeasureError::InvalidSelector(format!(
-                "runtime API {:?} is not present in completed CUPTI captures",
-                fields[2]
-            )));
         }
         let event_type = match fields[3] {
             "entry" => EventType::CudaApiEntry,
             "exit" => EventType::CudaApiExit,
             _ => {
                 return Err(MeasureError::InvalidSelector(
-                    "runtime API boundary must be entry or exit".to_owned(),
+                    "CUDA API boundary must be entry or exit".to_owned(),
                 ));
             }
         };
-        Ok(Self::RuntimeApi {
+        Ok(Self::Api {
             event_type,
+            domain: fields[1].to_owned(),
             name: fields[2].to_owned(),
         })
     }
@@ -305,13 +301,22 @@ impl Selector {
                             }
                     })
             }
-            Self::RuntimeApi { event_type, name } => {
+            Self::Api {
+                event_type,
+                domain,
+                name,
+            } => {
                 event.event_type == *event_type
                     && event
                         .attributes
                         .get("cuda_api_name")
                         .and_then(serde_json::Value::as_str)
                         == Some(name)
+                    && event
+                        .attributes
+                        .get("cuda_api_domain")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(domain)
             }
             Self::Kernel { event_type, name } => {
                 event.event_type == *event_type
@@ -339,6 +344,33 @@ impl Selector {
 
     const fn supports_exact(&self) -> bool {
         !matches!(self, Self::Host { .. })
+    }
+
+    fn supports_stack_nested(&self, end: &Self) -> bool {
+        match (self, end) {
+            (
+                Self::Host {
+                    event_type: EventType::HostFunctionEntry,
+                    binary_path: start_binary,
+                    target: start_target,
+                    ..
+                },
+                Self::Host {
+                    event_type: EventType::HostFunctionExit,
+                    binary_path: end_binary,
+                    target: end_target,
+                    ..
+                },
+            ) => start_binary == end_binary && start_target == end_target,
+            _ => false,
+        }
+    }
+
+    const fn is_gpu_activity(&self) -> bool {
+        matches!(
+            self,
+            Self::Kernel { .. } | Self::Memcpy { .. } | Self::Memset { .. }
+        )
     }
 }
 
@@ -369,13 +401,7 @@ pub fn measure(
     }
     let start_selector = Selector::parse(&options.start_selector)?;
     let end_selector = Selector::parse(&options.end_selector)?;
-    if options.match_policy == MatchPolicy::Exact
-        && (!start_selector.supports_exact() || !end_selector.supports_exact())
-    {
-        return Err(MeasureError::InvalidPolicy(
-            "exact matching requires CUDA endpoints with a deterministic correlation ID".to_owned(),
-        ));
-    }
+    validate_policy(&start_selector, &end_selector, options.match_policy)?;
     let mut starts: Vec<&Event> = events
         .iter()
         .filter(|event| start_selector.matches(event))
@@ -392,11 +418,9 @@ pub fn measure(
     let outcome = match options.match_policy {
         MatchPolicy::Exact => correlate_exact(&starts, &ends, options.samples),
         MatchPolicy::FirstAfter => correlate_first_after(&starts, &ends, options.samples),
-        _ => {
-            return Err(MeasureError::InvalidPolicy(
-                "completed-capture measurement supports exact and first-after".to_owned(),
-            ));
-        }
+        MatchPolicy::Nearest => correlate_nearest(&starts, &ends, options.samples),
+        MatchPolicy::StackNested => correlate_stack_nested(&starts, &ends, options.samples),
+        MatchPolicy::StreamOrder => correlate_stream_order(&starts, &ends, options.samples),
     };
     if outcome.latencies.is_empty() {
         return Err(MeasureError::NoMatchedSamples);
@@ -404,11 +428,7 @@ pub fn measure(
 
     let matched = outcome.latencies.len() as u64;
     let denominator = matched + outcome.unmatched_start + outcome.unmatched_end + outcome.ambiguous;
-    let confidence = match options.match_policy {
-        MatchPolicy::Exact => CorrelationConfidence::Exact,
-        MatchPolicy::FirstAfter => CorrelationConfidence::Heuristic,
-        _ => unreachable!("match policy was validated"),
-    };
+    let (method, confidence) = correlation_metadata(options.match_policy);
     let warnings = measurement_warnings(options, &starts, &ends);
 
     let host_events = events
@@ -433,12 +453,7 @@ pub fn measure(
             latency_ns: statistics(&outcome.latencies),
         },
         correlation: CorrelationSummary {
-            method: match options.match_policy {
-                MatchPolicy::Exact => "exact_cupti_correlation_id",
-                MatchPolicy::FirstAfter => "first_after",
-                _ => unreachable!("match policy was validated"),
-            }
-            .to_owned(),
+            method: method.to_owned(),
             confidence,
             score: ratio(matched, denominator),
         },
@@ -458,6 +473,39 @@ pub fn measure(
         },
         warnings,
     })
+}
+
+fn validate_policy(
+    start: &Selector,
+    end: &Selector,
+    policy: MatchPolicy,
+) -> Result<(), MeasureError> {
+    let message = match policy {
+        MatchPolicy::Exact if !start.supports_exact() || !end.supports_exact() => {
+            Some("exact matching requires CUDA endpoints with a deterministic correlation ID")
+        }
+        MatchPolicy::StackNested if !start.supports_stack_nested(end) => {
+            Some("stack-nested requires entry and return selectors for the same host function")
+        }
+        MatchPolicy::StreamOrder if !start.is_gpu_activity() || !end.is_gpu_activity() => {
+            Some("stream-order requires two GPU activity selectors")
+        }
+        _ => None,
+    };
+    if let Some(message) = message {
+        return Err(MeasureError::InvalidPolicy(message.to_owned()));
+    }
+    Ok(())
+}
+
+const fn correlation_metadata(policy: MatchPolicy) -> (&'static str, CorrelationConfidence) {
+    match policy {
+        MatchPolicy::Exact => ("exact_cupti_correlation_id", CorrelationConfidence::Exact),
+        MatchPolicy::FirstAfter => ("first_after", CorrelationConfidence::Heuristic),
+        MatchPolicy::Nearest => ("nearest", CorrelationConfidence::Heuristic),
+        MatchPolicy::StackNested => ("stack_nested_tid_lifo", CorrelationConfidence::High),
+        MatchPolicy::StreamOrder => ("cuda_stream_order", CorrelationConfidence::High),
+    }
 }
 
 fn validate_options(options: &MeasureOptions) -> Result<(), MeasureError> {
@@ -495,10 +543,13 @@ fn measurement_warnings(
     ends: &[&Event],
 ) -> Vec<Warning> {
     let mut warnings = Vec::new();
-    if options.match_policy == MatchPolicy::FirstAfter {
+    if matches!(
+        options.match_policy,
+        MatchPolicy::FirstAfter | MatchPolicy::Nearest
+    ) {
         warnings.push(warning(
             "HEURISTIC_CORRELATION",
-            "first-after matching does not prove request-level causality",
+            "temporal matching does not prove request-level causality",
         ));
     }
     if options.dropped_events != 0 {
@@ -663,6 +714,162 @@ fn correlate_first_after(starts: &[&Event], ends: &[&Event], limit: Option<usize
         unmatched_end,
         ambiguous: 0,
     }
+}
+
+fn correlate_nearest(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+    let limit = limit.unwrap_or(usize::MAX);
+    let mut available = BTreeMap::<u64, Vec<&Event>>::new();
+    for end in ends {
+        available.entry(end.timestamp_ns).or_default().push(end);
+    }
+    let mut latencies = Vec::new();
+    let mut unmatched_start = 0_u64;
+    let mut reached_limit = false;
+    for (index, start) in starts.iter().enumerate() {
+        if latencies.len() == limit {
+            reached_limit = true;
+            break;
+        }
+        let before = available
+            .range(..=start.timestamp_ns)
+            .next_back()
+            .map(|(timestamp, _)| *timestamp);
+        let after = available
+            .range(start.timestamp_ns..)
+            .next()
+            .map(|(timestamp, _)| *timestamp);
+        let selected = match (before, after) {
+            (Some(before), Some(after)) => {
+                if start.timestamp_ns - before < after - start.timestamp_ns {
+                    before
+                } else {
+                    after
+                }
+            }
+            (Some(timestamp), None) | (None, Some(timestamp)) => timestamp,
+            (None, None) => {
+                unmatched_start += (starts.len() - index) as u64;
+                break;
+            }
+        };
+        latencies.push(selected.abs_diff(start.timestamp_ns));
+        let bucket = available
+            .get_mut(&selected)
+            .expect("selected timestamp must remain available");
+        bucket.pop().expect("timestamp bucket must be nonempty");
+        if bucket.is_empty() {
+            available.remove(&selected);
+        }
+    }
+    Outcome {
+        latencies,
+        unmatched_start,
+        unmatched_end: if reached_limit {
+            0
+        } else {
+            available.values().map(Vec::len).sum::<usize>() as u64
+        },
+        ambiguous: 0,
+    }
+}
+
+fn correlate_stack_nested(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+    let limit = limit.unwrap_or(usize::MAX);
+    let mut timeline = starts
+        .iter()
+        .map(|event| (event.timestamp_ns, 0_u8, *event))
+        .chain(ends.iter().map(|event| (event.timestamp_ns, 1_u8, *event)))
+        .collect::<Vec<_>>();
+    timeline.sort_by_key(|(timestamp, boundary, _)| (*timestamp, *boundary));
+    let mut stacks = BTreeMap::<(u32, u32), Vec<&Event>>::new();
+    let mut pairs = Vec::new();
+    let mut unmatched_end = 0_u64;
+    for (_, boundary, event) in timeline {
+        let key = (event.pid, event.tid);
+        if boundary == 0 {
+            stacks.entry(key).or_default().push(event);
+        } else if let Some(start) = stacks.get_mut(&key).and_then(Vec::pop) {
+            if pairs.len() < limit {
+                pairs.push((start.timestamp_ns, event.timestamp_ns - start.timestamp_ns));
+            }
+        } else {
+            unmatched_end += 1;
+        }
+    }
+    pairs.sort_by_key(|(timestamp, _)| *timestamp);
+    Outcome {
+        latencies: pairs.into_iter().map(|(_, latency)| latency).collect(),
+        unmatched_start: stacks.values().map(Vec::len).sum::<usize>() as u64,
+        unmatched_end,
+        ambiguous: 0,
+    }
+}
+
+type StreamKey = (u32, u32, u32, u64);
+
+fn correlate_stream_order(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+    let mut start_groups = BTreeMap::<StreamKey, Vec<&Event>>::new();
+    let mut end_groups = BTreeMap::<StreamKey, Vec<&Event>>::new();
+    let mut unmatched_start = group_by_stream(starts, &mut start_groups);
+    let mut unmatched_end = group_by_stream(ends, &mut end_groups);
+    let mut pairs = Vec::new();
+    for (key, group) in start_groups {
+        let Some(end_group) = end_groups.remove(&key) else {
+            unmatched_start += group.len() as u64;
+            continue;
+        };
+        let mut end_index = 0;
+        for start in group {
+            while end_index < end_group.len()
+                && end_group[end_index].timestamp_ns < start.timestamp_ns
+            {
+                unmatched_end += 1;
+                end_index += 1;
+            }
+            if let Some(end) = end_group.get(end_index) {
+                pairs.push((start.timestamp_ns, end.timestamp_ns - start.timestamp_ns));
+                end_index += 1;
+            } else {
+                unmatched_start += 1;
+            }
+        }
+        unmatched_end += (end_group.len() - end_index) as u64;
+    }
+    unmatched_end += end_groups.values().map(Vec::len).sum::<usize>() as u64;
+    pairs.sort_by_key(|(timestamp, _)| *timestamp);
+    if let Some(limit) = limit {
+        pairs.truncate(limit);
+    }
+    Outcome {
+        latencies: pairs.into_iter().map(|(_, latency)| latency).collect(),
+        unmatched_start,
+        unmatched_end,
+        ambiguous: 0,
+    }
+}
+
+fn group_by_stream<'a>(
+    events: &[&'a Event],
+    groups: &mut BTreeMap<StreamKey, Vec<&'a Event>>,
+) -> u64 {
+    let mut unmatched = 0;
+    for event in events {
+        let Some(cuda) = event.cuda.as_ref() else {
+            unmatched += 1;
+            continue;
+        };
+        let (Some(device), Some(context), Some(stream)) =
+            (cuda.device_id, cuda.context_id, cuda.stream_id)
+        else {
+            unmatched += 1;
+            continue;
+        };
+        groups
+            .entry((event.pid, device, context, stream))
+            .or_default()
+            .push(event);
+    }
+    unmatched
 }
 
 fn correlation_id(event: &Event) -> Option<u32> {
@@ -941,5 +1148,67 @@ mod tests {
                 .matched,
             1
         );
+    }
+
+    #[test]
+    fn nearest_consumes_each_end_once() {
+        let events = vec![
+            event(EventType::GpuKernelStart, 100, 1),
+            event(EventType::GpuKernelStart, 210, 2),
+            event(EventType::GpuKernelEnd, 90, 9),
+            event(EventType::GpuKernelEnd, 230, 8),
+        ];
+        let result = measure(&events, &options(MatchPolicy::Nearest)).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 10);
+        assert_eq!(result.measurement.latency_ns.max, 20);
+        assert_eq!(result.correlation.method, "nearest");
+        assert_eq!(result.warnings[0].code, "HEURISTIC_CORRELATION");
+    }
+
+    #[test]
+    fn stack_nested_pairs_host_returns_lifo_per_thread() {
+        let entries = [host_event(100), host_event(120)];
+        let mut first_exit = host_event(150);
+        first_exit.event_type = EventType::HostFunctionExit;
+        first_exit.host.as_mut().expect("host payload").probe_kind = HostProbeKind::Uretprobe;
+        let mut second_exit = host_event(200);
+        second_exit.event_type = EventType::HostFunctionExit;
+        second_exit.host.as_mut().expect("host payload").probe_kind = HostProbeKind::Uretprobe;
+        let events = vec![
+            entries[0].clone(),
+            entries[1].clone(),
+            first_exit,
+            second_exit,
+        ];
+        let mut options = options(MatchPolicy::StackNested);
+        options.start_selector = "uprobe:/srv/libserver.so:handle_request:entry".to_owned();
+        options.end_selector = "uprobe:/srv/libserver.so:handle_request:return".to_owned();
+
+        let result = measure(&events, &options).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 30);
+        assert_eq!(result.measurement.latency_ns.max, 100);
+        assert_eq!(result.correlation.method, "stack_nested_tid_lifo");
+        assert_eq!(result.correlation.confidence, CorrelationConfidence::High);
+    }
+
+    #[test]
+    fn stream_order_never_pairs_across_cuda_streams() {
+        let mut events = vec![
+            event(EventType::GpuKernelStart, 100, 1),
+            event(EventType::GpuKernelStart, 110, 2),
+            event(EventType::GpuKernelEnd, 150, 9),
+            event(EventType::GpuKernelEnd, 170, 8),
+        ];
+        events[1].cuda.as_mut().expect("CUDA payload").stream_id = Some(3);
+        events[2].cuda.as_mut().expect("CUDA payload").stream_id = Some(3);
+
+        let result = measure(&events, &options(MatchPolicy::StreamOrder)).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 40);
+        assert_eq!(result.measurement.latency_ns.max, 70);
+        assert_eq!(result.correlation.method, "cuda_stream_order");
+        assert_eq!(result.correlation.confidence, CorrelationConfidence::High);
     }
 }

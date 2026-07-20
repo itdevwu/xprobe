@@ -367,7 +367,7 @@ fn parse_api_selector(
     };
     let domain = fields[1].to_owned();
     let name = fields[2].to_owned();
-    let collectable = domain == "runtime_api" && name == "cudaLaunchKernel";
+    let collectable = matches!(domain.as_str(), "runtime_api" | "driver_api");
     Ok((
         ResolvedCudaSelector {
             event_type,
@@ -499,7 +499,8 @@ fn supports_exact(start: &EndpointKind, end: &EndpointKind) -> bool {
         | (EndpointKind::Memset, EndpointKind::Memset) => true,
         (EndpointKind::CudaApi { domain, name }, EndpointKind::Kernel)
         | (EndpointKind::Kernel, EndpointKind::CudaApi { domain, name }) => {
-            domain == "runtime_api" && name == "cudaLaunchKernel"
+            (domain == "runtime_api" && name == "cudaLaunchKernel")
+                || (domain == "driver_api" && name == "cuLaunchKernel")
         }
         _ => false,
     }

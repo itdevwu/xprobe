@@ -111,8 +111,8 @@ capture, sequence/drop accounting, and ring-buffer submission. Symbol lookup,
 JSON construction, and timeout handling remain in userspace.
 
 CUPTI callback and activity collection runs inside the target process. The
-agent subscribes to `cudaLaunchKernel` entry/exit callbacks and concurrent
-kernel, memcpy, and memset activity. CUPTI correlation IDs provide the exact
+agent subscribes to all CUDA Runtime/Driver API entry/exit callbacks and
+concurrent kernel, memcpy, and memset activity. CUPTI correlation IDs provide the exact
 join key for start/end intervals and API-to-kernel records. Callback paths
 reserve slots in a bounded in-memory array; activity parsing, draining, and
 binary output happen outside the runtime API callback.
