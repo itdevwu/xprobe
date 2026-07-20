@@ -38,17 +38,22 @@ The output begins with a 48-byte `xprobe_cupti_output_header`, followed by
 and enum values are defined in `cupti/include/xprobe/cupti_agent.h` and versioned
 by `XPROBE_CUPTI_AGENT_ABI_VERSION`.
 
+The current ABI version is 1. Its header feature flags declare host-monotonic
+activity timestamps and transfer record support. ABI versions are reserved for
+incompatible layout or field-encoding changes.
+
 Record kinds are API entry/exit and GPU kernel, memcpy, and memset start/end.
 Related records use the same CUPTI correlation ID. Unknown numeric fields are
 `UINT32_MAX`; names are bounded, null-terminated byte strings. The header
 reports records dropped after the fixed 65,536-record capacity and unexpected
 activity kinds.
 
-ABI v2 registers a `CLOCK_MONOTONIC` timestamp callback before enabling any
+The agent registers a `CLOCK_MONOTONIC` timestamp callback before enabling any
 activity kind. CUPTI uses that callback to linearly normalize GPU activity
-timestamps during post-processing. ABI v3 adds transfer record kinds and
-kind-dependent payload fields while retaining the 48-byte header and 200-byte
-record layout. ABI v1 and v2 remain supported for existing captures.
+timestamps during post-processing and the header declares that semantic with
+`XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS`. Transfer record kinds use
+kind-dependent payload fields and are declared with
+`XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS`.
 
 The runtime callback performs no allocation or file I/O. It captures a host
 timestamp and reserves a record slot atomically. CUPTI activity buffers are
@@ -86,7 +91,7 @@ target/debug/xprobe measure \
   --json --non-interactive --no-color
 ```
 
-CUPTI API callback timestamps use host monotonic time. In capture ABI v2 and
-newer, CUPTI normalizes GPU activity to the same clock before the agent writes
-the record. The measurement command therefore supports exact API-to-GPU
-subtraction and exact kernel/transfer duration measurement.
+CUPTI API callback timestamps use host monotonic time. The current agent
+normalizes GPU activity to the same clock before writing records. The
+measurement command therefore supports exact API-to-GPU subtraction and exact
+kernel/transfer duration measurement.

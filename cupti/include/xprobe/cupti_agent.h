@@ -7,10 +7,15 @@
 extern "C" {
 #endif
 
-#define XPROBE_CUPTI_AGENT_ABI_VERSION 3U
+#define XPROBE_CUPTI_AGENT_ABI_VERSION 1U
 #define XPROBE_CUPTI_OUTPUT_MAGIC "XPCUPTI"
 #define XPROBE_CUPTI_NAME_LENGTH 128U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
+
+enum xprobe_cupti_feature {
+    XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS = 1U << 0,
+    XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS = 1U << 1
+};
 
 enum xprobe_cupti_agent_status {
     XPROBE_CUPTI_AGENT_READY = 0,
@@ -35,7 +40,7 @@ struct xprobe_cupti_output_header {
     uint32_t abi_version;
     uint32_t header_size;
     uint32_t record_size;
-    uint32_t reserved;
+    uint32_t feature_flags;
     uint64_t record_count;
     uint64_t dropped_records;
     uint64_t unknown_records;
@@ -63,10 +68,9 @@ struct xprobe_cupti_record {
 };
 
 /*
- * ABI v3 keeps the v1/v2 record layout. For memcpy and memset records,
- * grid_x/grid_y hold the low/high halves of the byte count. grid_z holds the
- * CUpti_ActivityMemcpyKind for memcpy records, and block_x holds the assigned
- * value for memset records.
+ * For memcpy and memset records, grid_x/grid_y hold the low/high halves of the
+ * byte count. grid_z holds the CUpti_ActivityMemcpyKind for memcpy records,
+ * and block_x holds the assigned value for memset records.
  */
 
 unsigned int xprobe_cupti_agent_abi_version(void);

@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 
-HEADER_V1 = struct.Struct("<8sIIIIQQQ")
+HEADER = struct.Struct("<8sIIIIQQQ")
 RECORD = struct.Struct("<Q16I128s")
 EXPECTED_COUNTS = {1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 1, 8: 1}
 EXPECTED_EVENT_TYPES = {
@@ -46,23 +46,25 @@ def decode_record(raw: bytes) -> dict[str, int | str]:
 
 def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int | str]]]:
     data = path.read_bytes()
-    if len(data) < HEADER_V1.size:
+    if len(data) < HEADER.size:
         raise AssertionError("CUPTI capture is shorter than its header")
-    fields = HEADER_V1.unpack_from(data)
-    if fields[1] != 3:
-        raise AssertionError(f"expected capture ABI 3, found {fields[1]}")
+    fields = HEADER.unpack_from(data)
+    if fields[1] != 1:
+        raise AssertionError(f"expected capture ABI 1, found {fields[1]}")
     header = {
         "abi_version": fields[1],
         "header_size": fields[2],
         "record_size": fields[3],
+        "feature_flags": fields[4],
         "record_count": fields[5],
         "dropped_records": fields[6],
         "unknown_records": fields[7],
     }
     assert fields[0] == b"XPCUPTI\0"
-    assert header["abi_version"] == 3
-    assert header["header_size"] == HEADER_V1.size
+    assert header["abi_version"] == 1
+    assert header["header_size"] == HEADER.size
     assert header["record_size"] == RECORD.size
+    assert header["feature_flags"] == 3
     assert len(data) == header["header_size"] + header["record_count"] * RECORD.size
     records = [
         decode_record(data[offset : offset + RECORD.size])

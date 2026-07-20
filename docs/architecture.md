@@ -91,9 +91,10 @@ immediately; unavailable runtime requirements produce a successful validation
 report with `valid: false` and structured issues. Heuristic temporal policies
 are always labeled as warnings. Validation performs no collection and reports
 `target_mutation: false`. Cross-domain selectors expose
-`needs_clock_alignment: true`. Capture ABI v2 and newer provide the required
-CUPTI-to-host normalization; validation retains the requirement so orchestration
-can select a compatible collector.
+`needs_clock_alignment: true`. The capture
+`HOST_MONOTONIC_TIMESTAMPS` feature provides the required CUPTI-to-host
+normalization; validation retains the requirement so orchestration can select a
+compatible collector.
 
 ## Host and device collection
 
@@ -117,19 +118,20 @@ reserve slots in a bounded in-memory array; activity parsing, draining, and
 binary output happen outside the runtime API callback.
 
 The collector decodes the fixed CUPTI ABI into the same protocol `Event` type
-used by eBPF collectors. Before enabling activity collection, ABI v2 and newer
-agents register `CLOCK_MONOTONIC` as CUPTI's timestamp callback. CUPTI linearly
-maps GPU timestamps into that clock during activity post-processing. ABI v3
-adds transfer records while retaining the 200-byte record layout. The exporter
-writes either source as compact JSONL.
+used by eBPF collectors. Before enabling activity collection, the agent
+registers `CLOCK_MONOTONIC` as CUPTI's timestamp callback. CUPTI linearly maps
+GPU timestamps into that clock during activity post-processing. Capture ABI v1
+uses feature flags to declare this timestamp semantic and transfer record
+support while retaining the 200-byte record layout. The exporter writes either
+source as compact JSONL.
 
 The correlator can measure a completed CUPTI capture within one clock domain or
 between host callback and normalized GPU timestamps.
 Exact matching groups events by CUPTI correlation ID and rejects ambiguous
 groups. First-after matching is chronological, one-to-one, and explicitly
 heuristic. Both paths enforce sample, duration, and event-count bounds and
-report dropped, unmatched, and ambiguous records. Legacy ABI v1 API-to-GPU
-subtraction still returns `CLOCK_ALIGNMENT_FAILED`.
+report dropped, unmatched, and ambiguous records. API-to-GPU subtraction from
+a capture without host-monotonic timestamps returns `CLOCK_ALIGNMENT_FAILED`.
 
 The completed-capture importer accepts CUPTI binary, host capture JSON, and
 Event JSONL inputs. It rejects mixed target PIDs, accumulates source drop

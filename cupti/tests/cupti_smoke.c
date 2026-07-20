@@ -13,12 +13,15 @@ int main(void)
     if (sizeof(struct xprobe_cupti_record) != 200U) {
         return 3;
     }
+    if (offsetof(struct xprobe_cupti_output_header, feature_flags) != 20U) {
+        return 4;
+    }
     if (offsetof(struct xprobe_cupti_record, grid_x) != 44U ||
         offsetof(struct xprobe_cupti_record, grid_z) != 52U ||
         offsetof(struct xprobe_cupti_record, block_x) != 56U ||
         offsetof(struct xprobe_cupti_record, runtime_correlation_id) != 68U ||
         offsetof(struct xprobe_cupti_record, name) != 72U) {
-        return 4;
+        return 5;
     }
     return 0;
 }

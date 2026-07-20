@@ -28,7 +28,7 @@ versioned binary stream.
 | CUDA raw capture | Startup injection or explicit application integration |
 | Unified Event JSONL | Implemented for uprobe and CUPTI captures |
 | Completed-capture exact and first-after measurement | Implemented across host and CUDA inputs |
-| CUPTI-to-host clock normalization | Implemented in capture ABI v2 and newer |
+| CUPTI-to-host clock normalization | Declared by the capture feature flags |
 | Live host and CUDA capture correlation | Implemented for completed captures |
 
 ## Quick start

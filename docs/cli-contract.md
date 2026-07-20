@@ -237,9 +237,10 @@ drops are included in the result and produce an `EVENTS_DROPPED` warning.
 Unknown source records fail instead of being ignored.
 
 Latency is calculated only when both endpoints use the same clock domain or
-have already been normalized. Capture ABI v2 and newer normalize GPU activity
-to host monotonic time, so API-to-GPU measurement is supported. Legacy ABI v1
-captures remain readable, but API-to-kernel subtraction returns
+have already been normalized. Captures with the
+`HOST_MONOTONIC_TIMESTAMPS` feature normalize GPU activity to host monotonic
+time, so API-to-GPU measurement is supported. Captures without that feature
+keep GPU activity in the CUPTI clock and API-to-GPU subtraction returns
 `CLOCK_ALIGNMENT_FAILED`. Live multi-source collection from an arbitrary
 running PID is not part of this completed-capture path; the CUPTI agent must
 still have been loaded before CUDA initialization.
@@ -262,12 +263,14 @@ versioned `Event` per line. CUDA API names are stored in
 `attributes.cuda_api_name`; GPU records preserve the name supplied by CUPTI in
 `cuda.kernel_name`. Transfer records expose byte count, memcpy kind, and memset
 value; the latter is stored in `attributes.memset_value`. API and GPU records
-expose the exact CUPTI correlation ID. ABI v2 and v3 GPU records are marked as
-CUPTI-normalized host monotonic timestamps. The serialized activity value is
-preserved in `timestamp_raw`; CUPTI does not expose an interpolation error
-bound, so `timestamp_error_ns` is null and measurement emits
-`CLOCK_ERROR_UNAVAILABLE`. ABI v1 records retain the legacy CUPTI clock domain.
+expose the exact CUPTI correlation ID. The `HOST_MONOTONIC_TIMESTAMPS` feature
+marks GPU records as CUPTI-normalized host monotonic timestamps, while
+`TRANSFER_RECORDS` declares memcpy/memset record support. The serialized
+activity value is preserved in `timestamp_raw`; CUPTI does not expose an
+interpolation error bound, so `timestamp_error_ns` is null and measurement
+emits `CLOCK_ERROR_UNAVAILABLE`.
 
-Malformed headers, unsupported ABI versions, invalid lengths, unknown record
-kinds, and invalid names return `TRACE_EXPORT_FAILED`. Nonzero dropped or
-unknown record counts are reported on stderr and are never silently discarded.
+Malformed headers, unsupported ABI versions or feature flags, invalid lengths,
+unknown record kinds, and invalid names return `TRACE_EXPORT_FAILED`. Nonzero
+dropped or unknown record counts are reported on stderr and are never silently
+discarded.

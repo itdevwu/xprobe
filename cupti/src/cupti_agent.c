@@ -429,6 +429,8 @@ static int write_output(void)
     header.abi_version = XPROBE_CUPTI_AGENT_ABI_VERSION;
     header.header_size = sizeof(header);
     header.record_size = sizeof(records[0]);
+    header.feature_flags = XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS |
+                           XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS;
     header.record_count = available;
     header.dropped_records =
         atomic_load_explicit(&dropped_records, memory_order_relaxed);

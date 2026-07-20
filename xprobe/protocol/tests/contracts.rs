@@ -319,7 +319,7 @@ fn validation_result_contract_round_trips() {
             "message": "xprobe CUPTI agent is not loaded in the target process"
         }, {
             "code": "CLOCK_ALIGNMENT_FAILED",
-            "message": "the current capture ABI does not align host monotonic and CUPTI activity clocks"
+            "message": "the capture does not declare host-monotonic CUPTI activity timestamps"
         }],
         "warnings": []
     }));

@@ -6,13 +6,14 @@ use xprobe_protocol::{
 };
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
-const ABI_VERSION_V1: u32 = 1;
-const ABI_VERSION_V2: u32 = 2;
-const ABI_VERSION_V3: u32 = 3;
-const HEADER_SIZE_V1: usize = 48;
-const HEADER_SIZE_V1_U32: u32 = 48;
+const ABI_VERSION: u32 = 1;
+const HEADER_SIZE: usize = 48;
+const HEADER_SIZE_U32: u32 = 48;
 const RECORD_SIZE: usize = 200;
 const RECORD_SIZE_U32: u32 = 200;
+const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
+const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
+const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS | FEATURE_TRANSFER_RECORDS;
 const UNKNOWN_U32: u32 = u32::MAX;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +30,7 @@ pub enum CuptiDecodeError {
     },
     InvalidMagic,
     UnsupportedAbi(u32),
+    UnsupportedFeatureFlags(u32),
     InvalidHeaderSize {
         version: u32,
         actual: u32,
@@ -54,11 +56,17 @@ impl fmt::Display for CuptiDecodeError {
         match self {
             Self::HeaderTooShort { actual } => write!(
                 formatter,
-                "CUPTI capture header requires at least {HEADER_SIZE_V1} bytes, found {actual}"
+                "CUPTI capture header requires at least {HEADER_SIZE} bytes, found {actual}"
             ),
             Self::InvalidMagic => formatter.write_str("CUPTI capture magic is invalid"),
             Self::UnsupportedAbi(version) => {
                 write!(formatter, "unsupported CUPTI capture ABI version {version}")
+            }
+            Self::UnsupportedFeatureFlags(flags) => {
+                write!(
+                    formatter,
+                    "unsupported CUPTI capture feature flags {flags:#x}"
+                )
             }
             Self::InvalidHeaderSize {
                 version,
@@ -97,17 +105,16 @@ impl Error for CuptiDecodeError {}
 
 /// Decode an xprobe CUPTI binary capture into versioned protocol events.
 ///
-/// ABI v2 and v3 GPU timestamps have already been normalized by CUPTI using
-/// the agent's host monotonic timestamp callback. ABI v1 remains readable and
-/// keeps GPU timestamps in the legacy CUPTI clock domain. ABI v3 adds memcpy
-/// and memset records without changing the fixed record size.
+/// The capture header advertises timestamp and record capabilities with
+/// feature flags. GPU activity uses the host monotonic clock when the
+/// corresponding feature is set; otherwise it remains in CUPTI's clock.
 ///
 /// # Errors
 ///
 /// Returns [`CuptiDecodeError`] when the capture header, size, record kind, or
 /// bounded name does not match a supported ABI.
 pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, CuptiDecodeError> {
-    if bytes.len() < HEADER_SIZE_V1 {
+    if bytes.len() < HEADER_SIZE {
         return Err(CuptiDecodeError::HeaderTooShort {
             actual: bytes.len(),
         });
@@ -117,26 +124,27 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     }
 
     let abi_version = read_u32(bytes, 8);
-    let (expected_header_size, expected_header_size_u32) = match abi_version {
-        ABI_VERSION_V1 | ABI_VERSION_V2 | ABI_VERSION_V3 => (HEADER_SIZE_V1, HEADER_SIZE_V1_U32),
-        _ => return Err(CuptiDecodeError::UnsupportedAbi(abi_version)),
-    };
+    if abi_version != ABI_VERSION {
+        return Err(CuptiDecodeError::UnsupportedAbi(abi_version));
+    }
     let header_size = read_u32(bytes, 12);
-    if header_size != expected_header_size_u32 {
+    if header_size != HEADER_SIZE_U32 {
         return Err(CuptiDecodeError::InvalidHeaderSize {
             version: abi_version,
             actual: header_size,
-            expected: expected_header_size_u32,
-        });
-    }
-    if bytes.len() < expected_header_size {
-        return Err(CuptiDecodeError::HeaderTooShort {
-            actual: bytes.len(),
+            expected: HEADER_SIZE_U32,
         });
     }
     let record_size = read_u32(bytes, 16);
     if record_size != RECORD_SIZE_U32 {
         return Err(CuptiDecodeError::InvalidRecordSize(record_size));
+    }
+    let feature_flags = read_u32(bytes, 20);
+    let unsupported_features = feature_flags & !SUPPORTED_FEATURES;
+    if unsupported_features != 0 {
+        return Err(CuptiDecodeError::UnsupportedFeatureFlags(
+            unsupported_features,
+        ));
     }
 
     let record_count = usize::try_from(read_u64(bytes, 24))
@@ -144,7 +152,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     let payload_size = record_count
         .checked_mul(RECORD_SIZE)
         .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
-    let expected_size = expected_header_size
+    let expected_size = HEADER_SIZE
         .checked_add(payload_size)
         .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
     if bytes.len() != expected_size {
@@ -155,11 +163,8 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     }
 
     let mut events = Vec::with_capacity(record_count);
-    for (index, record) in bytes[expected_header_size..]
-        .chunks_exact(RECORD_SIZE)
-        .enumerate()
-    {
-        events.push(decode_record(record, index, session_id, abi_version)?);
+    for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
+        events.push(decode_record(record, index, session_id, feature_flags)?);
     }
     events.sort_by_key(|event| event.timestamp_ns);
     let mut sequence = 0_u64;
@@ -182,7 +187,7 @@ fn decode_record(
     record: &[u8],
     index: usize,
     session_id: &str,
-    abi_version: u32,
+    feature_flags: u32,
 ) -> Result<Event, CuptiDecodeError> {
     let kind = read_u32(record, 8);
     let (source, event_type) = match kind {
@@ -190,14 +195,18 @@ fn decode_record(
         2 => (EventSource::CuptiCallback, EventType::CudaApiExit),
         3 => (EventSource::CuptiActivity, EventType::GpuKernelStart),
         4 => (EventSource::CuptiActivity, EventType::GpuKernelEnd),
-        5 if abi_version >= ABI_VERSION_V3 => {
+        5 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
             (EventSource::CuptiActivity, EventType::GpuMemcpyStart)
         }
-        6 if abi_version >= ABI_VERSION_V3 => (EventSource::CuptiActivity, EventType::GpuMemcpyEnd),
-        7 if abi_version >= ABI_VERSION_V3 => {
+        6 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
+            (EventSource::CuptiActivity, EventType::GpuMemcpyEnd)
+        }
+        7 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
             (EventSource::CuptiActivity, EventType::GpuMemsetStart)
         }
-        8 if abi_version >= ABI_VERSION_V3 => (EventSource::CuptiActivity, EventType::GpuMemsetEnd),
+        8 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
+            (EventSource::CuptiActivity, EventType::GpuMemsetEnd)
+        }
         _ => return Err(CuptiDecodeError::UnknownRecordKind { index, kind }),
     };
     let timestamp_raw = read_u64(record, 0);
@@ -216,7 +225,7 @@ fn decode_record(
     let is_end = matches!(kind, 4 | 6 | 8);
     let (timestamp_ns, clock_domain, timestamp_error_ns) = if is_api {
         (timestamp_raw, ClockDomain::HostMonotonic, None)
-    } else if abi_version >= ABI_VERSION_V2 {
+    } else if feature_flags & FEATURE_HOST_MONOTONIC_TIMESTAMPS != 0 {
         (
             timestamp_raw,
             ClockDomain::CuptiNormalizedToHostMonotonic,
@@ -324,14 +333,14 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CuptiDecodeError, HEADER_SIZE_V1, OUTPUT_MAGIC, RECORD_SIZE, decode_capture};
+    use super::{CuptiDecodeError, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture};
     use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind};
 
     fn capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
-        let mut bytes = vec![0_u8; HEADER_SIZE_V1 + records.len() * RECORD_SIZE];
+        let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
         bytes[0..8].copy_from_slice(OUTPUT_MAGIC);
-        bytes[8..12].copy_from_slice(&1_u32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&super::HEADER_SIZE_V1_U32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&super::ABI_VERSION.to_le_bytes());
+        bytes[12..16].copy_from_slice(&super::HEADER_SIZE_U32.to_le_bytes());
         bytes[16..20].copy_from_slice(&super::RECORD_SIZE_U32.to_le_bytes());
         bytes[24..32].copy_from_slice(
             &u64::try_from(records.len())
@@ -339,33 +348,21 @@ mod tests {
                 .to_le_bytes(),
         );
         for (index, record) in records.iter().enumerate() {
-            let offset = HEADER_SIZE_V1 + index * RECORD_SIZE;
+            let offset = HEADER_SIZE + index * RECORD_SIZE;
             bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
         }
         bytes
     }
 
     fn normalized_capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
-        let mut bytes = vec![0_u8; HEADER_SIZE_V1 + records.len() * RECORD_SIZE];
-        bytes[0..8].copy_from_slice(OUTPUT_MAGIC);
-        bytes[8..12].copy_from_slice(&2_u32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&super::HEADER_SIZE_V1_U32.to_le_bytes());
-        bytes[16..20].copy_from_slice(&super::RECORD_SIZE_U32.to_le_bytes());
-        bytes[24..32].copy_from_slice(
-            &u64::try_from(records.len())
-                .expect("test record count must fit u64")
-                .to_le_bytes(),
-        );
-        for (index, record) in records.iter().enumerate() {
-            let offset = HEADER_SIZE_V1 + index * RECORD_SIZE;
-            bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
-        }
+        let mut bytes = capture(records);
+        bytes[20..24].copy_from_slice(&super::FEATURE_HOST_MONOTONIC_TIMESTAMPS.to_le_bytes());
         bytes
     }
 
     fn transfer_capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
         let mut bytes = normalized_capture(records);
-        bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&super::SUPPORTED_FEATURES.to_le_bytes());
         bytes
     }
 
@@ -446,10 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_v3_record_kinds_in_older_captures() {
+    fn rejects_transfer_records_without_feature_flag() {
         let memcpy = transfer_record(5, 100, 1, 4096, 1);
         let error = decode_capture(&normalized_capture(&[memcpy]), "xp_test")
-            .expect_err("ABI v2 must not decode ABI v3 record kinds");
+            .expect_err("transfer records require their feature flag");
         assert_eq!(
             error,
             CuptiDecodeError::UnknownRecordKind { index: 0, kind: 5 }
@@ -457,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_v2_gpu_timestamps_to_host_monotonic() {
+    fn normalizes_flagged_gpu_timestamps_to_host_monotonic() {
         let api = record(1, 10_400, 42, "cudaLaunchKernel");
         let kernel = record(3, 10_525, 42, "test_kernel");
         let decoded = decode_capture(&normalized_capture(&[kernel, api]), "xp_test")
@@ -483,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_v3_memcpy_and_memset_activity() {
+    fn decodes_flagged_memcpy_and_memset_activity() {
         let bytes = (1_u64 << 32) + 99;
         let memcpy = transfer_record(5, 10_500, 43, bytes, 1);
         let memset = transfer_record(8, 10_700, 44, 4096, 0xab);
@@ -504,6 +501,16 @@ mod tests {
         assert_eq!(memset_payload.bytes, Some(4096));
         assert_eq!(memset_payload.end_ns, Some(10_700));
         assert_eq!(memset_event.attributes["memset_value"], 0xab);
+    }
+
+    #[test]
+    fn rejects_unknown_feature_flags() {
+        let mut bytes = capture(&[]);
+        bytes[20..24].copy_from_slice(&4_u32.to_le_bytes());
+        assert_eq!(
+            decode_capture(&bytes, "xp_test"),
+            Err(CuptiDecodeError::UnsupportedFeatureFlags(4))
+        );
     }
 
     #[test]
