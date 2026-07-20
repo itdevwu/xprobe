@@ -97,24 +97,26 @@ xprobe dev uprobe \
   --pid 1234 \
   --binary /srv/app/server \
   --symbol handle_request \
+  [--return] \
   --probe-id 7 \
   --samples 100 \
   --timeout-ms 5000 \
   --json --non-interactive --no-color
 ```
 
-The command captures function-entry events only. `--binary` must resolve to the
-target executable or a shared library visible in `/proc/<pid>/maps`; otherwise
-the command returns `BINARY_NOT_MAPPED`. `--samples` and `--timeout-ms` must both
-be greater than zero.
+The command captures function-entry events by default. `--return` attaches a
+uretprobe and captures function-return events instead. `--binary` must resolve
+to the target executable or a shared library visible in `/proc/<pid>/maps`;
+otherwise the command returns `BINARY_NOT_MAPPED`. `--samples` and
+`--timeout-ms` must both be greater than zero.
 
 The result conforms to `schemas/host-capture.schema.json`. Reaching the deadline
 before the requested sample count is a successful bounded capture with
 `timed_out: true`; attachment, map, malformed-record, permission, and target
 identity failures use the standard error envelope. Events contain host
 monotonic nanoseconds, a sequence number, namespace-local PID/TID, CPU, probe
-id, binary path, and symbol. Argument capture and return probes are not yet
-implemented.
+id, binary path, symbol, and probe kind. Argument capture is not implemented;
+return events currently report `return_value: null`.
 
 Use `--jsonl` instead of `--json` to emit only the normalized `Event` values,
 one compact JSON object per line. This is the same event stream format produced
@@ -170,9 +172,9 @@ and reports required eBPF, CUPTI, and clock-alignment capabilities.
 
 The current selector grammar recognizes CUDA runtime and driver API callbacks,
 kernel, memcpy, and memset activity. This build can collect
-`cudaLaunchKernel` runtime callbacks and kernel activity. Other recognized CUDA
-events and host return probes are returned with `collectable: false` and make
-the result invalid until their collectors are implemented.
+`cudaLaunchKernel` runtime callbacks, kernel activity, and host entry/return
+probes. Other recognized CUDA events are returned with `collectable: false` and
+make the result invalid until their collectors are implemented.
 
 Supported match policy spellings are `exact`, `first-after`, `nearest`,
 `stack-nested`, and `stream-order`. `exact` is valid only when both endpoints

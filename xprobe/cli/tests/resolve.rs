@@ -7,7 +7,8 @@ use std::{
 };
 
 use xprobe_protocol::{
-    ElfObjectKind, ErrorCode, ErrorResponse, HostProbeKind, ResolvedProbe, ValidationResult,
+    ElfObjectKind, ErrorCode, ErrorResponse, EventType, HostProbeKind, ResolvedProbe,
+    ValidationResult,
 };
 
 static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
@@ -193,7 +194,7 @@ fn rejects_an_unknown_symbol_with_a_structured_error() {
 }
 
 #[test]
-fn validate_resolves_a_host_endpoint_without_attaching() {
+fn validate_accepts_a_collectable_return_probe_without_attaching() {
     let target = ResolveTarget::spawn();
     let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
         .args([
@@ -202,7 +203,7 @@ fn validate_resolves_a_host_endpoint_without_attaching() {
             &target.child.id().to_string(),
             "--from",
             &format!(
-                "uprobe:{}:xprobe_resolve_executable_marker:entry",
+                "uprobe:{}:xprobe_resolve_executable_marker:return",
                 target.executable.display()
             ),
             "--to",
@@ -223,6 +224,12 @@ fn validate_resolves_a_host_endpoint_without_attaching() {
         serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
     assert!(result.requirements.needs_ebpf);
     assert!(result.requirements.needs_cupti_activity);
+    assert!(result.start.collectable);
+    assert_eq!(result.start.event_type, EventType::HostFunctionExit);
+    assert_eq!(
+        result.start.host.as_ref().map(|host| &host.probe_kind),
+        Some(&HostProbeKind::Uretprobe)
+    );
     assert_eq!(
         result
             .start

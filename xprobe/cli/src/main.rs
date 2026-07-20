@@ -205,6 +205,10 @@ struct UprobeArgs {
     #[arg(long)]
     symbol: String,
 
+    /// Attach at function return instead of function entry.
+    #[arg(long = "return")]
+    return_probe: bool,
+
     /// Probe identifier stored in each event.
     #[arg(long, default_value_t = 1)]
     probe_id: u32,
@@ -494,6 +498,7 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
         pid,
         binary,
         symbol,
+        return_probe,
         probe_id,
         samples,
         timeout_ms,
@@ -524,6 +529,11 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
         target: report.target.clone(),
         binary,
         symbol,
+        probe_kind: if return_probe {
+            xprobe_protocol::HostProbeKind::Uretprobe
+        } else {
+            xprobe_protocol::HostProbeKind::Uprobe
+        },
         probe_id,
         samples,
         timeout: Duration::from_millis(timeout_ms),

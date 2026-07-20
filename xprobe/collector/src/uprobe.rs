@@ -29,6 +29,7 @@ pub struct UprobeRequest {
     pub target: TargetIdentity,
     pub binary: PathBuf,
     pub symbol: String,
+    pub probe_kind: HostProbeKind,
     pub probe_id: u32,
     pub samples: usize,
     pub timeout: Duration,
@@ -71,10 +72,12 @@ impl UprobeError {
             Self::Libbpf { source, .. } if source.kind() == ErrorKind::PermissionDenied => {
                 ErrorCode::PermissionDenied
             }
-            Self::Libbpf {
-                operation: "attach uprobe",
-                source,
-            } if source.kind() == ErrorKind::NotFound => ErrorCode::SymbolNotFound,
+            Self::Libbpf { operation, source }
+                if matches!(*operation, "attach uprobe" | "attach uretprobe")
+                    && source.kind() == ErrorKind::NotFound =>
+            {
+                ErrorCode::SymbolNotFound
+            }
             Self::TargetNamespace { .. }
             | Self::MissingObjectMember { .. }
             | Self::Libbpf { .. }
@@ -283,6 +286,11 @@ fn collect_raw_events(
             kind: "program",
             name: "xprobe_handle_uprobe",
         })?;
+    let operation = if request.probe_kind == HostProbeKind::Uretprobe {
+        "attach uretprobe"
+    } else {
+        "attach uprobe"
+    };
     let _link = program
         .attach_uprobe_with_opts(
             pid,
@@ -290,10 +298,11 @@ fn collect_raw_events(
             0,
             UprobeOpts {
                 func_name: Some(request.symbol.clone()),
+                retprobe: request.probe_kind == HostProbeKind::Uretprobe,
                 ..UprobeOpts::default()
             },
         )
-        .map_err(|source| libbpf_error("attach uprobe", source))?;
+        .map_err(|source| libbpf_error(operation, source))?;
 
     while raw_events.borrow().len() < request.samples {
         let now = Instant::now();
@@ -329,6 +338,14 @@ fn validate_request(request: &UprobeRequest) -> Result<(), UprobeError> {
     if request.symbol.is_empty() {
         return Err(UprobeError::InvalidRequest(
             "symbol must not be empty".to_owned(),
+        ));
+    }
+    if !matches!(
+        request.probe_kind,
+        HostProbeKind::Uprobe | HostProbeKind::Uretprobe
+    ) {
+        return Err(UprobeError::InvalidRequest(
+            "userspace collector requires uprobe or uretprobe kind".to_owned(),
         ));
     }
     Ok(())
@@ -371,7 +388,11 @@ fn normalize_event(
         event_id: format!("evt_{}", raw.sequence),
         sequence: raw.sequence,
         source: EventSource::Ebpf,
-        event_type: EventType::HostFunctionEntry,
+        event_type: if request.probe_kind == HostProbeKind::Uretprobe {
+            EventType::HostFunctionExit
+        } else {
+            EventType::HostFunctionEntry
+        },
         pid: raw.pid,
         tid: raw.tid,
         cpu: Some(raw.cpu),
@@ -381,7 +402,7 @@ fn normalize_event(
         timestamp_error_ns: None,
         process_start_time: Some(request.target.process_start_time),
         host: Some(HostEvent {
-            probe_kind: HostProbeKind::Uprobe,
+            probe_kind: request.probe_kind.clone(),
             binary_path: Some(binary_path.to_owned()),
             build_id: None,
             symbol: Some(request.symbol.clone()),
@@ -400,7 +421,13 @@ fn libbpf_error(operation: &'static str, source: libbpf_rs::Error) -> UprobeErro
 
 #[cfg(test)]
 mod tests {
-    use super::{RAW_EVENT_SIZE, RawEvent, UprobeError};
+    use std::{path::PathBuf, time::Duration};
+
+    use xprobe_protocol::{EventType, HostProbeKind, TargetIdentity};
+
+    use super::{
+        RAW_EVENT_SIZE, RawEvent, UprobeError, UprobeRequest, normalize_event, validate_request,
+    };
 
     #[test]
     fn decodes_native_ring_buffer_layout() {
@@ -433,5 +460,55 @@ mod tests {
         };
         assert_eq!(expected, RAW_EVENT_SIZE);
         assert_eq!(actual, RAW_EVENT_SIZE - 1);
+    }
+
+    #[test]
+    fn normalizes_return_probe_events() {
+        let request = UprobeRequest {
+            target: TargetIdentity {
+                pid: 1234,
+                process_start_time: 99,
+            },
+            binary: PathBuf::from("/srv/server"),
+            symbol: "handle_request".to_owned(),
+            probe_kind: HostProbeKind::Uretprobe,
+            probe_id: 8,
+            samples: 1,
+            timeout: Duration::from_secs(1),
+        };
+        let raw = RawEvent {
+            timestamp_ns: 1000,
+            sequence: 1,
+            pid: 1234,
+            tid: 1235,
+            cpu: 3,
+            probe_id: 8,
+        };
+        let event = normalize_event(&raw, &request, "session", "/srv/server");
+        assert_eq!(event.event_type, EventType::HostFunctionExit);
+        assert_eq!(
+            event.host.expect("host payload").probe_kind,
+            HostProbeKind::Uretprobe
+        );
+    }
+
+    #[test]
+    fn rejects_non_userspace_probe_kinds() {
+        let request = UprobeRequest {
+            target: TargetIdentity {
+                pid: 1234,
+                process_start_time: 99,
+            },
+            binary: PathBuf::from("/srv/server"),
+            symbol: "handle_request".to_owned(),
+            probe_kind: HostProbeKind::Kprobe,
+            probe_id: 8,
+            samples: 1,
+            timeout: Duration::from_secs(1),
+        };
+        assert!(matches!(
+            validate_request(&request),
+            Err(UprobeError::InvalidRequest(_))
+        ));
     }
 }

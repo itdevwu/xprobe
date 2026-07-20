@@ -98,11 +98,12 @@ can select a compatible collector.
 ## Host and device collection
 
 The implemented host collector embeds a Clang-built BPF object, loads it with
-libbpf-rs, attaches one PID-scoped function-entry uprobe, and consumes fixed-size
-records from a ring buffer. The target PID namespace device and inode are passed
-to BPF so emitted PID/TID values match the namespace used by the CLI. Collection
-stops at a caller-supplied sample limit or deadline, reports ring-buffer drops,
-and detaches through Rust ownership on every return path.
+libbpf-rs, attaches one PID-scoped function-entry uprobe or function-return
+uretprobe, and consumes fixed-size records from a ring buffer. The target PID
+namespace device and inode are passed to BPF so emitted PID/TID values match the
+namespace used by the CLI. Collection stops at a caller-supplied sample limit
+or deadline, reports ring-buffer drops, and detaches through Rust ownership on
+every return path.
 
 The BPF hot path performs only namespace identity filtering, timestamp and CPU
 capture, sequence/drop accounting, and ring-buffer submission. Symbol lookup,

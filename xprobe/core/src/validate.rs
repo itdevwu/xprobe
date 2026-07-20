@@ -182,7 +182,7 @@ fn resolve_endpoint(
         let (event_type, kind, collectable) = match host.probe_kind {
             HostProbeKind::Uprobe => (EventType::HostFunctionEntry, EndpointKind::HostEntry, true),
             HostProbeKind::Uretprobe => {
-                (EventType::HostFunctionExit, EndpointKind::HostReturn, false)
+                (EventType::HostFunctionExit, EndpointKind::HostReturn, true)
             }
             _ => unreachable!("resolve only returns userspace probe kinds"),
         };

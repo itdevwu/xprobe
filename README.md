@@ -7,10 +7,11 @@ coding agents.
 
 The repository is under active development. The current executable discovers
 local tracing capabilities, inspects target processes, and captures bounded
-userspace function-entry events with eBPF uprobes. It also resolves symbol and
-file-offset probe selectors against live PIE executables and shared libraries.
-Its in-process CUPTI agent captures CUDA launch boundaries and correlated GPU
-kernel intervals to a versioned binary stream.
+userspace function entry and return events with eBPF uprobes and uretprobes. It
+also resolves symbol and file-offset probe selectors against live PIE
+executables and shared libraries. Its in-process CUPTI agent captures CUDA
+launch boundaries and correlated GPU kernel intervals to a versioned binary
+stream.
 
 ## Current capabilities
 
@@ -21,14 +22,14 @@ kernel intervals to a versioned binary stream.
 | Versioned public JSON schemas | Implemented |
 | `resolve` for PIE, shared libraries, symbols, offsets, and Build IDs | Implemented |
 | Deterministic selector and correlation validation | Implemented |
-| PID-scoped eBPF uprobe collection | Implemented through `dev uprobe` |
+| PID-scoped eBPF uprobe and uretprobe collection | Implemented through `dev uprobe` |
 | eBPF build pipeline | Embedded libbpf object and ring buffer |
 | CUPTI agent | Runtime launch callbacks and concurrent-kernel activity |
 | CUDA raw capture | Startup injection or explicit application integration |
 | Unified Event JSONL | Implemented for uprobe and CUPTI captures |
 | Completed-capture exact and first-after measurement | Implemented across host and CUDA inputs |
 | CUPTI-to-host clock normalization | Implemented in capture ABI v2 |
-| Live host and CUDA capture correlation | Planned |
+| Live host and CUDA capture correlation | Implemented for completed captures |
 
 ## Quick start
 
@@ -59,6 +60,8 @@ target/debug/xprobe validate --pid <pid> \
   --json --non-interactive --no-color
 target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
   --samples 10 --timeout-ms 5000 --json --non-interactive --no-color
+target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
+  --return --samples 10 --timeout-ms 5000 --json --non-interactive --no-color
 target/debug/xprobe dev cupti --input /tmp/xprobe-cupti.bin \
   --session-id xp_cuda_1 --json --non-interactive --no-color
 target/debug/xprobe measure --input /tmp/xprobe-cupti.bin \
