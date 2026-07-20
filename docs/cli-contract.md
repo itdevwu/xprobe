@@ -193,6 +193,19 @@ a target restart is required. Results conform to
 
 ```bash
 xprobe measure \
+  --input /tmp/xprobe-host.json \
+  --input /tmp/xprobe-cupti.bin \
+  --from 'uprobe:/srv/app/libserver.so:handle_request:entry' \
+  --to 'cuda:kernel_start:name~flash.*' \
+  --match first-after \
+  --samples 100 \
+  --json --non-interactive --no-color
+```
+
+For same-source exact correlation:
+
+```bash
+xprobe measure \
   --input /tmp/xprobe-cupti.bin \
   --from 'cuda:kernel_start:name~flash.*' \
   --to 'cuda:kernel_end:name~flash.*' \
@@ -201,11 +214,18 @@ xprobe measure \
   --json --non-interactive --no-color
 ```
 
-The first measurement path consumes a completed CUPTI capture. It supports
-`cudaLaunchKernel` runtime API selectors, kernel start/end selectors, and the
-`exact` and `first-after` policies. `exact` joins on CUPTI correlation ID;
-`first-after` performs a chronological one-to-one greedy match and is always
-labeled `HEURISTIC_CORRELATION`.
+The measurement path consumes one or more completed inputs. Supported formats
+are CUPTI binary, a host capture result emitted by `dev uprobe --json`, and Event
+JSONL. Repeat `--input` to merge sources. Inputs must contain events from one
+PID; events are sorted and assigned a new measurement session identity. Drop
+counters from capture envelopes are accumulated. Event JSONL has no envelope,
+so it cannot carry a source-level drop count.
+
+Host function entry/return, `cudaLaunchKernel` runtime API, and kernel start/end
+selectors are supported. `exact` joins CUDA endpoints on CUPTI correlation ID;
+host endpoints do not have that key and reject `exact`. `first-after` performs a
+chronological one-to-one greedy match and is always labeled
+`HEURISTIC_CORRELATION`.
 
 At least one of `--samples` or `--duration-ms` is required. `--max-events`
 defaults to 100,000 and rejects larger captures before correlation. Source
@@ -217,7 +237,8 @@ have already been normalized. Capture ABI v2 normalizes GPU activity to host
 monotonic time, so API-to-kernel measurement is supported. Legacy ABI v1
 captures remain readable, but API-to-kernel subtraction returns
 `CLOCK_ALIGNMENT_FAILED`. Live multi-source collection from an arbitrary
-running PID is not part of this completed-capture path.
+running PID is not part of this completed-capture path; the CUPTI agent must
+still have been loaded before CUDA initialization.
 
 The result conforms to `schemas/measurement-result.schema.json`. No matched
 pairs return `NO_MATCHED_SAMPLES`; unsupported policies and unbounded requests

@@ -69,6 +69,13 @@ headers, `nvcc`, and CUPTI:
 just test-cupti-live
 ```
 
+Run the combined host uprobe and CUPTI measurement test with both GPU and BPF
+access:
+
+```bash
+just test-multisource-live
+```
+
 The test mounts the workspace read-only, compiles the agent and a CUDA fixture
 inside the container, injects the agent at CUDA startup, and verifies three API
 entries, API exits, kernel starts, and kernel ends with matching correlation

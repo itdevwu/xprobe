@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use xprobe_collector::{
-    cupti,
+    completed, cupti,
     uprobe::{self, UprobeRequest},
 };
 use xprobe_core::{doctor, inspect, resolve, validate};
@@ -146,9 +146,9 @@ struct ValidateArgs {
 
 #[derive(Debug, Args)]
 struct MeasureArgs {
-    /// Completed xprobe CUPTI binary capture.
-    #[arg(long)]
-    input: PathBuf,
+    /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
+    #[arg(long, required = true)]
+    input: Vec<PathBuf>,
 
     /// Start event selector.
     #[arg(long)]
@@ -304,19 +304,34 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             );
         }
     };
-    let bytes = match fs::read(&input) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return emit_error(
-                ErrorCode::TraceExportFailed,
-                format!("failed to read {}: {error}", input.display()),
-                false,
-                json,
-            );
-        }
-    };
     let session_id = format!("xp_measure_{}", std::process::id());
-    let capture = match cupti::decode_capture(&bytes, &session_id) {
+    let mut captures = Vec::with_capacity(input.len());
+    for path in input {
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return emit_error(
+                    ErrorCode::TraceExportFailed,
+                    format!("failed to read {}: {error}", path.display()),
+                    false,
+                    json,
+                );
+            }
+        };
+        let capture = match completed::decode(&bytes, &session_id) {
+            Ok(capture) => capture,
+            Err(error) => {
+                return emit_error(
+                    ErrorCode::TraceExportFailed,
+                    format!("failed to decode {}: {error}", path.display()),
+                    false,
+                    json,
+                );
+            }
+        };
+        captures.push(capture);
+    }
+    let capture = match completed::merge(captures, &session_id) {
         Ok(capture) => capture,
         Err(error) => {
             return emit_error(ErrorCode::TraceExportFailed, error.to_string(), false, json);

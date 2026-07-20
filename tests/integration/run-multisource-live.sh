@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: run-multisource-live.sh <output-directory>" >&2
+  exit 2
+fi
+
+build_dir=/tmp/xprobe-multisource-live
+cuda_root=/usr/local/cuda
+agent="${build_dir}/libxprobe-cupti.so"
+fixture="${build_dir}/xprobe-multisource-target"
+ready="${build_dir}/ready"
+go="${build_dir}/go"
+stop="${build_dir}/stop"
+host_capture="$1/host.json"
+cupti_capture="$1/cupti.bin"
+gpu_info="$1/gpu.txt"
+compute_capability=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed -n '1p')
+compute_arch=${compute_capability//./}
+nvidia-smi \
+  --query-gpu=name,driver_version,compute_cap \
+  --format=csv,noheader | sed -n '1p' >"${gpu_info}"
+
+mkdir -p "${build_dir}"
+rm -f "${ready}" "${go}" "${stop}"
+
+gcc \
+  -std=c11 -D_GNU_SOURCE -DXPROBE_HAS_CUPTI=1 \
+  -fPIC -shared -O2 -Wall -Wextra -Wpedantic -Werror \
+  -I/workspace/cupti/include -isystem "${cuda_root}/include" \
+  /workspace/cupti/src/cupti_agent.c \
+  -L"${cuda_root}/lib64" -Wl,-rpath,"${cuda_root}/lib64" -lcupti \
+  -o "${agent}"
+
+nvcc \
+  -std=c++17 -O0 \
+  -gencode="arch=compute_${compute_arch},code=sm_${compute_arch}" \
+  /workspace/cupti/tests/cuda_multisource_fixture.cu \
+  -o "${fixture}"
+
+XPROBE_CUPTI_OUTPUT="${cupti_capture}" \
+CUDA_INJECTION64_PATH="${agent}" \
+  "${fixture}" "${ready}" "${go}" "${stop}" &
+target_pid=$!
+trap 'kill "${target_pid}" 2>/dev/null || true; wait "${target_pid}" 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 500); do
+  if [[ -e "${ready}" ]]; then
+    break
+  fi
+  if ! kill -0 "${target_pid}" 2>/dev/null; then
+    wait "${target_pid}"
+  fi
+  sleep 0.01
+done
+if [[ ! -e "${ready}" ]]; then
+  echo "timed out waiting for CUDA fixture readiness" >&2
+  exit 1
+fi
+
+/workspace/target/debug/xprobe dev uprobe \
+  --pid "${target_pid}" \
+  --binary "${fixture}" \
+  --symbol xprobe_request_marker \
+  --samples 3 \
+  --timeout-ms 10000 \
+  --json --non-interactive --no-color >"${host_capture}" &
+collector_pid=$!
+
+sleep 1
+touch "${go}"
+wait "${collector_pid}"
+touch "${stop}"
+wait "${target_pid}"
+trap - EXIT
+chmod 0644 "${host_capture}" "${cupti_capture}" "${gpu_info}"

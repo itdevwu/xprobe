@@ -1,7 +1,9 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
 
 use xprobe_protocol::{
-    CorrelationConfidence, ErrorCode, ErrorResponse, MeasurementResult, SessionStatus,
+    ClockDomain, CorrelationConfidence, ErrorCode, ErrorResponse, Event, EventSource, EventType,
+    HostCaptureResult, HostEvent, HostProbeKind, MeasurementResult, SchemaVersion, SessionStatus,
+    TargetIdentity,
 };
 
 const HEADER_SIZE: usize = 48;
@@ -59,6 +61,53 @@ fn write_normalized_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
         bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
     }
     fs::write(path, bytes).expect("capture fixture must be written");
+}
+
+fn write_host_capture(path: &PathBuf, timestamp_ns: u64) {
+    let target = TargetIdentity {
+        pid: 1234,
+        process_start_time: 99,
+    };
+    let event = Event {
+        schema_version: SchemaVersion::current(),
+        session_id: "host_source".to_owned(),
+        event_id: "evt_host".to_owned(),
+        sequence: 0,
+        source: EventSource::Ebpf,
+        event_type: EventType::HostFunctionEntry,
+        pid: target.pid,
+        tid: 1235,
+        cpu: Some(2),
+        timestamp_raw: timestamp_ns,
+        timestamp_ns,
+        clock_domain: ClockDomain::HostMonotonic,
+        timestamp_error_ns: None,
+        process_start_time: Some(target.process_start_time),
+        host: Some(HostEvent {
+            probe_kind: HostProbeKind::Uprobe,
+            binary_path: Some("/srv/libserver.so".to_owned()),
+            build_id: None,
+            symbol: Some("handle_request".to_owned()),
+            offset: None,
+            return_value: None,
+            arguments: Vec::new(),
+        }),
+        cuda: None,
+        attributes: BTreeMap::new(),
+    };
+    let capture = HostCaptureResult {
+        schema_version: SchemaVersion::current(),
+        ok: true,
+        session_id: "host_source".to_owned(),
+        target,
+        probe_id: 1,
+        captured: 1,
+        dropped: 2,
+        timed_out: false,
+        events: vec![event],
+    };
+    fs::write(path, serde_json::to_vec_pretty(&capture).unwrap())
+        .expect("host capture fixture must be written");
 }
 
 #[test]
@@ -189,6 +238,63 @@ fn measures_api_to_kernel_latency_from_a_normalized_capture() {
     assert_eq!(result.clock.alignment, "cupti_normalized_to_host_monotonic");
     assert_eq!(result.clock.estimated_error_ns, 0);
     assert_eq!(result.warnings[0].code, "CLOCK_ERROR_UNAVAILABLE");
+}
+
+#[test]
+fn measures_host_to_kernel_latency_from_merged_captures() {
+    let host_path = capture_path("host.json");
+    let cupti_path = capture_path("device.bin");
+    write_host_capture(&host_path, 10_000);
+    write_normalized_capture(&cupti_path, &[record(3, 10_525, 11, "test_kernel")]);
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            host_path.to_str().expect("temporary path must be UTF-8"),
+            "--input",
+            cupti_path.to_str().expect("temporary path must be UTF-8"),
+            "--from",
+            "uprobe:/srv/libserver.so:handle_request:entry",
+            "--to",
+            "cuda:kernel_start:name~test.*",
+            "--match",
+            "first-after",
+            "--samples",
+            "1",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    fs::remove_file(host_path).expect("host capture fixture must be removed");
+    fs::remove_file(cupti_path).expect("CUPTI capture fixture must be removed");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: MeasurementResult =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain measurement JSON");
+    assert_eq!(result.measurement.latency_ns.min, 525);
+    assert_eq!(result.measurement.samples.dropped, 2);
+    assert_eq!(result.collection.host_events, 1);
+    assert_eq!(result.collection.cuda_events, 1);
+    assert_eq!(
+        result.correlation.confidence,
+        CorrelationConfidence::Heuristic
+    );
+    assert_eq!(
+        result
+            .warnings
+            .iter()
+            .map(|warning| warning.code.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "HEURISTIC_CORRELATION",
+            "EVENTS_DROPPED",
+            "CLOCK_ERROR_UNAVAILABLE"
+        ]
+    );
 }
 
 #[test]

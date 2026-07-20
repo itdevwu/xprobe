@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
 use regex::Regex;
 use xprobe_protocol::{
     ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary,
-    ErrorCode, Event, EventSource, EventType, LatencyStatistics, MatchPolicy, Measurement,
-    MeasurementResult, SampleSummary, SchemaVersion, SessionStatus, Warning,
+    ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics, MatchPolicy,
+    Measurement, MeasurementResult, SampleSummary, SchemaVersion, SessionStatus, Warning,
 };
 
 #[derive(Debug, Clone)]
@@ -82,6 +82,12 @@ impl Error for MeasureError {}
 
 #[derive(Debug)]
 enum Selector {
+    Host {
+        event_type: EventType,
+        probe_kind: HostProbeKind,
+        binary_path: String,
+        target: HostTarget,
+    },
     RuntimeApi {
         event_type: EventType,
         name: String,
@@ -92,12 +98,21 @@ enum Selector {
     },
 }
 
+#[derive(Debug)]
+enum HostTarget {
+    Symbol(String),
+    Offset(u64),
+}
+
 impl Selector {
     fn parse(text: &str) -> Result<Self, MeasureError> {
+        if text.starts_with("uprobe:") {
+            return Self::parse_host(text);
+        }
         let fields: Vec<&str> = text.splitn(3, ':').collect();
         if fields.first() != Some(&"cuda") || fields.len() < 2 {
             return Err(MeasureError::InvalidSelector(
-                "completed CUPTI captures require a cuda: selector".to_owned(),
+                "completed captures require a uprobe: or cuda: selector".to_owned(),
             ));
         }
         match fields[1] {
@@ -107,6 +122,55 @@ impl Selector {
                 "event {event:?} is not present in completed CUPTI captures"
             ))),
         }
+    }
+
+    fn parse_host(text: &str) -> Result<Self, MeasureError> {
+        let rest = text
+            .strip_prefix("uprobe:")
+            .expect("host selector prefix was checked");
+        let (binary_and_target, boundary) = rest.rsplit_once(':').ok_or_else(|| {
+            MeasureError::InvalidSelector(
+                "uprobe selector requires an entry or return boundary".to_owned(),
+            )
+        })?;
+        let (event_type, probe_kind) = match boundary {
+            "entry" => (EventType::HostFunctionEntry, HostProbeKind::Uprobe),
+            "return" => (EventType::HostFunctionExit, HostProbeKind::Uretprobe),
+            _ => {
+                return Err(MeasureError::InvalidSelector(
+                    "uprobe boundary must be entry or return".to_owned(),
+                ));
+            }
+        };
+        let (binary_path, target) = binary_and_target.rsplit_once(':').ok_or_else(|| {
+            MeasureError::InvalidSelector(
+                "uprobe selector requires a binary path and symbol or offset".to_owned(),
+            )
+        })?;
+        if binary_path.is_empty() || target.is_empty() {
+            return Err(MeasureError::InvalidSelector(
+                "uprobe binary path and target must not be empty".to_owned(),
+            ));
+        }
+        let target = if let Some(hex) = target.strip_prefix("+0x") {
+            HostTarget::Offset(u64::from_str_radix(hex, 16).map_err(|_| {
+                MeasureError::InvalidSelector(
+                    "uprobe offset must be hexadecimal after +0x".to_owned(),
+                )
+            })?)
+        } else if target.starts_with('+') {
+            return Err(MeasureError::InvalidSelector(
+                "uprobe offset must use +0x hexadecimal syntax".to_owned(),
+            ));
+        } else {
+            HostTarget::Symbol(target.to_owned())
+        };
+        Ok(Self::Host {
+            event_type,
+            probe_kind,
+            binary_path: binary_path.to_owned(),
+            target,
+        })
     }
 
     fn parse_runtime_api(text: &str) -> Result<Self, MeasureError> {
@@ -168,6 +232,24 @@ impl Selector {
 
     fn matches(&self, event: &Event) -> bool {
         match self {
+            Self::Host {
+                event_type,
+                probe_kind,
+                binary_path,
+                target,
+            } => {
+                event.event_type == *event_type
+                    && event.host.as_ref().is_some_and(|host| {
+                        host.probe_kind == *probe_kind
+                            && host.binary_path.as_deref() == Some(binary_path.as_str())
+                            && match target {
+                                HostTarget::Symbol(symbol) => {
+                                    host.symbol.as_deref() == Some(symbol.as_str())
+                                }
+                                HostTarget::Offset(offset) => host.offset == Some(*offset),
+                            }
+                    })
+            }
             Self::RuntimeApi { event_type, name } => {
                 event.event_type == *event_type
                     && event
@@ -187,6 +269,10 @@ impl Selector {
                     })
             }
         }
+    }
+
+    const fn supports_exact(&self) -> bool {
+        !matches!(self, Self::Host { .. })
     }
 }
 
@@ -217,6 +303,13 @@ pub fn measure(
     }
     let start_selector = Selector::parse(&options.start_selector)?;
     let end_selector = Selector::parse(&options.end_selector)?;
+    if options.match_policy == MatchPolicy::Exact
+        && (!start_selector.supports_exact() || !end_selector.supports_exact())
+    {
+        return Err(MeasureError::InvalidPolicy(
+            "exact matching requires CUDA endpoints with a deterministic correlation ID".to_owned(),
+        ));
+    }
     let mut starts: Vec<&Event> = events
         .iter()
         .filter(|event| start_selector.matches(event))
@@ -562,7 +655,8 @@ mod tests {
     use std::{collections::BTreeMap, time::Duration};
 
     use xprobe_protocol::{
-        ClockDomain, CudaEvent, Event, EventSource, EventType, MatchPolicy, SchemaVersion,
+        ClockDomain, CorrelationConfidence, CudaEvent, Event, EventSource, EventType, HostEvent,
+        HostProbeKind, MatchPolicy, SchemaVersion,
     };
 
     use super::{MeasureError, MeasureOptions, measure};
@@ -617,6 +711,23 @@ mod tests {
             max_events: 100,
             dropped_events: 0,
         }
+    }
+
+    fn host_event(timestamp: u64) -> Event {
+        let mut event = event(EventType::HostFunctionEntry, timestamp, 0);
+        event.source = EventSource::Ebpf;
+        event.clock_domain = ClockDomain::HostMonotonic;
+        event.cuda = None;
+        event.host = Some(HostEvent {
+            probe_kind: HostProbeKind::Uprobe,
+            binary_path: Some("/srv/libserver.so".to_owned()),
+            build_id: None,
+            symbol: Some("handle_request".to_owned()),
+            offset: None,
+            return_value: None,
+            arguments: Vec::new(),
+        });
+        event
     }
 
     #[test]
@@ -681,6 +792,38 @@ mod tests {
         assert_eq!(result.clock.alignment, "cupti_normalized_to_host_monotonic");
         assert_eq!(result.clock.estimated_error_ns, 7);
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn first_after_measures_host_to_normalized_gpu_latency() {
+        let mut kernel = event(EventType::GpuKernelStart, 175, 1);
+        kernel.clock_domain = ClockDomain::CuptiNormalizedToHostMonotonic;
+        let events = vec![host_event(100), kernel];
+        let mut options = options(MatchPolicy::FirstAfter);
+        options.start_selector = "uprobe:/srv/libserver.so:handle_request:entry".to_owned();
+        options.end_selector = "cuda:kernel_start:name~test.*".to_owned();
+        options.samples = Some(1);
+
+        let result = measure(&events, &options).unwrap();
+        assert_eq!(result.measurement.latency_ns.min, 75);
+        assert_eq!(result.collection.host_events, 1);
+        assert_eq!(result.collection.cuda_events, 1);
+        assert_eq!(
+            result.correlation.confidence,
+            CorrelationConfidence::Heuristic
+        );
+    }
+
+    #[test]
+    fn exact_rejects_host_selectors_without_a_correlation_key() {
+        let events = vec![host_event(100), event(EventType::GpuKernelStart, 175, 1)];
+        let mut options = options(MatchPolicy::Exact);
+        options.start_selector = "uprobe:/srv/libserver.so:handle_request:entry".to_owned();
+        options.end_selector = "cuda:kernel_start:name~test.*".to_owned();
+        assert!(matches!(
+            measure(&events, &options),
+            Err(MeasureError::InvalidPolicy(_))
+        ));
     }
 
     #[test]

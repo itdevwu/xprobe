@@ -36,7 +36,7 @@ cleanup. It does not contain an agent runtime or model integration.
 | `xprobe/core` | Deterministic environment and process logic | Inspection, identity verification, ELF probe resolution |
 | `xprobe/protocol` | Public serde types and schema generation | Implemented |
 | `xprobe/collector` | Host and device collector interfaces | Host uprobe collector and CUPTI decoder |
-| `xprobe/correlator` | Event matching and statistics | Completed-capture exact and first-after measurement |
+| `xprobe/correlator` | Event matching and statistics | Multi-source completed-capture measurement |
 | `xprobe/exporter` | JSONL and trace export | Event JSONL |
 | `xprobe/daemon` | Future privilege-separated sessions | Skeleton |
 | `bpf/` | eBPF programs and build | PID-scoped uprobe and ring buffer |
@@ -128,6 +128,12 @@ groups. First-after matching is chronological, one-to-one, and explicitly
 heuristic. Both paths enforce sample, duration, and event-count bounds and
 report dropped, unmatched, and ambiguous records. Legacy ABI v1 API-to-GPU
 subtraction still returns `CLOCK_ALIGNMENT_FAILED`.
+
+The completed-capture importer accepts CUPTI binary, host capture JSON, and
+Event JSONL inputs. It rejects mixed target PIDs, accumulates source drop
+counters, sorts all events by normalized timestamp, and assigns one measurement
+session identity. Repeated `--input` arguments therefore support host-to-GPU
+`first-after` measurement without implying that the files prove causality.
 
 Supported loading paths are CUDA startup injection through
 `CUDA_INJECTION64_PATH` and explicit application/plugin initialization before
