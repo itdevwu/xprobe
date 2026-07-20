@@ -24,9 +24,10 @@ target_compile_options(xprobe-cupti PRIVATE -Wall -Wextra -Wpedantic -Werror)
 set_target_properties(xprobe-cupti PROPERTIES OUTPUT_NAME xprobe-cupti)
 
 if(XPROBE_CUPTI_INCLUDE_DIR AND XPROBE_CUPTI_LIBRARY)
+  find_package(Threads REQUIRED)
   target_compile_definitions(xprobe-cupti PRIVATE XPROBE_HAS_CUPTI=1 _GNU_SOURCE)
   target_include_directories(xprobe-cupti SYSTEM PRIVATE "${XPROBE_CUPTI_INCLUDE_DIR}")
-  target_link_libraries(xprobe-cupti PRIVATE "${XPROBE_CUPTI_LIBRARY}")
+  target_link_libraries(xprobe-cupti PRIVATE "${XPROBE_CUPTI_LIBRARY}" Threads::Threads)
   get_filename_component(XPROBE_CUPTI_LIBRARY_DIR "${XPROBE_CUPTI_LIBRARY}" DIRECTORY)
   set_target_properties(
     xprobe-cupti

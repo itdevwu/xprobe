@@ -51,6 +51,13 @@ def main() -> None:
             sys.stderr.write(completed.stderr)
             raise SystemExit(completed.returncode)
 
+        live_events = [
+            json.loads(line)
+            for line in (pathlib.Path(output_dir) / "live.jsonl").read_text().splitlines()
+        ]
+        assert any(event["event_type"] == "gpu_kernel_start" for event in live_events)
+        assert {event["session_id"] for event in live_events} == {"xp_cupti_snapshot"}
+
         measured = subprocess.run(
             [
                 xprobe,
@@ -100,6 +107,7 @@ def main() -> None:
                 "matched": result["measurement"]["samples"]["matched"],
                 "host_events": result["collection"]["host_events"],
                 "cuda_events": result["collection"]["cuda_events"],
+                "live_events": len(live_events),
                 "min_ns": result["measurement"]["latency_ns"]["min"],
                 "gpu": gpu,
             },

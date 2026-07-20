@@ -1,4 +1,13 @@
-use std::{collections::BTreeMap, error::Error, fmt, str};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt,
+    io::{self, Read},
+    os::unix::net::UnixStream,
+    path::{Path, PathBuf},
+    str,
+    time::Duration,
+};
 
 use serde_json::Value;
 use xprobe_protocol::{
@@ -102,6 +111,81 @@ impl fmt::Display for CuptiDecodeError {
 }
 
 impl Error for CuptiDecodeError {}
+
+#[derive(Debug)]
+pub enum CuptiSnapshotError {
+    Connect { path: PathBuf, source: io::Error },
+    Configure(io::Error),
+    Read(io::Error),
+    Decode(CuptiDecodeError),
+}
+
+impl fmt::Display for CuptiSnapshotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connect { path, source } => {
+                write!(
+                    formatter,
+                    "failed to connect to {}: {source}",
+                    path.display()
+                )
+            }
+            Self::Configure(source) => {
+                write!(
+                    formatter,
+                    "failed to configure CUPTI snapshot socket: {source}"
+                )
+            }
+            Self::Read(source) => write!(formatter, "failed to read CUPTI snapshot: {source}"),
+            Self::Decode(source) => write!(formatter, "failed to decode CUPTI snapshot: {source}"),
+        }
+    }
+}
+
+impl Error for CuptiSnapshotError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Connect { source, .. } | Self::Configure(source) | Self::Read(source) => {
+                Some(source)
+            }
+            Self::Decode(source) => Some(source),
+        }
+    }
+}
+
+/// Request one immutable capture snapshot from a running CUPTI agent.
+///
+/// Connecting is the request. The agent flushes pending activity records and
+/// sends one ABI capture before closing the socket.
+///
+/// # Errors
+///
+/// Returns [`CuptiSnapshotError`] when the socket cannot be connected or read,
+/// or when the agent sends an invalid capture.
+pub fn snapshot(
+    socket_path: &Path,
+    timeout: Duration,
+    session_id: &str,
+) -> Result<CuptiCapture, CuptiSnapshotError> {
+    let mut stream =
+        UnixStream::connect(socket_path).map_err(|source| CuptiSnapshotError::Connect {
+            path: socket_path.to_owned(),
+            source,
+        })?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(CuptiSnapshotError::Configure)?;
+    let mut bytes = Vec::new();
+    read_snapshot(&mut stream, &mut bytes)?;
+    decode_capture(&bytes, session_id).map_err(CuptiSnapshotError::Decode)
+}
+
+fn read_snapshot(reader: &mut impl Read, bytes: &mut Vec<u8>) -> Result<(), CuptiSnapshotError> {
+    reader
+        .read_to_end(bytes)
+        .map_err(CuptiSnapshotError::Read)?;
+    Ok(())
+}
 
 /// Decode an xprobe CUPTI binary capture into versioned protocol events.
 ///
@@ -333,7 +417,11 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CuptiDecodeError, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture};
+    use std::io::Cursor;
+
+    use super::{
+        CuptiDecodeError, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture, read_snapshot,
+    };
     use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind};
 
     fn capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
@@ -521,5 +609,18 @@ mod tests {
             decode_capture(&bytes, "xp_test"),
             Err(CuptiDecodeError::InvalidCaptureLength { .. })
         ));
+    }
+
+    #[test]
+    fn reads_snapshot_until_eof() {
+        let capture = normalized_capture(&[record(3, 100, 7, "test_kernel")]);
+        let mut reader = Cursor::new(capture);
+        let mut bytes = Vec::new();
+        read_snapshot(&mut reader, &mut bytes).expect("snapshot must read");
+        let decoded = decode_capture(&bytes, "xp_live").expect("snapshot must decode");
+
+        assert_eq!(decoded.events.len(), 1);
+        assert_eq!(decoded.events[0].session_id, "xp_live");
+        assert_eq!(decoded.events[0].event_type, EventType::GpuKernelStart);
     }
 }

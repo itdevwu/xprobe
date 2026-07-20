@@ -31,6 +31,12 @@ first CUDA API and `xprobe_cupti_agent_flush` after device synchronization.
 Initialization is idempotent. Runtime attachment to an already-running process
 is not supported.
 
+Set `XPROBE_CUPTI_SOCKET` before process startup to expose read-only online
+snapshots. Each connection requests one forced CUPTI activity flush; the agent
+sends one complete capture using the same ABI and closes the connection. The
+socket is created with mode `0600`, and an existing path is an initialization
+error.
+
 ## Capture ABI
 
 The output begins with a 48-byte `xprobe_cupti_output_header`, followed by
@@ -77,6 +83,16 @@ Decode a completed capture into the shared Event JSONL format:
 target/debug/xprobe dev cupti \
   --input /tmp/xprobe-cupti.bin \
   --session-id xp_cuda_1 \
+  --json --non-interactive --no-color
+```
+
+Decode a snapshot while the target is still running:
+
+```bash
+target/debug/xprobe dev cupti \
+  --socket /tmp/xprobe-cupti.sock \
+  --timeout-ms 10000 \
+  --session-id xp_cuda_live \
   --json --non-interactive --no-color
 ```
 

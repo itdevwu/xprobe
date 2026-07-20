@@ -17,7 +17,7 @@ mkdir -p "${build_dir}"
 
 gcc \
   -std=c11 -D_GNU_SOURCE -DXPROBE_HAS_CUPTI=1 \
-  -fPIC -shared -O2 -Wall -Wextra -Wpedantic -Werror \
+  -fPIC -shared -pthread -O2 -Wall -Wextra -Wpedantic -Werror \
   -I/workspace/cupti/include -isystem "${cuda_root}/include" \
   /workspace/cupti/src/cupti_agent.c \
   -L"${cuda_root}/lib64" -Wl,-rpath,"${cuda_root}/lib64" -lcupti \

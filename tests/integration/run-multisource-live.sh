@@ -13,8 +13,10 @@ fixture="${build_dir}/xprobe-multisource-target"
 ready="${build_dir}/ready"
 go="${build_dir}/go"
 stop="${build_dir}/stop"
+snapshot_socket="${build_dir}/cupti.sock"
 host_capture="$1/host.json"
 cupti_capture="$1/cupti.bin"
+live_capture="$1/live.jsonl"
 gpu_info="$1/gpu.txt"
 compute_capability=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed -n '1p')
 compute_arch=${compute_capability//./}
@@ -23,11 +25,11 @@ nvidia-smi \
   --format=csv,noheader | sed -n '1p' >"${gpu_info}"
 
 mkdir -p "${build_dir}"
-rm -f "${ready}" "${go}" "${stop}"
+rm -f "${ready}" "${go}" "${stop}" "${snapshot_socket}"
 
 gcc \
   -std=c11 -D_GNU_SOURCE -DXPROBE_HAS_CUPTI=1 \
-  -fPIC -shared -O2 -Wall -Wextra -Wpedantic -Werror \
+  -fPIC -shared -pthread -O2 -Wall -Wextra -Wpedantic -Werror \
   -I/workspace/cupti/include -isystem "${cuda_root}/include" \
   /workspace/cupti/src/cupti_agent.c \
   -L"${cuda_root}/lib64" -Wl,-rpath,"${cuda_root}/lib64" -lcupti \
@@ -40,6 +42,7 @@ nvcc \
   -o "${fixture}"
 
 XPROBE_CUPTI_OUTPUT="${cupti_capture}" \
+XPROBE_CUPTI_SOCKET="${snapshot_socket}" \
 CUDA_INJECTION64_PATH="${agent}" \
   "${fixture}" "${ready}" "${go}" "${stop}" &
 target_pid=$!
@@ -71,7 +74,16 @@ collector_pid=$!
 sleep 1
 touch "${go}"
 wait "${collector_pid}"
+if [[ $(stat -c '%a' "${snapshot_socket}") != 600 ]]; then
+  echo "CUPTI snapshot socket is not mode 0600" >&2
+  exit 1
+fi
+/workspace/target/debug/xprobe dev cupti \
+  --socket "${snapshot_socket}" \
+  --timeout-ms 10000 \
+  --session-id xp_cupti_snapshot \
+  --json --non-interactive --no-color >"${live_capture}"
 touch "${stop}"
 wait "${target_pid}"
 trap - EXIT
-chmod 0644 "${host_capture}" "${cupti_capture}" "${gpu_info}"
+chmod 0644 "${host_capture}" "${cupti_capture}" "${live_capture}" "${gpu_info}"

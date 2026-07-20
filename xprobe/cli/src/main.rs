@@ -247,8 +247,16 @@ struct EventOutputArgs {
 #[derive(Debug, Args)]
 struct CuptiArgs {
     /// Raw binary capture written by the xprobe CUPTI agent.
-    #[arg(long)]
-    input: PathBuf,
+    #[arg(long, required_unless_present = "socket", conflicts_with = "socket")]
+    input: Option<PathBuf>,
+
+    /// Unix socket exposed by a running xprobe CUPTI agent.
+    #[arg(long, required_unless_present = "input", conflicts_with = "input")]
+    socket: Option<PathBuf>,
+
+    /// Stop waiting for an online snapshot after this many milliseconds.
+    #[arg(long, default_value_t = 10_000)]
+    timeout_ms: u64,
 
     /// Session identifier written into every Event.
     #[arg(long)]
@@ -584,26 +592,38 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
 fn run_cupti(args: CuptiArgs) -> ExitCode {
     let CuptiArgs {
         input,
+        socket,
+        timeout_ms,
         session_id,
         json,
         no_color: _,
         non_interactive: _,
     } = args;
-    let bytes = match fs::read(&input) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return emit_error(
-                ErrorCode::TraceExportFailed,
-                format!("failed to read {}: {error}", input.display()),
-                false,
-                json,
-            );
+    let capture = if let Some(input) = input {
+        let bytes = match fs::read(&input) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return emit_error(
+                    ErrorCode::TraceExportFailed,
+                    format!("failed to read {}: {error}", input.display()),
+                    false,
+                    json,
+                );
+            }
+        };
+        match cupti::decode_capture(&bytes, &session_id) {
+            Ok(capture) => capture,
+            Err(error) => {
+                return emit_error(ErrorCode::TraceExportFailed, error.to_string(), false, json);
+            }
         }
-    };
-    let capture = match cupti::decode_capture(&bytes, &session_id) {
-        Ok(capture) => capture,
-        Err(error) => {
-            return emit_error(ErrorCode::TraceExportFailed, error.to_string(), false, json);
+    } else {
+        let socket = socket.expect("clap requires one CUPTI capture source");
+        match cupti::snapshot(&socket, Duration::from_millis(timeout_ms), &session_id) {
+            Ok(capture) => capture,
+            Err(error) => {
+                return emit_error(ErrorCode::TraceExportFailed, error.to_string(), true, json);
+            }
         }
     };
     let output = match events_to_jsonl(&capture.events) {
