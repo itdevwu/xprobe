@@ -217,12 +217,35 @@ xprobe measure \
   --json --non-interactive --no-color
 ```
 
-The measurement path consumes one or more completed inputs. Supported formats
-are CUPTI binary, a host capture result emitted by `dev uprobe --json`, and Event
+For foreground collection from a running target:
+
+```bash
+xprobe measure \
+  --pid 4242 \
+  --cupti-socket /run/user/1000/xprobe-4242.sock \
+  --from 'uprobe:/srv/app/libserver.so:handle_request:entry' \
+  --to 'cuda:kernel_start:name~flash.*' \
+  --match first-after \
+  --samples 100 \
+  --timeout-ms 30000 \
+  --json --non-interactive --no-color
+```
+
+The completed mode consumes one or more `--input` values. Supported formats are
+CUPTI binary, a host capture result emitted by `dev uprobe --json`, and Event
 JSONL. Repeat `--input` to merge sources. Inputs must contain events from one
 PID; events are sorted and assigned a new measurement session identity. Drop
 counters from capture envelopes are accumulated. Event JSONL has no envelope,
 so it cannot carry a source-level drop count.
+
+The live mode uses `--pid` instead of `--input`. It resolves and attaches each
+unique host selector, waits for every BPF link to report readiness, and polls
+the read-only CUPTI snapshot socket when either endpoint is CUDA. The agent must
+have been loaded at target startup with `XPROBE_CUPTI_SOCKET` set. A baseline
+snapshot excludes CUDA events recorded before the measurement. `--timeout-ms`
+bounds collection and cleanup; reaching the sample limit returns `completed`,
+while a timeout with partial matches returns `timed_out`. No matched pairs use
+the standard `NO_MATCHED_SAMPLES` error envelope.
 
 Host function entry/return, `cudaLaunchKernel` runtime API, kernel start/end,
 memcpy start/end, and memset start/end selectors are supported. Memcpy
@@ -241,9 +264,7 @@ have already been normalized. Captures with the
 `HOST_MONOTONIC_TIMESTAMPS` feature normalize GPU activity to host monotonic
 time, so API-to-GPU measurement is supported. Captures without that feature
 keep GPU activity in the CUPTI clock and API-to-GPU subtraction returns
-`CLOCK_ALIGNMENT_FAILED`. Live multi-source collection from an arbitrary
-running PID is not part of this completed-capture path; the CUPTI agent must
-still have been loaded before CUDA initialization.
+`CLOCK_ALIGNMENT_FAILED`.
 
 The result conforms to `schemas/measurement-result.schema.json`. No matched
 pairs return `NO_MATCHED_SAMPLES`; unsupported policies and unbounded requests

@@ -73,7 +73,6 @@ pub fn run() -> Result<CapabilityReport, DoctorError> {
     let cupti = cupti_check()?;
 
     let host_probe_available = ebpf_permissions.status == CheckStatus::Available
-        && perf_event_paranoid.status == CheckStatus::Available
         && kernel_lockdown.status != CheckStatus::Restricted;
     let cuda_available = nvidia_driver.status == CheckStatus::Available
         && cuda_driver.status == CheckStatus::Available

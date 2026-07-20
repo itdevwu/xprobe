@@ -366,11 +366,13 @@ static void CUPTIAPI activity_buffer_completed(
     atomic_fetch_add_explicit(&completed_buffers, 1U, memory_order_release);
 }
 
-static int wait_for_activity_buffers(uint64_t completed_before_flush)
+static int wait_for_activity_buffers(uint64_t completed_before_flush,
+                                     int allow_empty_flush)
 {
     struct timespec now;
     struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
     uint64_t deadline_ns;
+    uint64_t empty_deadline_ns;
     uint64_t quiet_since_ns = 0U;
     uint64_t previous_completed = 0U;
 
@@ -380,6 +382,8 @@ static int wait_for_activity_buffers(uint64_t completed_before_flush)
     }
     deadline_ns = (uint64_t)now.tv_sec * 1000000000U + (uint64_t)now.tv_nsec +
                   5000000000U;
+    empty_deadline_ns = (uint64_t)now.tv_sec * 1000000000U +
+                        (uint64_t)now.tv_nsec + 100000000U;
 
     for (;;) {
         uint64_t completed =
@@ -402,6 +406,11 @@ static int wait_for_activity_buffers(uint64_t completed_before_flush)
             quiet_since_ns = 0U;
         }
         previous_completed = completed;
+
+        if (allow_empty_flush != 0 && completed == completed_before_flush &&
+            now_ns >= empty_deadline_ns) {
+            return XPROBE_CUPTI_AGENT_READY;
+        }
 
         if (nanosleep(&pause, NULL) != 0 && errno != EINTR) {
             fprintf(stderr, "xprobe CUPTI: nanosleep failed: %s\n", strerror(errno));
@@ -519,7 +528,7 @@ static int write_output(void)
     return XPROBE_CUPTI_AGENT_READY;
 }
 
-static int flush_activity_buffers(void)
+static int flush_activity_buffers(int allow_empty_flush)
 {
     CUptiResult result;
     uint64_t completed_before_flush =
@@ -530,7 +539,7 @@ static int flush_activity_buffers(void)
         report_cupti_error("cuptiActivityFlushAll", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
-    if (wait_for_activity_buffers(completed_before_flush) !=
+    if (wait_for_activity_buffers(completed_before_flush, allow_empty_flush) !=
         XPROBE_CUPTI_AGENT_READY) {
         atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_CUPTI_ERROR,
                               memory_order_relaxed);
@@ -578,7 +587,7 @@ static void *serve_snapshots(void *unused)
         if (pthread_mutex_lock(&flush_mutex) != 0) {
             fprintf(stderr, "xprobe CUPTI: failed to lock snapshot flush mutex\n");
         } else {
-            if (flush_activity_buffers() == XPROBE_CUPTI_AGENT_READY &&
+            if (flush_activity_buffers(1) == XPROBE_CUPTI_AGENT_READY &&
                 write_capture(client, 1) != 0) {
                 fprintf(stderr, "xprobe CUPTI: failed to send snapshot: %s\n",
                         strerror(errno));
@@ -863,7 +872,7 @@ int xprobe_cupti_agent_flush(void)
         fprintf(stderr, "xprobe CUPTI: failed to lock final flush mutex\n");
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
-    status = flush_activity_buffers();
+    status = flush_activity_buffers(0);
     if (xprobe_cupti_agent_status() != XPROBE_CUPTI_AGENT_READY) {
         const char *message = NULL;
         unsigned int code = xprobe_cupti_agent_last_cupti_result();

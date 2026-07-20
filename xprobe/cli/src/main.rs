@@ -3,7 +3,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use clap::{Args, Parser, Subcommand};
@@ -16,7 +22,8 @@ use xprobe_correlator::{MeasureOptions, measure};
 use xprobe_exporter::events_to_jsonl;
 use xprobe_protocol::{
     CapabilityReport, CheckResult, ErrorCode, ErrorResponse, HostCaptureResult, MatchPolicy,
-    MeasurementResult, ProcessReport, ResolvedProbe, SchemaVersion, ValidationResult, XprobeError,
+    MeasurementResult, ProcessReport, ResolvedProbe, SchemaVersion, SessionStatus,
+    ValidationResult, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -147,8 +154,20 @@ struct ValidateArgs {
 #[derive(Debug, Args)]
 struct MeasureArgs {
     /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
-    #[arg(long, required = true)]
+    #[arg(long)]
     input: Vec<PathBuf>,
+
+    /// Collect from a running target process instead of completed capture files.
+    #[arg(long)]
+    pid: Option<u32>,
+
+    /// Unix socket exposed by the target's xprobe CUPTI agent.
+    #[arg(long)]
+    cupti_socket: Option<PathBuf>,
+
+    /// Bound foreground collection and cleanup to this many milliseconds.
+    #[arg(long, default_value_t = 30_000)]
+    timeout_ms: u64,
 
     /// Start event selector.
     #[arg(long)]
@@ -293,6 +312,9 @@ fn main() -> ExitCode {
 fn run_measure(args: MeasureArgs) -> ExitCode {
     let MeasureArgs {
         input,
+        pid,
+        cupti_socket,
+        timeout_ms,
         from,
         to,
         match_policy,
@@ -317,75 +339,590 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         }
     };
     let session_id = format!("xp_measure_{}", std::process::id());
+    let options = MeasureOptions {
+        session_id: session_id.clone(),
+        name,
+        start_selector: from.clone(),
+        end_selector: to.clone(),
+        match_policy,
+        samples,
+        duration: duration_ms.map(Duration::from_millis),
+        max_events,
+        dropped_events: 0,
+    };
+
+    if pid.is_some() && !input.is_empty() {
+        return emit_error(
+            ErrorCode::InvalidEventSelector,
+            "--pid and --input select different collection modes".to_owned(),
+            true,
+            json,
+        );
+    }
+    if let Some(pid) = pid {
+        let request = LiveMeasureRequest {
+            pid,
+            cupti_socket,
+            timeout: Duration::from_millis(timeout_ms),
+            match_policy_text: match_policy_name(match_policy),
+            options,
+        };
+        return match collect_live_measurement(&request) {
+            Ok(result) => emit_measurement(&result, json),
+            Err(error) => emit_error(error.code, error.message, error.recoverable, json),
+        };
+    }
+    if input.is_empty() {
+        return emit_error(
+            ErrorCode::TraceExportFailed,
+            "measure requires --input or --pid".to_owned(),
+            true,
+            json,
+        );
+    }
+    if cupti_socket.is_some() {
+        return emit_error(
+            ErrorCode::InvalidEventSelector,
+            "--cupti-socket requires --pid".to_owned(),
+            true,
+            json,
+        );
+    }
+
+    match measure_completed_inputs(&input, &options) {
+        Ok(result) => emit_measurement(&result, json),
+        Err(error) => emit_error(error.code, error.message, error.recoverable, json),
+    }
+}
+
+fn measure_completed_inputs(
+    input: &[PathBuf],
+    options: &MeasureOptions,
+) -> Result<MeasurementResult, CommandFailure> {
     let mut captures = Vec::with_capacity(input.len());
     for path in input {
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return emit_error(
-                    ErrorCode::TraceExportFailed,
-                    format!("failed to read {}: {error}", path.display()),
-                    false,
-                    json,
-                );
-            }
-        };
-        let capture = match completed::decode(&bytes, &session_id) {
-            Ok(capture) => capture,
-            Err(error) => {
-                return emit_error(
-                    ErrorCode::TraceExportFailed,
-                    format!("failed to decode {}: {error}", path.display()),
-                    false,
-                    json,
-                );
-            }
-        };
+        let bytes = fs::read(path).map_err(|error| {
+            CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!("failed to read {}: {error}", path.display()),
+                false,
+            )
+        })?;
+        let capture = completed::decode(&bytes, &options.session_id).map_err(|error| {
+            CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!("failed to decode {}: {error}", path.display()),
+                false,
+            )
+        })?;
         captures.push(capture);
     }
-    let capture = match completed::merge(captures, &session_id) {
-        Ok(capture) => capture,
-        Err(error) => {
-            return emit_error(ErrorCode::TraceExportFailed, error.to_string(), false, json);
-        }
-    };
+    let capture = completed::merge(captures, &options.session_id).map_err(|error| {
+        CommandFailure::new(ErrorCode::TraceExportFailed, error.to_string(), false)
+    })?;
     if capture.unknown_records != 0 {
-        return emit_error(
+        return Err(CommandFailure::new(
             ErrorCode::TraceExportFailed,
             format!(
                 "capture contains {} unknown CUPTI activity records",
                 capture.unknown_records
             ),
             false,
-            json,
-        );
+        ));
     }
     let options = MeasureOptions {
-        session_id,
-        name,
-        start_selector: from,
-        end_selector: to,
-        match_policy,
-        samples,
-        duration: duration_ms.map(Duration::from_millis),
-        max_events,
         dropped_events: capture.dropped_records,
+        ..options.clone()
     };
-    match measure(&capture.events, &options) {
-        Ok(result) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result)
-                        .expect("measurement result must serialize")
-                );
-            } else {
-                print_measurement_result(&result);
-            }
-            ExitCode::SUCCESS
+    measure(&capture.events, &options)
+        .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()))
+}
+
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+    recoverable: bool,
+}
+
+impl CommandFailure {
+    fn new(code: ErrorCode, message: impl Into<String>, recoverable: bool) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            recoverable,
         }
-        Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
     }
+}
+
+struct LiveMeasureRequest {
+    pid: u32,
+    cupti_socket: Option<PathBuf>,
+    timeout: Duration,
+    match_policy_text: &'static str,
+    options: MeasureOptions,
+}
+
+type HostCaptureHandle = JoinHandle<Result<HostCaptureResult, uprobe::UprobeError>>;
+const SNAPSHOT_QUIET_PERIOD: Duration = Duration::from_millis(100);
+
+struct HostCollectors {
+    cancelled: Arc<AtomicBool>,
+    handles: Vec<HostCaptureHandle>,
+}
+
+impl HostCollectors {
+    fn finished(&self) -> bool {
+        self.handles.iter().all(JoinHandle::is_finished)
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    fn join(&mut self) -> Result<Vec<HostCaptureResult>, CommandFailure> {
+        let mut captures = Vec::with_capacity(self.handles.len());
+        for handle in self.handles.drain(..) {
+            let result = handle.join().map_err(|_| {
+                CommandFailure::new(ErrorCode::Internal, "host collector thread panicked", false)
+            })?;
+            captures.push(result.map_err(|error| {
+                CommandFailure::new(error.code(), error.to_string(), error.recoverable())
+            })?);
+        }
+        Ok(captures)
+    }
+}
+
+impl Drop for HostCollectors {
+    fn drop(&mut self) {
+        self.cancel();
+        for handle in self.handles.drain(..) {
+            if handle.join().is_err() {
+                eprintln!("xprobe: host collector thread panicked during cleanup");
+            }
+        }
+    }
+}
+
+struct LiveCollection {
+    report: ProcessReport,
+    socket: Option<PathBuf>,
+    deadline: Instant,
+    collection_end: Option<Instant>,
+    baseline_timestamp: Option<u64>,
+    baseline_dropped: u64,
+    baseline_unknown: u64,
+    collectors: HostCollectors,
+    host_captures: Option<Vec<HostCaptureResult>>,
+    latest_cuda: Option<cupti::CuptiCapture>,
+}
+
+fn collect_live_measurement(
+    request: &LiveMeasureRequest,
+) -> Result<MeasurementResult, CommandFailure> {
+    validate_live_limits(request)?;
+    let mut collection = prepare_live_collection(request)?;
+
+    loop {
+        refresh_live_sources(&mut collection, request)?;
+        let now = Instant::now();
+        if let Some(result) = evaluate_live_result(&collection, request, now)? {
+            return Ok(result);
+        }
+        if now >= collection.deadline {
+            return finish_live_timeout(&mut collection, request);
+        }
+        if collection.socket.is_none() {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+fn validate_live_limits(request: &LiveMeasureRequest) -> Result<(), CommandFailure> {
+    if request.timeout.is_zero() {
+        return Err(CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            "timeout must be greater than zero",
+            true,
+        ));
+    }
+    if request.options.samples == Some(0)
+        || request
+            .options
+            .duration
+            .is_some_and(|duration| duration.is_zero())
+        || request.options.max_events == 0
+        || (request.options.samples.is_none() && request.options.duration.is_none())
+    {
+        return Err(CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            "live measurement requires positive samples or duration and max-events limits",
+            true,
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollection, CommandFailure> {
+    let report = inspect::run(request.pid).map_err(|error| {
+        CommandFailure::new(error.code(), error.to_string(), error.recoverable())
+    })?;
+    let validation = validate::run(
+        &report,
+        &request.options.start_selector,
+        &request.options.end_selector,
+        request.match_policy_text,
+    )
+    .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()))?;
+    if let Some(issue) = validation.issues.first() {
+        return Err(CommandFailure::new(issue.code, issue.message.clone(), true));
+    }
+
+    let socket = if validation.requirements.needs_cupti {
+        Some(request.cupti_socket.clone().ok_or_else(|| {
+            CommandFailure::new(
+                ErrorCode::CuptiAgentNotLoaded,
+                "live CUDA measurement requires --cupti-socket",
+                true,
+            )
+        })?)
+    } else {
+        if request.cupti_socket.is_some() {
+            return Err(CommandFailure::new(
+                ErrorCode::InvalidEventSelector,
+                "--cupti-socket is only valid when a CUDA endpoint is selected",
+                true,
+            ));
+        }
+        None
+    };
+    let baseline = match socket.as_deref() {
+        Some(path) => Some(
+            cupti::snapshot(path, request.timeout, &request.options.session_id).map_err(
+                |error| CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true),
+            )?,
+        ),
+        None => None,
+    };
+    let baseline_timestamp = baseline
+        .as_ref()
+        .and_then(|capture| capture.events.last())
+        .map(|event| event.timestamp_ns);
+    let baseline_dropped = baseline
+        .as_ref()
+        .map_or(0, |capture| capture.dropped_records);
+    let baseline_unknown = baseline
+        .as_ref()
+        .map_or(0, |capture| capture.unknown_records);
+    let started = Instant::now();
+    let deadline = started.checked_add(request.timeout).ok_or_else(|| {
+        CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            "timeout exceeds Instant range",
+            true,
+        )
+    })?;
+    let collection_end = request
+        .options
+        .duration
+        .and_then(|duration| started.checked_add(duration));
+    let collectors = start_host_collectors(&report, &validation, request)?;
+    let host_captures = collectors.handles.is_empty().then(Vec::new);
+
+    Ok(LiveCollection {
+        report,
+        socket,
+        deadline,
+        collection_end,
+        baseline_timestamp,
+        baseline_dropped,
+        baseline_unknown,
+        collectors,
+        host_captures,
+        latest_cuda: None,
+    })
+}
+
+fn start_host_collectors(
+    report: &ProcessReport,
+    validation: &ValidationResult,
+    request: &LiveMeasureRequest,
+) -> Result<HostCollectors, CommandFailure> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let mut probes = Vec::new();
+    for endpoint in [&validation.start, &validation.end] {
+        let Some(probe) = endpoint.host.as_ref() else {
+            continue;
+        };
+        if probes
+            .iter()
+            .any(|existing: &ResolvedProbe| existing.selector == probe.selector)
+        {
+            continue;
+        }
+        probes.push(probe.clone());
+    }
+    let host_timeout = request
+        .options
+        .duration
+        .map_or(request.timeout, |duration| duration.min(request.timeout));
+    let host_samples = request
+        .options
+        .samples
+        .unwrap_or(request.options.max_events);
+    let mut receivers = Vec::with_capacity(probes.len());
+    let handles = probes
+        .into_iter()
+        .enumerate()
+        .map(|(index, probe)| {
+            let (ready, receiver) = mpsc::sync_channel(1);
+            receivers.push(receiver);
+            let offset = if probe.symbol.is_some() {
+                0
+            } else {
+                probe.file_offset
+            };
+            let capture_request = UprobeRequest {
+                target: report.target.clone(),
+                binary: PathBuf::from(&probe.binary_path),
+                symbol: probe.symbol,
+                offset,
+                probe_kind: probe.probe_kind,
+                probe_id: u32::try_from(index + 1).expect("two endpoints fit u32"),
+                samples: host_samples,
+                timeout: host_timeout,
+                cancelled: Arc::clone(&cancelled),
+                ready: Some(ready),
+            };
+            thread::spawn(move || uprobe::capture(&capture_request))
+        })
+        .collect();
+    let mut collectors = HostCollectors { cancelled, handles };
+    for receiver in receivers {
+        match receiver.recv_timeout(request.timeout) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                collectors.cancel();
+                return match collectors.join() {
+                    Err(error) => Err(error),
+                    Ok(_) => Err(CommandFailure::new(
+                        ErrorCode::Internal,
+                        "host collector exited before reporting readiness",
+                        false,
+                    )),
+                };
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                collectors.cancel();
+                collectors.join()?;
+                return Err(CommandFailure::new(
+                    ErrorCode::SessionLimitExceeded,
+                    "timed out waiting for host collector readiness",
+                    true,
+                ));
+            }
+        }
+    }
+    Ok(collectors)
+}
+
+fn refresh_live_sources(
+    collection: &mut LiveCollection,
+    request: &LiveMeasureRequest,
+) -> Result<(), CommandFailure> {
+    if collection.host_captures.is_none() && collection.collectors.finished() {
+        collection.host_captures = Some(collection.collectors.join()?);
+    }
+    let Some(path) = collection.socket.as_deref() else {
+        return Ok(());
+    };
+    let remaining = collection
+        .deadline
+        .saturating_duration_since(Instant::now());
+    if remaining <= SNAPSHOT_QUIET_PERIOD {
+        collection.collectors.cancel();
+        return Ok(());
+    }
+    collection.latest_cuda = Some(
+        cupti::snapshot(path, remaining, &request.options.session_id).map_err(|error| {
+            CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true)
+        })?,
+    );
+    Ok(())
+}
+
+fn evaluate_live_result(
+    collection: &LiveCollection,
+    request: &LiveMeasureRequest,
+    now: Instant,
+) -> Result<Option<MeasurementResult>, CommandFailure> {
+    let Some(host) = collection.host_captures.as_ref() else {
+        return Ok(None);
+    };
+    if collection.socket.is_some() && collection.latest_cuda.is_none() {
+        return Ok(None);
+    }
+    let mut result = match measure_live_capture(host, collection, &request.options) {
+        Ok(result) => result,
+        Err(error) if error.code == ErrorCode::NoMatchedSamples => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let reached_samples = request.options.samples.is_some_and(|samples| {
+        result.measurement.samples.matched >= u64::try_from(samples).expect("sample limit fits u64")
+    });
+    let reached_duration = collection.collection_end.is_some_and(|end| now >= end);
+    if reached_samples || reached_duration {
+        inspect::verify_target(&collection.report.target).map_err(|error| {
+            CommandFailure::new(error.code(), error.to_string(), error.recoverable())
+        })?;
+        return Ok(Some(result));
+    }
+    if now >= collection.deadline {
+        result.status = SessionStatus::TimedOut;
+        return Ok(Some(result));
+    }
+    Ok(None)
+}
+
+fn finish_live_timeout(
+    collection: &mut LiveCollection,
+    request: &LiveMeasureRequest,
+) -> Result<MeasurementResult, CommandFailure> {
+    collection.collectors.cancel();
+    if collection.host_captures.is_none() {
+        collection.host_captures = Some(collection.collectors.join()?);
+    }
+    let mut result = measure_live_capture(
+        collection
+            .host_captures
+            .as_ref()
+            .expect("host captures were assigned"),
+        collection,
+        &request.options,
+    )
+    .map_err(|error| {
+        if error.code == ErrorCode::NoMatchedSamples {
+            let host_events = collection.host_captures.as_ref().map_or(0, |captures| {
+                captures.iter().map(|capture| capture.events.len()).sum()
+            });
+            let cuda_events = collection.latest_cuda.as_ref().map_or(0, |capture| {
+                capture
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        collection
+                            .baseline_timestamp
+                            .is_none_or(|start| event.timestamp_ns > start)
+                    })
+                    .count()
+            });
+            CommandFailure::new(
+                ErrorCode::NoMatchedSamples,
+                format!(
+                    "no event pairs matched before the live measurement timeout \
+                     (host events: {host_events}, CUDA events: {cuda_events})"
+                ),
+                true,
+            )
+        } else {
+            error
+        }
+    })?;
+    result.status = SessionStatus::TimedOut;
+    Ok(result)
+}
+
+fn measure_live_capture(
+    host_captures: &[HostCaptureResult],
+    collection: &LiveCollection,
+    options: &MeasureOptions,
+) -> Result<MeasurementResult, CommandFailure> {
+    let mut captures = host_captures
+        .iter()
+        .map(|capture| completed::CompletedCapture {
+            dropped_records: capture.dropped,
+            unknown_records: 0,
+            events: capture.events.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(cuda) = collection.latest_cuda.as_ref() {
+        let dropped_records = cuda
+            .dropped_records
+            .checked_sub(collection.baseline_dropped)
+            .ok_or_else(|| {
+                CommandFailure::new(
+                    ErrorCode::TraceExportFailed,
+                    "CUPTI dropped-record counter moved backwards",
+                    false,
+                )
+            })?;
+        let unknown_records = cuda
+            .unknown_records
+            .checked_sub(collection.baseline_unknown)
+            .ok_or_else(|| {
+                CommandFailure::new(
+                    ErrorCode::TraceExportFailed,
+                    "CUPTI unknown-record counter moved backwards",
+                    false,
+                )
+            })?;
+        captures.push(completed::CompletedCapture {
+            dropped_records,
+            unknown_records,
+            events: cuda
+                .events
+                .iter()
+                .filter(|event| {
+                    collection
+                        .baseline_timestamp
+                        .is_none_or(|start| event.timestamp_ns > start)
+                })
+                .cloned()
+                .collect(),
+        });
+    }
+    let capture = completed::merge(captures, &options.session_id).map_err(|error| {
+        CommandFailure::new(ErrorCode::TraceExportFailed, error.to_string(), false)
+    })?;
+    if capture.unknown_records != 0 {
+        return Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!(
+                "live capture contains {} unknown CUPTI activity records",
+                capture.unknown_records
+            ),
+            false,
+        ));
+    }
+    let options = MeasureOptions {
+        dropped_events: capture.dropped_records,
+        ..options.clone()
+    };
+    measure(&capture.events, &options)
+        .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()))
+}
+
+const fn match_policy_name(policy: MatchPolicy) -> &'static str {
+    match policy {
+        MatchPolicy::Exact => "exact",
+        MatchPolicy::FirstAfter => "first-after",
+        MatchPolicy::Nearest => "nearest",
+        MatchPolicy::StackNested => "stack-nested",
+        MatchPolicy::StreamOrder => "stream-order",
+    }
+}
+
+fn emit_measurement(result: &MeasurementResult, json: bool) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).expect("measurement result must serialize")
+        );
+    } else {
+        print_measurement_result(result);
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_validate(args: ValidateArgs) -> ExitCode {
@@ -536,7 +1073,8 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
     let request = UprobeRequest {
         target: report.target.clone(),
         binary,
-        symbol,
+        symbol: Some(symbol),
+        offset: 0,
         probe_kind: if return_probe {
             xprobe_protocol::HostProbeKind::Uretprobe
         } else {
@@ -545,6 +1083,8 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
         probe_id,
         samples,
         timeout: Duration::from_millis(timeout_ms),
+        cancelled: Arc::new(AtomicBool::new(false)),
+        ready: None,
     };
     let result = match uprobe::capture(&request) {
         Ok(result) => result,

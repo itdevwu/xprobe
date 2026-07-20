@@ -7,7 +7,11 @@ use std::{
     os::unix::fs::MetadataExt,
     path::PathBuf,
     rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::SyncSender,
+    },
     time::{Duration, Instant},
 };
 
@@ -28,11 +32,14 @@ static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub struct UprobeRequest {
     pub target: TargetIdentity,
     pub binary: PathBuf,
-    pub symbol: String,
+    pub symbol: Option<String>,
+    pub offset: u64,
     pub probe_kind: HostProbeKind,
     pub probe_id: u32,
     pub samples: usize,
     pub timeout: Duration,
+    pub cancelled: Arc<AtomicBool>,
+    pub ready: Option<SyncSender<()>>,
 }
 
 #[derive(Debug)]
@@ -247,6 +254,9 @@ fn collect_raw_events(
     pid: i32,
     deadline: Instant,
 ) -> Result<(Vec<RawEvent>, u64), UprobeError> {
+    let offset = usize::try_from(request.offset).map_err(|_| {
+        UprobeError::InvalidRequest("probe offset exceeds the platform address size".to_owned())
+    })?;
     let raw_events = Rc::new(RefCell::new(Vec::with_capacity(request.samples)));
     let callback_events = Rc::clone(&raw_events);
     let callback_error = Rc::new(RefCell::new(None));
@@ -295,16 +305,22 @@ fn collect_raw_events(
         .attach_uprobe_with_opts(
             pid,
             &request.binary,
-            0,
+            offset,
             UprobeOpts {
-                func_name: Some(request.symbol.clone()),
+                func_name: request.symbol.clone(),
                 retprobe: request.probe_kind == HostProbeKind::Uretprobe,
                 ..UprobeOpts::default()
             },
         )
         .map_err(|source| libbpf_error(operation, source))?;
+    if let Some(ready) = &request.ready {
+        ready.send(()).map_err(|_| {
+            UprobeError::InvalidRequest("host collector readiness receiver closed".to_owned())
+        })?;
+    }
 
-    while raw_events.borrow().len() < request.samples {
+    while raw_events.borrow().len() < request.samples && !request.cancelled.load(Ordering::Acquire)
+    {
         let now = Instant::now();
         if now >= deadline {
             break;
@@ -335,7 +351,7 @@ fn validate_request(request: &UprobeRequest) -> Result<(), UprobeError> {
             "timeout must be greater than zero".to_owned(),
         ));
     }
-    if request.symbol.is_empty() {
+    if request.symbol.as_ref().is_some_and(String::is_empty) {
         return Err(UprobeError::InvalidRequest(
             "symbol must not be empty".to_owned(),
         ));
@@ -405,8 +421,8 @@ fn normalize_event(
             probe_kind: request.probe_kind.clone(),
             binary_path: Some(binary_path.to_owned()),
             build_id: None,
-            symbol: Some(request.symbol.clone()),
-            offset: None,
+            symbol: request.symbol.clone(),
+            offset: request.symbol.is_none().then_some(request.offset),
             return_value: None,
             arguments: Vec::new(),
         }),
@@ -421,7 +437,11 @@ fn libbpf_error(operation: &'static str, source: libbpf_rs::Error) -> UprobeErro
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, atomic::AtomicBool},
+        time::Duration,
+    };
 
     use xprobe_protocol::{EventType, HostProbeKind, TargetIdentity};
 
@@ -470,11 +490,14 @@ mod tests {
                 process_start_time: 99,
             },
             binary: PathBuf::from("/srv/server"),
-            symbol: "handle_request".to_owned(),
+            symbol: Some("handle_request".to_owned()),
+            offset: 0,
             probe_kind: HostProbeKind::Uretprobe,
             probe_id: 8,
             samples: 1,
             timeout: Duration::from_secs(1),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            ready: None,
         };
         let raw = RawEvent {
             timestamp_ns: 1000,
@@ -500,15 +523,50 @@ mod tests {
                 process_start_time: 99,
             },
             binary: PathBuf::from("/srv/server"),
-            symbol: "handle_request".to_owned(),
+            symbol: Some("handle_request".to_owned()),
+            offset: 0,
             probe_kind: HostProbeKind::Kprobe,
             probe_id: 8,
             samples: 1,
             timeout: Duration::from_secs(1),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            ready: None,
         };
         assert!(matches!(
             validate_request(&request),
             Err(UprobeError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn normalizes_file_offset_probe_events() {
+        let request = UprobeRequest {
+            target: TargetIdentity {
+                pid: 1234,
+                process_start_time: 99,
+            },
+            binary: PathBuf::from("/srv/server"),
+            symbol: None,
+            offset: 0x1234,
+            probe_kind: HostProbeKind::Uprobe,
+            probe_id: 8,
+            samples: 1,
+            timeout: Duration::from_secs(1),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            ready: None,
+        };
+        let raw = RawEvent {
+            timestamp_ns: 1000,
+            sequence: 1,
+            pid: 1234,
+            tid: 1235,
+            cpu: 3,
+            probe_id: 8,
+        };
+
+        let event = normalize_event(&raw, &request, "session", "/srv/server");
+        let host = event.host.expect("host payload");
+        assert_eq!(host.symbol, None);
+        assert_eq!(host.offset, Some(0x1234));
     }
 }

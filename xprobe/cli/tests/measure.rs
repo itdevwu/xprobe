@@ -330,3 +330,48 @@ fn requires_a_sample_or_duration_limit() {
         serde_json::from_slice(&output.stdout).expect("stdout must contain error JSON");
     assert_eq!(error.error.code, ErrorCode::SessionLimitExceeded);
 }
+
+#[test]
+fn requires_exactly_one_measurement_source_mode() {
+    let missing = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--from",
+            "cuda:kernel_start",
+            "--to",
+            "cuda:kernel_end",
+            "--match",
+            "exact",
+            "--samples",
+            "1",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    assert_eq!(missing.status.code(), Some(1));
+    let error: ErrorResponse = serde_json::from_slice(&missing.stdout).expect("error JSON");
+    assert_eq!(error.error.code, ErrorCode::TraceExportFailed);
+
+    let both = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            "/does/not/matter",
+            "--pid",
+            &std::process::id().to_string(),
+            "--from",
+            "cuda:kernel_start",
+            "--to",
+            "cuda:kernel_end",
+            "--match",
+            "exact",
+            "--samples",
+            "1",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    assert_eq!(both.status.code(), Some(1));
+    let error: ErrorResponse = serde_json::from_slice(&both.stdout).expect("error JSON");
+    assert_eq!(error.error.code, ErrorCode::InvalidEventSelector);
+}
