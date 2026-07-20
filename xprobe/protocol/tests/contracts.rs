@@ -4,7 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
     CapabilityReport, ErrorResponse, Event, HostCaptureResult, MeasurementResult, MeasurementSpec,
-    ProcessReport, ResolvedProbe, ValidationResult, schema::generated_schemas,
+    ProcessReport, ResolvedProbe, TraceExportResult, ValidationResult, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -152,6 +152,17 @@ fn measurement_spec_contract_round_trips() {
         "duration_ms": null,
         "timeout_ms": 30_000,
         "max_events": 100_000
+    }));
+}
+
+#[test]
+fn trace_export_contract_round_trips() {
+    assert_round_trip::<TraceExportResult>(&json!({
+        "schema_version": "1.0",
+        "ok": true,
+        "format": "chrome",
+        "output": "/tmp/xprobe-trace.json",
+        "event_count": 42
     }));
 }
 

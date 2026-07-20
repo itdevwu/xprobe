@@ -271,10 +271,43 @@ The result conforms to `schemas/measurement-result.schema.json`. No matched
 pairs return `NO_MATCHED_SAMPLES`; unsupported policies and unbounded requests
 use the standard error envelope.
 
-## `dev cupti`
+## `trace`
 
 ```bash
-xprobe dev cupti \
+xprobe trace \
+  --spec /srv/xprobe/request-to-kernel.json \
+  --cupti-socket /run/user/1000/xprobe-4242.sock \
+  --json --non-interactive --no-color
+```
+
+`trace` reads a strict `MeasurementSpec` v1 JSON document conforming to
+`schemas/measurement-spec.schema.json`. The spec contains the full target
+identity, selectors, policy, sample/duration limits, timeout, and event bound.
+The command verifies both PID and process start time before attaching, then
+uses the same foreground orchestration and cleanup path as `measure --pid`.
+
+## `export`
+
+```bash
+xprobe export \
+  --input /tmp/xprobe-host.json \
+  --input /tmp/xprobe-cupti.bin \
+  --format chrome \
+  --output /tmp/xprobe-trace.json \
+  --json --non-interactive --no-color
+```
+
+`export` accepts the same completed capture inputs as `measure` and supports
+`jsonl` and `chrome`. Chrome output follows Trace Event Format using instant
+events, integer microsecond timestamps, and original nanoseconds, clock domain,
+event identity, attributes, and CUDA correlation fields in `args`. Artifacts
+are written with mode `0600`; the JSON result conforms to
+`schemas/trace-export.schema.json`.
+
+## `capture cupti`
+
+```bash
+xprobe capture cupti \
   --input /tmp/xprobe-cupti.bin \
   --session-id xp_cuda_1 \
   --json --non-interactive --no-color
@@ -282,7 +315,8 @@ xprobe dev cupti \
 
 The command strictly validates the xprobe CUPTI binary ABI and emits one
 versioned `Event` per line. CUDA API names are stored in
-`attributes.cuda_api_name`; GPU records preserve the name supplied by CUPTI in
+`attributes.cuda_api_name`, with `attributes.cuda_api_domain` distinguishing
+Runtime and Driver callbacks. GPU records preserve the name supplied by CUPTI in
 `cuda.kernel_name`. Transfer records expose byte count, memcpy kind, and memset
 value; the latter is stored in `attributes.memset_value`. API and GPU records
 expose the exact CUPTI correlation ID. The `HOST_MONOTONIC_TIMESTAMPS` feature
@@ -296,3 +330,6 @@ Malformed headers, unsupported ABI versions or feature flags, invalid lengths,
 unknown record kinds, and invalid names return `TRACE_EXPORT_FAILED`. Nonzero
 dropped or unknown record counts are reported on stderr and are never silently
 discarded.
+
+`capture uprobe` is the corresponding formal bounded host collector. The
+existing `dev uprobe` and `dev cupti` spellings remain compatibility aliases.

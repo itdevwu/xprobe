@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::ExitCode,
     sync::{
@@ -12,18 +14,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use xprobe_collector::{
     completed, cupti,
     uprobe::{self, UprobeRequest},
 };
 use xprobe_core::{doctor, inspect, resolve, validate};
 use xprobe_correlator::{MeasureOptions, measure};
-use xprobe_exporter::events_to_jsonl;
+use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
-    CapabilityReport, CheckResult, ErrorCode, ErrorResponse, HostCaptureResult, MatchPolicy,
-    MeasurementResult, ProcessReport, ResolvedProbe, SchemaVersion, SessionStatus,
-    ValidationResult, XprobeError,
+    CapabilityReport, CheckResult, ErrorCode, ErrorResponse, ExportFormat, HostCaptureResult,
+    MatchPolicy, MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SchemaVersion,
+    SessionStatus, TargetIdentity, TraceExportResult, ValidationResult, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -45,6 +47,12 @@ enum Command {
     Validate(ValidateArgs),
     /// Measure latency from a completed bounded capture.
     Measure(MeasureArgs),
+    /// Run a live measurement from a versioned specification.
+    Trace(TraceArgs),
+    /// Export completed captures to a stable trace format.
+    Export(ExportArgs),
+    /// Run bounded event collectors.
+    Capture(DevArgs),
     /// Run low-level development probes.
     Dev(DevArgs),
 }
@@ -53,6 +61,62 @@ enum Command {
 struct DevArgs {
     #[command(subcommand)]
     command: DevCommand,
+}
+
+#[derive(Debug, Args)]
+struct TraceArgs {
+    /// Versioned `MeasurementSpec` JSON file.
+    #[arg(long)]
+    spec: PathBuf,
+
+    /// Unix socket exposed by the target's xprobe CUPTI agent.
+    #[arg(long)]
+    cupti_socket: Option<PathBuf>,
+
+    /// Emit only the versioned JSON result on stdout.
+    #[arg(long)]
+    json: bool,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+
+    /// Never wait for user input.
+    #[arg(long)]
+    non_interactive: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExportFormatArg {
+    Jsonl,
+    Chrome,
+}
+
+#[derive(Debug, Args)]
+struct ExportArgs {
+    /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
+    #[arg(long, required = true)]
+    input: Vec<PathBuf>,
+
+    /// Artifact format.
+    #[arg(long, value_enum)]
+    format: ExportFormatArg,
+
+    /// Destination artifact path.
+    #[arg(long)]
+    output: PathBuf,
+
+    /// Emit only the versioned export result on stdout.
+    #[arg(long)]
+    json: bool,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+
+    /// Never wait for user input.
+    #[arg(long)]
+    non_interactive: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -302,11 +366,202 @@ fn main() -> ExitCode {
         Command::Resolve(args) => run_resolve(args),
         Command::Validate(args) => run_validate(args),
         Command::Measure(args) => run_measure(args),
-        Command::Dev(args) => match args.command {
-            DevCommand::Uprobe(args) => run_uprobe(args),
-            DevCommand::Cupti(args) => run_cupti(args),
-        },
+        Command::Trace(args) => run_trace(args),
+        Command::Export(args) => run_export(args),
+        Command::Capture(args) | Command::Dev(args) => run_capture(args),
     }
+}
+
+fn run_capture(args: DevArgs) -> ExitCode {
+    match args.command {
+        DevCommand::Uprobe(args) => run_uprobe(args),
+        DevCommand::Cupti(args) => run_cupti(args),
+    }
+}
+
+fn run_trace(args: TraceArgs) -> ExitCode {
+    let TraceArgs {
+        spec,
+        cupti_socket,
+        json,
+        no_color: _,
+        non_interactive: _,
+    } = args;
+    let bytes = match fs::read(&spec) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::TraceExportFailed,
+                format!("failed to read {}: {error}", spec.display()),
+                false,
+                json,
+            );
+        }
+    };
+    let spec: MeasurementSpec = match serde_json::from_slice(&bytes) {
+        Ok(spec) => spec,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::InvalidEventSelector,
+                format!("invalid MeasurementSpec {}: {error}", spec.display()),
+                true,
+                json,
+            );
+        }
+    };
+    let samples = match spec.samples.map(usize::try_from).transpose() {
+        Ok(samples) => samples,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::SessionLimitExceeded,
+                format!("MeasurementSpec samples exceed this platform: {error}"),
+                true,
+                json,
+            );
+        }
+    };
+    let max_events = match usize::try_from(spec.max_events) {
+        Ok(max_events) => max_events,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::SessionLimitExceeded,
+                format!("MeasurementSpec max_events exceed this platform: {error}"),
+                true,
+                json,
+            );
+        }
+    };
+    let request = LiveMeasureRequest {
+        pid: spec.target.pid,
+        expected_target: Some(spec.target),
+        cupti_socket,
+        timeout: Duration::from_millis(spec.timeout_ms),
+        match_policy_text: match_policy_name(spec.match_policy),
+        options: MeasureOptions {
+            session_id: format!("xp_trace_{}", std::process::id()),
+            name: spec.name,
+            start_selector: spec.start_selector,
+            end_selector: spec.end_selector,
+            match_policy: spec.match_policy,
+            samples,
+            duration: spec.duration_ms.map(Duration::from_millis),
+            max_events,
+            dropped_events: 0,
+        },
+    };
+    match collect_live_measurement(&request) {
+        Ok(result) => emit_measurement(&result, json),
+        Err(error) => emit_error(error.code, error.message, error.recoverable, json),
+    }
+}
+
+fn run_export(args: ExportArgs) -> ExitCode {
+    let ExportArgs {
+        input,
+        format,
+        output,
+        json,
+        no_color: _,
+        non_interactive: _,
+    } = args;
+    let session_id = format!("xp_export_{}", std::process::id());
+    let capture = match load_completed_inputs(&input, &session_id) {
+        Ok(capture) => capture,
+        Err(error) => return emit_error(error.code, error.message, error.recoverable, json),
+    };
+    let (format, artifact) = match format {
+        ExportFormatArg::Jsonl => (
+            ExportFormat::Jsonl,
+            events_to_jsonl(&capture.events).map_err(|error| error.to_string()),
+        ),
+        ExportFormatArg::Chrome => (
+            ExportFormat::Chrome,
+            events_to_chrome_trace(&capture.events).map_err(|error| error.to_string()),
+        ),
+    };
+    let artifact = match artifact {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            return emit_error(ErrorCode::TraceExportFailed, error, false, json);
+        }
+    };
+    if let Err(error) = write_export_file(&output, artifact.as_bytes()) {
+        return emit_error(
+            ErrorCode::TraceExportFailed,
+            format!("failed to write {}: {error}", output.display()),
+            false,
+            json,
+        );
+    }
+    let event_count = u64::try_from(capture.events.len()).expect("event count fits u64");
+    let result = TraceExportResult {
+        schema_version: SchemaVersion::current(),
+        ok: true,
+        format,
+        output: output.to_string_lossy().into_owned(),
+        event_count,
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).expect("export result must serialize")
+        );
+    } else {
+        println!(
+            "Exported {} events to {} ({:?})",
+            result.event_count, result.output, result.format
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn load_completed_inputs(
+    input: &[PathBuf],
+    session_id: &str,
+) -> Result<completed::CompletedCapture, CommandFailure> {
+    let mut captures = Vec::with_capacity(input.len());
+    for path in input {
+        let bytes = fs::read(path).map_err(|error| {
+            CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!("failed to read {}: {error}", path.display()),
+                false,
+            )
+        })?;
+        captures.push(completed::decode(&bytes, session_id).map_err(|error| {
+            CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!("failed to decode {}: {error}", path.display()),
+                false,
+            )
+        })?);
+    }
+    let capture = completed::merge(captures, session_id).map_err(|error| {
+        CommandFailure::new(ErrorCode::TraceExportFailed, error.to_string(), false)
+    })?;
+    if capture.unknown_records != 0 {
+        return Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!(
+                "capture contains {} unknown CUPTI activity records",
+                capture.unknown_records
+            ),
+            false,
+        ));
+    }
+    Ok(capture)
+}
+
+fn write_export_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
 }
 
 fn run_measure(args: MeasureArgs) -> ExitCode {
@@ -365,6 +620,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
     if let Some(pid) = pid {
         let request = LiveMeasureRequest {
             pid,
+            expected_target: None,
             cupti_socket,
             timeout: Duration::from_millis(timeout_ms),
             match_policy_text: match_policy_name(match_policy),
@@ -460,6 +716,7 @@ impl CommandFailure {
 
 struct LiveMeasureRequest {
     pid: u32,
+    expected_target: Option<TargetIdentity>,
     cupti_socket: Option<PathBuf>,
     timeout: Duration,
     match_policy_text: &'static str,
@@ -571,6 +828,17 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
     let report = inspect::run(request.pid).map_err(|error| {
         CommandFailure::new(error.code(), error.to_string(), error.recoverable())
     })?;
+    if request
+        .expected_target
+        .as_ref()
+        .is_some_and(|expected| expected != &report.target)
+    {
+        return Err(CommandFailure::new(
+            ErrorCode::TargetReused,
+            "trace specification target identity no longer matches the process",
+            true,
+        ));
+    }
     let validation = validate::run(
         &report,
         &request.options.start_selector,

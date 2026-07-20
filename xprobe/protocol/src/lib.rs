@@ -4,6 +4,7 @@ mod capability;
 mod capture;
 mod error;
 mod event;
+mod export;
 mod measurement;
 mod process;
 mod resolve;
@@ -20,6 +21,7 @@ pub use event::{
     ArgumentValue, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, HostEvent,
     HostProbeKind, MemcpyKind,
 };
+pub use export::{ExportFormat, TraceExportResult};
 pub use measurement::{
     ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary, LatencyStatistics,
     MatchPolicy, Measurement, MeasurementResult, MeasurementSpec, SampleSummary, SessionStatus,

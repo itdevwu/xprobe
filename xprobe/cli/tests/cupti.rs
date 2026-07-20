@@ -40,7 +40,7 @@ fn cupti_capture_is_emitted_as_event_jsonl() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
         .args([
-            "dev",
+            "capture",
             "cupti",
             "--input",
             path.to_str().expect("temporary path must be UTF-8"),
@@ -51,7 +51,7 @@ fn cupti_capture_is_emitted_as_event_jsonl() {
             "--no-color",
         ])
         .output()
-        .expect("xprobe dev cupti must run");
+        .expect("xprobe capture cupti must run");
     fs::remove_file(path).expect("capture fixture must be removed");
 
     assert!(
@@ -69,6 +69,7 @@ fn cupti_capture_is_emitted_as_event_jsonl() {
     assert_eq!(event.event_type, EventType::CudaApiEntry);
     assert_eq!(event.cuda.expect("CUDA payload").correlation_id, Some(42));
     assert_eq!(event.attributes["cuda_api_name"], "cudaLaunchKernel");
+    assert_eq!(event.attributes["cuda_api_domain"], "runtime_api");
 }
 
 #[test]

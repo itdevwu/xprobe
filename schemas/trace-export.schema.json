@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceExportResult",
+  "type": "object",
+  "properties": {
+    "event_count": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "format": {
+      "$ref": "#/$defs/ExportFormat"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "output": {
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "format",
+    "output",
+    "event_count"
+  ],
+  "$defs": {
+    "ExportFormat": {
+      "type": "string",
+      "enum": [
+        "jsonl",
+        "chrome"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    }
+  }
+}

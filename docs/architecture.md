@@ -32,15 +32,15 @@ cleanup. It does not contain an agent runtime or model integration.
 
 | Path | Responsibility | Current state |
 | --- | --- | --- |
-| `xprobe/cli` | Arguments, rendering, exit codes | `doctor`, `inspect`, `resolve`, development capture commands |
+| `xprobe/cli` | Arguments, rendering, exit codes | Inspection, capture, measurement, trace, and export commands |
 | `xprobe/core` | Deterministic environment and process logic | Inspection, identity verification, ELF probe resolution |
 | `xprobe/protocol` | Public serde types and schema generation | Implemented |
 | `xprobe/collector` | Host and device collector interfaces | Host uprobe collector and CUPTI decoder |
-| `xprobe/correlator` | Event matching and statistics | Multi-source completed-capture measurement |
-| `xprobe/exporter` | JSONL and trace export | Event JSONL |
+| `xprobe/correlator` | Event matching and statistics | Exact, temporal, nested, and stream-order measurement |
+| `xprobe/exporter` | JSONL and trace export | Event JSONL and Chrome Trace Event Format |
 | `xprobe/daemon` | Future privilege-separated sessions | Skeleton |
 | `bpf/` | eBPF programs and build | PID-scoped uprobe and ring buffer |
-| `cupti/` | In-process CUPTI agent | Raw launch and kernel capture |
+| `cupti/` | In-process CUPTI agent | Runtime/Driver callback and GPU activity capture |
 
 ## Public contracts
 

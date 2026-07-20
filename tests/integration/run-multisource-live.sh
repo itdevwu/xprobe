@@ -18,6 +18,8 @@ host_capture="$1/host.json"
 cupti_capture="$1/cupti.bin"
 live_capture="$1/live.jsonl"
 live_measurement="$1/live-measure.json"
+spec="${build_dir}/measurement-spec.json"
+spec_measurement="$1/spec-measure.json"
 gpu_info="$1/gpu.txt"
 compute_capability=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed -n '1p')
 compute_arch=${compute_capability//./}
@@ -80,7 +82,15 @@ if ! wait "${measurement_pid}"; then
   cat "${live_measurement}" >&2
   exit 1
 fi
-/workspace/target/debug/xprobe dev uprobe \
+process_start_time=$(awk '{print $22}' "/proc/${target_pid}/stat")
+printf '{"schema_version":"1.0","name":"spec_host_to_kernel","target":{"pid":%s,"process_start_time":%s},"start_selector":"uprobe:%s:xprobe_request_marker:entry","end_selector":"cuda:kernel_start:name~xprobe_multisource_kernel.*","match_policy":"first_after","samples":3,"duration_ms":null,"timeout_ms":10000,"max_events":100000}\n' \
+  "${target_pid}" "${process_start_time}" "${fixture}" >"${spec}"
+/workspace/target/debug/xprobe trace \
+  --spec "${spec}" \
+  --cupti-socket "${snapshot_socket}" \
+  --json --non-interactive --no-color >"${spec_measurement}"
+
+/workspace/target/debug/xprobe capture uprobe \
   --pid "${target_pid}" \
   --binary "${fixture}" \
   --symbol xprobe_request_marker \
@@ -91,7 +101,7 @@ if [[ $(stat -c '%a' "${snapshot_socket}") != 600 ]]; then
   echo "CUPTI snapshot socket is not mode 0600" >&2
   exit 1
 fi
-/workspace/target/debug/xprobe dev cupti \
+/workspace/target/debug/xprobe capture cupti \
   --socket "${snapshot_socket}" \
   --timeout-ms 10000 \
   --session-id xp_cupti_snapshot \
@@ -100,4 +110,4 @@ touch "${stop}"
 wait "${target_pid}"
 trap - EXIT
 chmod 0644 "${host_capture}" "${cupti_capture}" "${live_capture}" \
-  "${live_measurement}" "${gpu_info}"
+  "${live_measurement}" "${spec_measurement}" "${gpu_info}"
