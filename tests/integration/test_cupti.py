@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 
-HEADER = struct.Struct("<8sIIIIQQQ")
+HEADER_V1 = struct.Struct("<8sIIIIQQQ")
 RECORD = struct.Struct("<Q16I128s")
 EXPECTED_KINDS = {1, 2, 3, 4}
 EXPECTED_EVENT_TYPES = {
@@ -39,9 +39,11 @@ def decode_record(raw: bytes) -> dict[str, int | str]:
 
 def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int | str]]]:
     data = path.read_bytes()
-    if len(data) < HEADER.size:
+    if len(data) < HEADER_V1.size:
         raise AssertionError("CUPTI capture is shorter than its header")
-    fields = HEADER.unpack_from(data)
+    fields = HEADER_V1.unpack_from(data)
+    if fields[1] != 2:
+        raise AssertionError(f"expected capture ABI 2, found {fields[1]}")
     header = {
         "abi_version": fields[1],
         "header_size": fields[2],
@@ -51,13 +53,13 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         "unknown_records": fields[7],
     }
     assert fields[0] == b"XPCUPTI\0"
-    assert header["abi_version"] == 1
-    assert header["header_size"] == HEADER.size
+    assert header["abi_version"] == 2
+    assert header["header_size"] == HEADER_V1.size
     assert header["record_size"] == RECORD.size
-    assert len(data) == HEADER.size + header["record_count"] * RECORD.size
+    assert len(data) == header["header_size"] + header["record_count"] * RECORD.size
     records = [
         decode_record(data[offset : offset + RECORD.size])
-        for offset in range(HEADER.size, len(data), RECORD.size)
+        for offset in range(header["header_size"], len(data), RECORD.size)
     ]
     return header, records
 
@@ -147,6 +149,34 @@ def main() -> None:
             raise SystemExit(measured.returncode)
         assert measured.stderr == ""
         measurement = json.loads(measured.stdout)
+        cross_domain = subprocess.run(
+            [
+                xprobe,
+                "measure",
+                "--input",
+                capture,
+                "--from",
+                "cuda:runtime_api:cudaLaunchKernel:entry",
+                "--to",
+                "cuda:kernel_start:name~xprobe_test_kernel.*",
+                "--match",
+                "exact",
+                "--samples",
+                "3",
+                "--json",
+                "--non-interactive",
+                "--no-color",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if cross_domain.returncode != 0:
+            sys.stdout.write(cross_domain.stdout)
+            sys.stderr.write(cross_domain.stderr)
+            raise SystemExit(cross_domain.returncode)
+        assert cross_domain.stderr == ""
+        cross_measurement = json.loads(cross_domain.stdout)
 
     counts = collections.Counter(record["kind"] for record in records)
     diagnostics = {"header": header, "counts": counts, "records": records}
@@ -199,6 +229,18 @@ def main() -> None:
     }
     assert event_api_correlations == event_kernel_correlations
     assert all(
+        event["clock_domain"] == "host_monotonic"
+        for event in events
+        if event["event_type"] in {"cuda_api_entry", "cuda_api_exit"}
+    )
+    assert all(
+        event["clock_domain"] == "cupti_normalized_to_host_monotonic"
+        and event["timestamp_error_ns"] is None
+        and event["timestamp_raw"] == event["timestamp_ns"]
+        for event in events
+        if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
+    )
+    assert all(
         "xprobe_test_kernel" in event["cuda"]["kernel_name"]
         for event in events
         if event["event_type"] in {"gpu_kernel_start", "gpu_kernel_end"}
@@ -210,7 +252,22 @@ def main() -> None:
         >= measurement["measurement"]["latency_ns"]["min"]
     )
     assert measurement["correlation"]["confidence"] == "exact"
-    assert measurement["clock"]["alignment"] == "cupti_same_domain"
+    assert (
+        measurement["clock"]["alignment"]
+        == "cupti_normalized_to_host_monotonic"
+    )
+    assert measurement["clock"]["estimated_error_ns"] == 0
+    assert cross_measurement["measurement"]["samples"]["matched"] == 3
+    assert cross_measurement["measurement"]["latency_ns"]["min"] > 0
+    assert cross_measurement["correlation"]["confidence"] == "exact"
+    assert (
+        cross_measurement["clock"]["alignment"]
+        == "cupti_normalized_to_host_monotonic"
+    )
+    assert cross_measurement["clock"]["estimated_error_ns"] == 0
+    assert [warning["code"] for warning in cross_measurement["warnings"]] == [
+        "CLOCK_ERROR_UNAVAILABLE"
+    ]
 
     print(
         json.dumps(
@@ -218,6 +275,12 @@ def main() -> None:
                 "records": len(records),
                 "events": len(events),
                 "matched": measurement["measurement"]["samples"]["matched"],
+                "cross_domain_matched": cross_measurement["measurement"]["samples"][
+                    "matched"
+                ],
+                "api_to_kernel_min_ns": cross_measurement["measurement"]["latency_ns"][
+                    "min"
+                ],
                 "kinds": counts,
             },
             sort_keys=True,

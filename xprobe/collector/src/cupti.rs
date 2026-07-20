@@ -4,9 +4,10 @@ use serde_json::Value;
 use xprobe_protocol::{ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, SchemaVersion};
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
-const ABI_VERSION: u32 = 1;
-const HEADER_SIZE: usize = 48;
-const HEADER_SIZE_U32: u32 = 48;
+const ABI_VERSION_V1: u32 = 1;
+const ABI_VERSION_V2: u32 = 2;
+const HEADER_SIZE_V1: usize = 48;
+const HEADER_SIZE_V1_U32: u32 = 48;
 const RECORD_SIZE: usize = 200;
 const RECORD_SIZE_U32: u32 = 200;
 const UNKNOWN_U32: u32 = u32::MAX;
@@ -20,15 +21,29 @@ pub struct CuptiCapture {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CuptiDecodeError {
-    HeaderTooShort { actual: usize },
+    HeaderTooShort {
+        actual: usize,
+    },
     InvalidMagic,
     UnsupportedAbi(u32),
-    InvalidHeaderSize(u32),
+    InvalidHeaderSize {
+        version: u32,
+        actual: u32,
+        expected: u32,
+    },
     InvalidRecordSize(u32),
     CaptureLengthOverflow,
-    InvalidCaptureLength { expected: usize, actual: usize },
-    UnknownRecordKind { index: usize, kind: u32 },
-    InvalidName { index: usize },
+    InvalidCaptureLength {
+        expected: usize,
+        actual: usize,
+    },
+    UnknownRecordKind {
+        index: usize,
+        kind: u32,
+    },
+    InvalidName {
+        index: usize,
+    },
 }
 
 impl fmt::Display for CuptiDecodeError {
@@ -36,16 +51,20 @@ impl fmt::Display for CuptiDecodeError {
         match self {
             Self::HeaderTooShort { actual } => write!(
                 formatter,
-                "CUPTI capture header requires {HEADER_SIZE} bytes, found {actual}"
+                "CUPTI capture header requires at least {HEADER_SIZE_V1} bytes, found {actual}"
             ),
             Self::InvalidMagic => formatter.write_str("CUPTI capture magic is invalid"),
             Self::UnsupportedAbi(version) => {
                 write!(formatter, "unsupported CUPTI capture ABI version {version}")
             }
-            Self::InvalidHeaderSize(size) => {
+            Self::InvalidHeaderSize {
+                version,
+                actual,
+                expected,
+            } => {
                 write!(
                     formatter,
-                    "CUPTI capture header size is {size}, expected {HEADER_SIZE}"
+                    "CUPTI capture ABI {version} header size is {actual}, expected {expected}"
                 )
             }
             Self::InvalidRecordSize(size) => {
@@ -75,15 +94,16 @@ impl Error for CuptiDecodeError {}
 
 /// Decode an xprobe CUPTI binary capture into versioned protocol events.
 ///
-/// Events are ordered by raw nanosecond timestamp. The clock domain remains
-/// explicit because clock normalization is a separate correlation step.
+/// ABI v2 GPU timestamps have already been normalized by CUPTI using the
+/// agent's host monotonic timestamp callback. ABI v1 remains readable and
+/// keeps GPU timestamps in the legacy CUPTI clock domain.
 ///
 /// # Errors
 ///
 /// Returns [`CuptiDecodeError`] when the capture header, size, record kind, or
-/// bounded name does not match ABI version 1.
+/// bounded name does not match a supported ABI.
 pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, CuptiDecodeError> {
-    if bytes.len() < HEADER_SIZE {
+    if bytes.len() < HEADER_SIZE_V1 {
         return Err(CuptiDecodeError::HeaderTooShort {
             actual: bytes.len(),
         });
@@ -93,12 +113,22 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     }
 
     let abi_version = read_u32(bytes, 8);
-    if abi_version != ABI_VERSION {
-        return Err(CuptiDecodeError::UnsupportedAbi(abi_version));
-    }
+    let (expected_header_size, expected_header_size_u32) = match abi_version {
+        ABI_VERSION_V1 | ABI_VERSION_V2 => (HEADER_SIZE_V1, HEADER_SIZE_V1_U32),
+        _ => return Err(CuptiDecodeError::UnsupportedAbi(abi_version)),
+    };
     let header_size = read_u32(bytes, 12);
-    if header_size != HEADER_SIZE_U32 {
-        return Err(CuptiDecodeError::InvalidHeaderSize(header_size));
+    if header_size != expected_header_size_u32 {
+        return Err(CuptiDecodeError::InvalidHeaderSize {
+            version: abi_version,
+            actual: header_size,
+            expected: expected_header_size_u32,
+        });
+    }
+    if bytes.len() < expected_header_size {
+        return Err(CuptiDecodeError::HeaderTooShort {
+            actual: bytes.len(),
+        });
     }
     let record_size = read_u32(bytes, 16);
     if record_size != RECORD_SIZE_U32 {
@@ -110,7 +140,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     let payload_size = record_count
         .checked_mul(RECORD_SIZE)
         .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
-    let expected_size = HEADER_SIZE
+    let expected_size = expected_header_size
         .checked_add(payload_size)
         .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
     if bytes.len() != expected_size {
@@ -121,8 +151,16 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     }
 
     let mut events = Vec::with_capacity(record_count);
-    for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
-        events.push(decode_record(record, index, session_id)?);
+    for (index, record) in bytes[expected_header_size..]
+        .chunks_exact(RECORD_SIZE)
+        .enumerate()
+    {
+        events.push(decode_record(
+            record,
+            index,
+            session_id,
+            abi_version == ABI_VERSION_V2,
+        )?);
     }
     events.sort_by_key(|event| event.timestamp_ns);
     let mut sequence = 0_u64;
@@ -141,7 +179,12 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     })
 }
 
-fn decode_record(record: &[u8], index: usize, session_id: &str) -> Result<Event, CuptiDecodeError> {
+fn decode_record(
+    record: &[u8],
+    index: usize,
+    session_id: &str,
+    activity_is_host_monotonic: bool,
+) -> Result<Event, CuptiDecodeError> {
     let kind = read_u32(record, 8);
     let (source, event_type) = match kind {
         1 => (EventSource::CuptiCallback, EventType::CudaApiEntry),
@@ -150,7 +193,7 @@ fn decode_record(record: &[u8], index: usize, session_id: &str) -> Result<Event,
         4 => (EventSource::CuptiActivity, EventType::GpuKernelEnd),
         _ => return Err(CuptiDecodeError::UnknownRecordKind { index, kind }),
     };
-    let timestamp = read_u64(record, 0);
+    let timestamp_raw = read_u64(record, 0);
     let name_bytes = &record[72..200];
     let name_length = name_bytes
         .iter()
@@ -161,6 +204,17 @@ fn decode_record(record: &[u8], index: usize, session_id: &str) -> Result<Event,
     let is_api = kind <= 2;
     let is_kernel_start = kind == 3;
     let is_kernel_end = kind == 4;
+    let (timestamp_ns, clock_domain, timestamp_error_ns) = if is_api {
+        (timestamp_raw, ClockDomain::HostMonotonic, None)
+    } else if activity_is_host_monotonic {
+        (
+            timestamp_raw,
+            ClockDomain::CuptiNormalizedToHostMonotonic,
+            None,
+        )
+    } else {
+        (timestamp_raw, ClockDomain::Cupti, None)
+    };
     let mut attributes = BTreeMap::new();
     if is_api {
         attributes.insert("cuda_api_name".to_owned(), Value::String(name.to_owned()));
@@ -176,14 +230,10 @@ fn decode_record(record: &[u8], index: usize, session_id: &str) -> Result<Event,
         pid: read_u32(record, 12),
         tid: read_u32(record, 16),
         cpu: None,
-        timestamp_raw: timestamp,
-        timestamp_ns: timestamp,
-        clock_domain: if is_api {
-            ClockDomain::HostMonotonic
-        } else {
-            ClockDomain::Cupti
-        },
-        timestamp_error_ns: None,
+        timestamp_raw,
+        timestamp_ns,
+        clock_domain,
+        timestamp_error_ns,
         process_start_time: None,
         host: None,
         cuda: Some(CudaEvent {
@@ -196,8 +246,8 @@ fn decode_record(record: &[u8], index: usize, session_id: &str) -> Result<Event,
             callback_id: optional_nonzero(read_u32(record, 40)),
             kernel_name: (!is_api).then(|| name.to_owned()),
             kernel_name_mangled: None,
-            start_ns: is_kernel_start.then_some(timestamp),
-            end_ns: is_kernel_end.then_some(timestamp),
+            start_ns: is_kernel_start.then_some(timestamp_ns),
+            end_ns: is_kernel_end.then_some(timestamp_ns),
             grid: decode_dim(record, 44),
             block: decode_dim(record, 56),
             bytes: None,
@@ -246,14 +296,14 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CuptiDecodeError, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture};
+    use super::{CuptiDecodeError, HEADER_SIZE_V1, OUTPUT_MAGIC, RECORD_SIZE, decode_capture};
     use xprobe_protocol::{ClockDomain, EventSource, EventType};
 
     fn capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
-        let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
+        let mut bytes = vec![0_u8; HEADER_SIZE_V1 + records.len() * RECORD_SIZE];
         bytes[0..8].copy_from_slice(OUTPUT_MAGIC);
         bytes[8..12].copy_from_slice(&1_u32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&super::HEADER_SIZE_U32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&super::HEADER_SIZE_V1_U32.to_le_bytes());
         bytes[16..20].copy_from_slice(&super::RECORD_SIZE_U32.to_le_bytes());
         bytes[24..32].copy_from_slice(
             &u64::try_from(records.len())
@@ -261,7 +311,25 @@ mod tests {
                 .to_le_bytes(),
         );
         for (index, record) in records.iter().enumerate() {
-            let offset = HEADER_SIZE + index * RECORD_SIZE;
+            let offset = HEADER_SIZE_V1 + index * RECORD_SIZE;
+            bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
+        }
+        bytes
+    }
+
+    fn normalized_capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
+        let mut bytes = vec![0_u8; HEADER_SIZE_V1 + records.len() * RECORD_SIZE];
+        bytes[0..8].copy_from_slice(OUTPUT_MAGIC);
+        bytes[8..12].copy_from_slice(&2_u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&super::HEADER_SIZE_V1_U32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&super::RECORD_SIZE_U32.to_le_bytes());
+        bytes[24..32].copy_from_slice(
+            &u64::try_from(records.len())
+                .expect("test record count must fit u64")
+                .to_le_bytes(),
+        );
+        for (index, record) in records.iter().enumerate() {
+            let offset = HEADER_SIZE_V1 + index * RECORD_SIZE;
             bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
         }
         bytes
@@ -323,6 +391,32 @@ mod tests {
         assert_eq!(
             error,
             CuptiDecodeError::UnknownRecordKind { index: 0, kind: 99 }
+        );
+    }
+
+    #[test]
+    fn normalizes_v2_gpu_timestamps_to_host_monotonic() {
+        let api = record(1, 10_400, 42, "cudaLaunchKernel");
+        let kernel = record(3, 10_525, 42, "test_kernel");
+        let decoded = decode_capture(&normalized_capture(&[kernel, api]), "xp_test")
+            .expect("normalized capture must decode");
+
+        assert_eq!(decoded.events[0].timestamp_ns, 10_400);
+        assert_eq!(decoded.events[0].clock_domain, ClockDomain::HostMonotonic);
+        assert_eq!(decoded.events[1].timestamp_raw, 10_525);
+        assert_eq!(decoded.events[1].timestamp_ns, 10_525);
+        assert_eq!(
+            decoded.events[1].clock_domain,
+            ClockDomain::CuptiNormalizedToHostMonotonic
+        );
+        assert_eq!(decoded.events[1].timestamp_error_ns, None);
+        assert_eq!(
+            decoded.events[1]
+                .cuda
+                .as_ref()
+                .expect("CUDA payload")
+                .start_ns,
+            Some(10_525)
         );
     }
 

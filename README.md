@@ -26,8 +26,9 @@ kernel intervals to a versioned binary stream.
 | CUPTI agent | Runtime launch callbacks and concurrent-kernel activity |
 | CUDA raw capture | Startup injection or explicit application integration |
 | Unified Event JSONL | Implemented for uprobe and CUPTI captures |
-| Completed-capture exact and first-after measurement | Implemented for same-clock CUDA events |
-| Clock normalization and cross-source correlation | Planned |
+| Completed-capture exact and first-after measurement | Implemented for CUDA API and kernel events |
+| CUPTI-to-host clock normalization | Implemented in capture ABI v2 |
+| Live host and CUDA capture correlation | Planned |
 
 ## Quick start
 

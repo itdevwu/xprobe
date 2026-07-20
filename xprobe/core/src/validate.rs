@@ -153,13 +153,6 @@ pub fn run(
     check_collectability(&end, "end", &mut issues);
     check_capabilities(report, &start, &end, &requirements, &mut issues);
     check_policy(&start, &end, match_policy, &mut issues, &mut warnings);
-    if requirements.needs_clock_alignment {
-        issues.push(issue(
-            ErrorCode::ClockAlignmentFailed,
-            "the current capture ABI does not align host monotonic and CUPTI activity clocks"
-                .to_owned(),
-        ));
-    }
     check_selector_breadth(&start, "start", &mut warnings);
     check_selector_breadth(&end, "end", &mut warnings);
 
@@ -632,6 +625,24 @@ mod tests {
         assert!(result.valid);
         assert!(!result.requirements.target_restart_required);
         assert!(!result.requirements.needs_clock_alignment);
+        assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn accepts_api_to_kernel_when_normalized_agent_is_available() {
+        let mut report = inspect::run(std::process::id()).unwrap();
+        report.cuda.xprobe_cupti_loaded = true;
+        report.capabilities.cuda_callback = true;
+        report.capabilities.cuda_activity = true;
+        let result = run(
+            &report,
+            "cuda:runtime_api:cudaLaunchKernel:entry",
+            "cuda:kernel_start:name~test.*",
+            "exact",
+        )
+        .unwrap();
+        assert!(result.valid);
+        assert!(result.requirements.needs_clock_alignment);
         assert!(result.issues.is_empty());
     }
 }

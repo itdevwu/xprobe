@@ -106,6 +106,29 @@ static uint32_t current_tid(void)
     return (uint32_t)syscall(SYS_gettid);
 }
 
+static int monotonic_timestamp_ns(uint64_t *timestamp_ns)
+{
+    struct timespec timestamp;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0) {
+        fprintf(stderr, "xprobe CUPTI: clock_gettime failed: %s\n", strerror(errno));
+        atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
+                              memory_order_relaxed);
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
+    *timestamp_ns = (uint64_t)timestamp.tv_sec * 1000000000U +
+                    (uint64_t)timestamp.tv_nsec;
+    return XPROBE_CUPTI_AGENT_READY;
+}
+
+static uint64_t activity_timestamp(void)
+{
+    uint64_t timestamp_ns = 0U;
+
+    (void)monotonic_timestamp_ns(&timestamp_ns);
+    return timestamp_ns;
+}
+
 static void copy_name(char destination[XPROBE_CUPTI_NAME_LENGTH],
                       const char *source)
 {
@@ -173,7 +196,6 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
                                   const void *callback_data)
 {
     const CUpti_CallbackData *data = callback_data;
-    struct timespec timestamp;
     uint64_t timestamp_ns;
 
     (void)userdata;
@@ -181,13 +203,9 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
         return;
     }
 
-    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0) {
-        atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
-                              memory_order_relaxed);
+    if (monotonic_timestamp_ns(&timestamp_ns) != XPROBE_CUPTI_AGENT_READY) {
         return;
     }
-    timestamp_ns = (uint64_t)timestamp.tv_sec * 1000000000U +
-                   (uint64_t)timestamp.tv_nsec;
     if (data->callbackSite == CUPTI_API_ENTER) {
         enqueue_runtime_record(data, callback_id, XPROBE_CUPTI_CUDA_API_ENTRY,
                                timestamp_ns);
@@ -423,7 +441,9 @@ static void shutdown_agent(void)
 static int initialize_agent(void)
 {
     CUpti_SubscriberParams subscriber_params = {0};
+    CUpti_TimestampCallbackFunc timestamp_callback = activity_timestamp;
     CUptiResult result;
+    size_t timestamp_callback_size = sizeof(timestamp_callback);
     uint32_t cupti_version;
 
     result = cuptiGetVersion(&cupti_version);
@@ -438,6 +458,14 @@ static int initialize_agent(void)
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
     subscriber_active = 1;
+    result = cuptiActivitySetAttribute_v2(
+        subscriber, CUPTI_ACTIVITY_ATTR_TIMESTAMP_CALLBACK,
+        &timestamp_callback_size, &timestamp_callback);
+    if (result != CUPTI_SUCCESS) {
+        report_cupti_error("cuptiActivitySetAttribute_v2(timestamp callback)", result);
+        shutdown_agent();
+        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+    }
     result = cuptiActivityRegisterCallbacks_v2(
         subscriber, activity_buffer_requested, activity_buffer_completed);
     if (result != CUPTI_SUCCESS) {

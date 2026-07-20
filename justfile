@@ -24,7 +24,7 @@ test-bpf-live: build
 
 test-cupti:
     cmake -S . -B build -G Ninja -DXPROBE_BUILD_CUPTI=ON
-    cmake --build build --target xprobe-cupti
+    cmake --build build --target xprobe-cupti-smoke
     ctest --test-dir build --output-on-failure -R cupti
 
 test-cupti-live: build

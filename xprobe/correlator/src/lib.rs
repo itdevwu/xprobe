@@ -104,7 +104,7 @@ impl Selector {
             "runtime_api" => Self::parse_runtime_api(text),
             "kernel_start" | "kernel_end" => Self::parse_kernel(&fields),
             event => Err(MeasureError::InvalidSelector(format!(
-                "event {event:?} is not present in CUPTI capture ABI v1"
+                "event {event:?} is not present in completed CUPTI captures"
             ))),
         }
     }
@@ -118,7 +118,7 @@ impl Selector {
         }
         if fields[2] != "cudaLaunchKernel" {
             return Err(MeasureError::InvalidSelector(format!(
-                "runtime API {:?} is not present in CUPTI capture ABI v1",
+                "runtime API {:?} is not present in completed CUPTI captures",
                 fields[2]
             )));
         }
@@ -250,19 +250,7 @@ pub fn measure(
         MatchPolicy::FirstAfter => CorrelationConfidence::Heuristic,
         _ => unreachable!("match policy was validated"),
     };
-    let mut warnings = Vec::new();
-    if options.match_policy == MatchPolicy::FirstAfter {
-        warnings.push(warning(
-            "HEURISTIC_CORRELATION",
-            "first-after matching does not prove request-level causality",
-        ));
-    }
-    if options.dropped_events != 0 {
-        warnings.push(warning(
-            "EVENTS_DROPPED",
-            "the source capture dropped events before correlation",
-        ));
-    }
+    let warnings = measurement_warnings(options, &starts, &ends);
 
     let host_events = events
         .iter()
@@ -342,6 +330,36 @@ fn validate_options(options: &MeasureOptions) -> Result<(), MeasureError> {
     Ok(())
 }
 
+fn measurement_warnings(
+    options: &MeasureOptions,
+    starts: &[&Event],
+    ends: &[&Event],
+) -> Vec<Warning> {
+    let mut warnings = Vec::new();
+    if options.match_policy == MatchPolicy::FirstAfter {
+        warnings.push(warning(
+            "HEURISTIC_CORRELATION",
+            "first-after matching does not prove request-level causality",
+        ));
+    }
+    if options.dropped_events != 0 {
+        warnings.push(warning(
+            "EVENTS_DROPPED",
+            "the source capture dropped events before correlation",
+        ));
+    }
+    if starts.iter().chain(ends).any(|event| {
+        event.clock_domain == ClockDomain::CuptiNormalizedToHostMonotonic
+            && event.timestamp_error_ns.is_none()
+    }) {
+        warnings.push(warning(
+            "CLOCK_ERROR_UNAVAILABLE",
+            "CUPTI does not report an error bound for GPU-to-host timestamp interpolation",
+        ));
+    }
+    warnings
+}
+
 fn apply_duration_window<'a>(
     starts: &mut Vec<&'a Event>,
     ends: &mut Vec<&'a Event>,
@@ -370,34 +388,35 @@ fn apply_duration_window<'a>(
 }
 
 fn common_clock_domain(starts: &[&Event], ends: &[&Event]) -> Result<ClockDomain, MeasureError> {
-    let start = starts.first().map(|event| event.clock_domain.clone());
-    let end = ends.first().map(|event| event.clock_domain.clone());
-    match (start, end) {
-        (Some(start), Some(end)) if start != end => {
-            Err(MeasureError::ClockDomainsDiffer { start, end })
+    let mut events = starts.iter().chain(ends);
+    let Some(first) = events.next() else {
+        return Err(MeasureError::NoMatchedSamples);
+    };
+    let first_group = clock_group(&first.clock_domain);
+    let mut has_normalized_cupti =
+        first.clock_domain == ClockDomain::CuptiNormalizedToHostMonotonic;
+    for event in events {
+        if clock_group(&event.clock_domain) != first_group {
+            return Err(MeasureError::ClockDomainsDiffer {
+                start: first.clock_domain.clone(),
+                end: event.clock_domain.clone(),
+            });
         }
-        (Some(domain), Some(_)) => {
-            if starts
-                .iter()
-                .chain(ends)
-                .all(|event| event.clock_domain == domain)
-            {
-                Ok(domain)
-            } else {
-                let other = starts
-                    .iter()
-                    .chain(ends)
-                    .find(|event| event.clock_domain != domain)
-                    .expect("a differing clock domain exists")
-                    .clock_domain
-                    .clone();
-                Err(MeasureError::ClockDomainsDiffer {
-                    start: domain,
-                    end: other,
-                })
-            }
-        }
-        _ => Err(MeasureError::NoMatchedSamples),
+        has_normalized_cupti |= event.clock_domain == ClockDomain::CuptiNormalizedToHostMonotonic;
+    }
+    if first_group == 1 {
+        Ok(ClockDomain::Cupti)
+    } else if has_normalized_cupti {
+        Ok(ClockDomain::CuptiNormalizedToHostMonotonic)
+    } else {
+        Ok(ClockDomain::HostMonotonic)
+    }
+}
+
+const fn clock_group(domain: &ClockDomain) -> u8 {
+    match domain {
+        ClockDomain::HostMonotonic | ClockDomain::CuptiNormalizedToHostMonotonic => 0,
+        ClockDomain::Cupti => 1,
     }
 }
 
@@ -646,6 +665,22 @@ mod tests {
             measure(&events, &options(MatchPolicy::Exact)),
             Err(MeasureError::ClockDomainsDiffer { .. })
         ));
+    }
+
+    #[test]
+    fn accepts_cupti_timestamps_normalized_to_host_monotonic() {
+        let mut events = vec![
+            event(EventType::GpuKernelStart, 100, 1),
+            event(EventType::GpuKernelEnd, 150, 1),
+        ];
+        events[0].clock_domain = ClockDomain::HostMonotonic;
+        events[1].clock_domain = ClockDomain::CuptiNormalizedToHostMonotonic;
+        events[1].timestamp_error_ns = Some(7);
+
+        let result = measure(&events, &options(MatchPolicy::Exact)).unwrap();
+        assert_eq!(result.clock.alignment, "cupti_normalized_to_host_monotonic");
+        assert_eq!(result.clock.estimated_error_ns, 7);
+        assert!(result.warnings.is_empty());
     }
 
     #[test]

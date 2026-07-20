@@ -20,8 +20,8 @@ core inspection and measurement orchestration
         +-- host collector (eBPF uprobe entry events)
         +-- device collector (in-process CUPTI agent)
         +-- Event normalization and JSONL export
-        +-- same-domain correlation and statistics
-        +-- cross-domain clock normalization (planned)
+        +-- CUPTI-to-host clock normalization
+        +-- completed-capture correlation and statistics
 ```
 
 The caller selects targets and events and interprets results. `xprobe` performs
@@ -91,8 +91,9 @@ immediately; unavailable runtime requirements produce a successful validation
 report with `valid: false` and structured issues. Heuristic temporal policies
 are always labeled as warnings. Validation performs no collection and reports
 `target_mutation: false`. Cross-domain selectors expose
-`needs_clock_alignment: true` and remain invalid while capture ABI v1 lacks a
-calibration record.
+`needs_clock_alignment: true`. Capture ABI v2 provides the required
+CUPTI-to-host normalization; validation retains the requirement so orchestration
+can select a compatible collector.
 
 ## Host and device collection
 
@@ -115,16 +116,18 @@ in-memory array; activity parsing, draining, and binary output happen outside
 the runtime API callback.
 
 The collector decodes the fixed CUPTI ABI into the same protocol `Event` type
-used by eBPF collectors. The exporter writes either source as compact JSONL.
-Clock domains remain explicit; cross-domain normalization and correlation are
-not yet implemented.
+used by eBPF collectors. Before enabling activity collection, the v2 agent
+registers `CLOCK_MONOTONIC` as CUPTI's timestamp callback. CUPTI linearly maps
+GPU timestamps into that clock during activity post-processing. The exporter
+writes either source as compact JSONL.
 
-The correlator can measure a completed CUPTI capture within one clock domain.
+The correlator can measure a completed CUPTI capture within one clock domain or
+between host callback and normalized GPU timestamps.
 Exact matching groups events by CUPTI correlation ID and rejects ambiguous
 groups. First-after matching is chronological, one-to-one, and explicitly
 heuristic. Both paths enforce sample, duration, and event-count bounds and
-report dropped, unmatched, and ambiguous records. Subtracting timestamps from
-different unaligned domains returns `CLOCK_ALIGNMENT_FAILED`.
+report dropped, unmatched, and ambiguous records. Legacy ABI v1 API-to-GPU
+subtraction still returns `CLOCK_ALIGNMENT_FAILED`.
 
 Supported loading paths are CUDA startup injection through
 `CUDA_INJECTION64_PATH` and explicit application/plugin initialization before

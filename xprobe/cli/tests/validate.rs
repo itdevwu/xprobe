@@ -43,12 +43,7 @@ fn validate_reports_environment_requirements_without_attaching() {
             .iter()
             .any(|issue| issue.code == ErrorCode::CuptiAgentNotLoaded)
     );
-    assert!(
-        result
-            .issues
-            .iter()
-            .any(|issue| issue.code == ErrorCode::ClockAlignmentFailed)
-    );
+    assert_eq!(result.issues.len(), 1);
 }
 
 #[test]

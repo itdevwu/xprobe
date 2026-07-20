@@ -213,11 +213,11 @@ drops are included in the result and produce an `EVENTS_DROPPED` warning.
 Unknown source records fail instead of being ignored.
 
 Latency is calculated only when both endpoints use the same clock domain or
-have already been normalized. Kernel start-to-end and API entry-to-exit are
-therefore supported by capture ABI v1. API-to-kernel and host-to-kernel latency
-return `CLOCK_ALIGNMENT_FAILED` until clock calibration is implemented. Live
-multi-source collection from an arbitrary running PID is not part of this
-completed-capture path.
+have already been normalized. Capture ABI v2 normalizes GPU activity to host
+monotonic time, so API-to-kernel measurement is supported. Legacy ABI v1
+captures remain readable, but API-to-kernel subtraction returns
+`CLOCK_ALIGNMENT_FAILED`. Live multi-source collection from an arbitrary
+running PID is not part of this completed-capture path.
 
 The result conforms to `schemas/measurement-result.schema.json`. No matched
 pairs return `NO_MATCHED_SAMPLES`; unsupported policies and unbounded requests
@@ -236,7 +236,11 @@ The command strictly validates the xprobe CUPTI binary ABI and emits one
 versioned `Event` per line. CUDA API names are stored in
 `attributes.cuda_api_name`; GPU records preserve the name supplied by CUPTI in
 `cuda.kernel_name`. API and GPU records expose the exact CUPTI correlation ID.
-Their clock domains remain explicit until a later clock normalization stage.
+ABI v2 GPU records are marked as CUPTI-normalized host monotonic timestamps.
+The serialized activity value is preserved in `timestamp_raw`; CUPTI does not
+expose an interpolation error bound, so `timestamp_error_ns` is null and
+measurement emits `CLOCK_ERROR_UNAVAILABLE`. ABI v1 records retain the legacy
+CUPTI clock domain.
 
 Malformed headers, unsupported ABI versions, invalid lengths, unknown record
 kinds, and invalid names return `TRACE_EXPORT_FAILED`. Nonzero dropped or

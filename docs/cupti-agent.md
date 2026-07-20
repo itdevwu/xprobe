@@ -42,6 +42,12 @@ and kernel records use the same CUPTI correlation ID. Unknown numeric fields are
 reports records dropped after the fixed 65,536-record capacity and unexpected
 activity kinds.
 
+ABI v2 registers a `CLOCK_MONOTONIC` timestamp callback before enabling any
+activity kind. CUPTI uses that callback to linearly normalize GPU activity
+timestamps during post-processing. The record layout is unchanged from ABI v1;
+the version distinguishes this normalized timestamp semantic. ABI v1 remains
+supported for existing captures.
+
 The runtime callback performs no allocation or file I/O. It captures a host
 timestamp and reserves a record slot atomically. CUPTI activity buffers are
 parsed by the activity completion callback. Final flush waits for asynchronous
@@ -67,7 +73,7 @@ target/debug/xprobe dev cupti \
   --json --non-interactive --no-color
 ```
 
-Measure same-clock events in a completed capture:
+Measure correlated events in a completed capture:
 
 ```bash
 target/debug/xprobe measure \
@@ -78,6 +84,6 @@ target/debug/xprobe measure \
   --json --non-interactive --no-color
 ```
 
-CUPTI API callback timestamps use host monotonic time while GPU activity uses
-the CUPTI clock. Capture ABI v1 does not contain calibration samples, so the
-measurement command rejects API-to-GPU subtraction.
+CUPTI API callback timestamps use host monotonic time. In capture ABI v2, CUPTI
+normalizes GPU activity to the same clock before the agent writes the record.
+The measurement command therefore supports exact API-to-GPU subtraction.
