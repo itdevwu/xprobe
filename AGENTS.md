@@ -3,8 +3,9 @@
 ## Sources of truth
 
 - Code, tests, and checked-in JSON schemas define implemented behavior.
-- `README.md` and `docs/` describe released behavior and change with it.
-- `PLAN.md` is non-normative design history.
+- `README.md` and `docs/` describe released behavior. Rewrite stale sections in
+  place when behavior changes; do not append historical caveats or parallel
+  inventories.
 
 ## Boundaries
 

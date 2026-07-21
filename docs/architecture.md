@@ -1,7 +1,6 @@
 # Architecture
 
-This document describes xprobe 0.1.0. `PLAN.md` contains earlier design options
-and is not normative.
+This document describes the implemented xprobe 0.1.0 architecture.
 
 ## Boundary
 

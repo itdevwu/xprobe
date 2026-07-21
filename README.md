@@ -99,5 +99,5 @@ The packaging script rejects an ABI-only agent that is not linked to CUPTI.
 - [Agent integration](docs/agent-integration.md)
 - [Public JSON schemas](schemas/)
 
-Implemented behavior is defined by code, tests, and schemas. [`PLAN.md`](PLAN.md)
-is design history, not a release contract. Licensed under Apache-2.0.
+Implemented behavior is defined by code, tests, and schemas. Licensed under
+Apache-2.0.
