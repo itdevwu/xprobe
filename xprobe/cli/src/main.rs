@@ -254,7 +254,7 @@ struct ValidateArgs {
 #[derive(Debug, Args)]
 struct MeasureArgs {
     /// Versioned `MeasurementSpec` JSON for a live target.
-    #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "samples", "duration_ms", "name"])]
+    #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "samples", "duration_ms", "timeout_ms", "max_events", "name"])]
     spec: Option<PathBuf>,
 
     /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
