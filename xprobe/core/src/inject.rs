@@ -48,6 +48,9 @@ pub enum InjectError {
     },
     UnexpectedStop(WaitStatus),
     TimedOut,
+    RemoteCallTrap {
+        instruction_pointer: u64,
+    },
     ShortMemoryTransfer {
         expected: usize,
         actual: usize,
@@ -69,10 +72,11 @@ impl InjectError {
             | Self::UnexpectedStop(_)
             | Self::TimedOut => ErrorCode::PermissionDenied,
             Self::UnsupportedPlatform => ErrorCode::UnsupportedCudaVersion,
-            Self::InvalidAgent(_) | Self::MissingRuntimeSymbol(_) => ErrorCode::CuptiNotAvailable,
-            Self::ShortMemoryTransfer { .. } | Self::RemoteCallFailed { .. } => {
-                ErrorCode::CuptiNotAvailable
-            }
+            Self::InvalidAgent(_)
+            | Self::MissingRuntimeSymbol(_)
+            | Self::ShortMemoryTransfer { .. }
+            | Self::RemoteCallFailed { .. }
+            | Self::RemoteCallTrap { .. } => ErrorCode::CuptiNotAvailable,
         }
     }
 
@@ -113,6 +117,12 @@ impl fmt::Display for InjectError {
                 )
             }
             Self::TimedOut => formatter.write_str("remote function call timed out"),
+            Self::RemoteCallTrap {
+                instruction_pointer,
+            } => write!(
+                formatter,
+                "remote function trapped at {instruction_pointer:#x} before returning"
+            ),
             Self::ShortMemoryTransfer { expected, actual } => write!(
                 formatter,
                 "remote memory transfer copied {actual} bytes, expected {expected}"
@@ -136,6 +146,7 @@ impl Error for InjectError {
             | Self::Operation { .. }
             | Self::UnexpectedStop(_)
             | Self::TimedOut
+            | Self::RemoteCallTrap { .. }
             | Self::ShortMemoryTransfer { .. }
             | Self::RemoteCallFailed { .. } => None,
         }
@@ -348,41 +359,51 @@ impl RemoteProcess {
         registers.rcx = padded[3];
         registers.r8 = padded[4];
         registers.r9 = padded[5];
-        ptrace::setregs(self.pid, registers).map_err(|source| InjectError::Operation {
-            operation: "write target registers",
-            source,
-        })?;
-        ptrace::cont(self.pid, None).map_err(|source| InjectError::Operation {
-            operation: "continue target for remote call",
-            source,
-        })?;
+        if let Err(source) = ptrace::setregs(self.pid, registers) {
+            self.restore_call_state(stack_pointer, saved_stack, saved)?;
+            return Err(InjectError::Operation {
+                operation: "write target registers",
+                source,
+            });
+        }
+        if let Err(source) = ptrace::cont(self.pid, None) {
+            self.restore_call_state(stack_pointer, saved_stack, saved)?;
+            return Err(InjectError::Operation {
+                operation: "continue target for remote call",
+                source,
+            });
+        }
 
-        let call_result = self.wait_for_call();
-        let return_value = match call_result {
-            Ok(()) => {
-                ptrace::getregs(self.pid)
-                    .map_err(|source| InjectError::Operation {
-                        operation: "read remote call result",
-                        source,
-                    })?
-                    .rax
+        let execution = self.wait_for_call().and_then(|()| {
+            let result = ptrace::getregs(self.pid).map_err(|source| InjectError::Operation {
+                operation: "read remote call result",
+                source,
+            })?;
+            if result.rip != 0 {
+                return Err(InjectError::RemoteCallTrap {
+                    instruction_pointer: result.rip,
+                });
             }
-            Err(error) => {
-                self.ensure_stopped()?;
-                self.write_memory(stack_pointer, &saved_stack)?;
-                ptrace::setregs(self.pid, saved).map_err(|source| InjectError::Operation {
-                    operation: "restore target registers",
-                    source,
-                })?;
-                return Err(error);
-            }
-        };
+            Ok(result.rax)
+        });
+        if matches!(&execution, Err(InjectError::TimedOut)) {
+            self.ensure_stopped()?;
+        }
+        self.restore_call_state(stack_pointer, saved_stack, saved)?;
+        execution
+    }
+
+    fn restore_call_state(
+        &self,
+        stack_pointer: u64,
+        saved_stack: [u8; 8],
+        saved_registers: nix::libc::user_regs_struct,
+    ) -> Result<(), InjectError> {
         self.write_memory(stack_pointer, &saved_stack)?;
-        ptrace::setregs(self.pid, saved).map_err(|source| InjectError::Operation {
+        ptrace::setregs(self.pid, saved_registers).map_err(|source| InjectError::Operation {
             operation: "restore target registers",
             source,
-        })?;
-        Ok(return_value)
+        })
     }
 
     fn read_memory(&self, address: u64, buffer: &mut [u8]) -> Result<(), InjectError> {
@@ -490,7 +511,7 @@ impl Drop for RemoteProcess {
 mod tests {
     use std::{process::Command, thread, time::Duration};
 
-    use super::{RemoteProcess, resolve_runtime_symbol};
+    use super::{InjectError, RemoteProcess, resolve_runtime_symbol};
     use crate::inspect;
 
     #[test]
@@ -500,6 +521,13 @@ mod tests {
         let report = inspect::run(child.id()).unwrap();
         let getpid = resolve_runtime_symbol(&report, "getpid").unwrap();
         let mut remote = RemoteProcess::attach(child.id(), Duration::from_secs(2)).unwrap();
+        assert_eq!(remote.call(getpid, &[]).unwrap(), u64::from(child.id()));
+        assert!(matches!(
+            remote.call(1, &[]),
+            Err(InjectError::RemoteCallTrap {
+                instruction_pointer: 1
+            })
+        ));
         assert_eq!(remote.call(getpid, &[]).unwrap(), u64::from(child.id()));
         remote.detach().unwrap();
         assert!(child.try_wait().unwrap().is_none());
