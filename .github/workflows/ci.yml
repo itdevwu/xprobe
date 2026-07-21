@@ -43,7 +43,9 @@ jobs:
       - run: cmake --build build/cuda --target xprobe-cupti xprobe-cupti-smoke
       - run: ctest --test-dir build/cuda --output-on-failure -R cupti-smoke
       - name: Verify CUPTI linkage
-        run: readelf -d build/cuda/cupti/libxprobe-cupti.so | grep -F 'Shared library: [libcupti.so.13]'
+        run: >-
+          readelf -d build/cuda/cupti/libxprobe-cupti.so |
+          grep -F 'Shared library: [libcupti.so.13]'
       - uses: actions/upload-artifact@v4
         with:
           name: xprobe-cupti-linux-x86_64
