@@ -64,7 +64,7 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
     assert header["abi_version"] == 1
     assert header["header_size"] == HEADER.size
     assert header["record_size"] == RECORD.size
-    assert header["feature_flags"] == 3
+    assert header["feature_flags"] in {2, 3}
     assert len(data) == header["header_size"] + header["record_count"] * RECORD.size
     records = [
         decode_record(data[offset : offset + RECORD.size])
@@ -111,30 +111,48 @@ def measure(
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: test_cupti.py <container-image> <xprobe-binary>")
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit(
+            "usage: test_cupti.py <container-image> <xprobe-binary> [prebuilt-agent]"
+        )
 
     workspace = pathlib.Path(__file__).resolve().parents[2]
     xprobe = workspace / sys.argv[2]
+    expect_aligned = ":12.0." not in sys.argv[1]
     with tempfile.TemporaryDirectory(prefix="xprobe-cupti-") as output_dir:
         capture = pathlib.Path(output_dir) / "events.bin"
-        completed = subprocess.run(
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "--gpus",
+            "all",
+            "--volume",
+            f"{workspace}:/workspace:ro",
+            "--volume",
+            f"{output_dir}:/output",
+        ]
+        if len(sys.argv) == 4:
+            agent = (workspace / sys.argv[3]).resolve()
+            command.extend(
+                [
+                    "--volume",
+                    f"{agent}:/prebuilt/libxprobe-cupti.so:ro",
+                    "--env",
+                    "XPROBE_PREBUILT_AGENT=/prebuilt/libxprobe-cupti.so",
+                ]
+            )
+        command.extend(
             [
-                "docker",
-                "run",
-                "--rm",
-                "--gpus",
-                "all",
-                "--volume",
-                f"{workspace}:/workspace:ro",
-                "--volume",
-                f"{output_dir}:/output",
                 "--workdir",
                 "/workspace",
                 sys.argv[1],
                 "/workspace/tests/integration/run-cupti-live.sh",
                 "/output/events.bin",
-            ],
+            ]
+        )
+        completed = subprocess.run(
+            command,
             check=False,
             capture_output=True,
             text=True,
@@ -217,19 +235,21 @@ def main() -> None:
             capture_output=True,
             text=True,
         )
-        if cross_domain.returncode != 0:
-            sys.stdout.write(cross_domain.stdout)
-            sys.stderr.write(cross_domain.stderr)
-            raise SystemExit(cross_domain.returncode)
         assert cross_domain.stderr == ""
         cross_measurement = json.loads(cross_domain.stdout)
-        driver_measurement = measure(
-            xprobe,
-            capture,
-            "cuda:driver_api:cuLaunchKernel:entry",
-            "cuda:kernel_start:name~xprobe_test_kernel.*",
-            "3",
-        )
+        if expect_aligned:
+            assert cross_domain.returncode == 0
+            driver_measurement = measure(
+                xprobe,
+                capture,
+                "cuda:driver_api:cuLaunchKernel:entry",
+                "cuda:kernel_start:name~xprobe_test_kernel.*",
+                "3",
+            )
+        else:
+            assert cross_domain.returncode != 0
+            assert cross_measurement["error"]["code"] == "CLOCK_ALIGNMENT_FAILED"
+            driver_measurement = None
         memcpy_measurement = measure(
             xprobe,
             capture,
@@ -253,6 +273,7 @@ def main() -> None:
     ), diagnostics
     assert header["dropped_records"] == 0
     assert header["unknown_records"] == 0
+    assert bool(header["feature_flags"] & 1) is expect_aligned
     assert all(record["timestamp_ns"] > 0 for record in records)
     assert all(record["pid"] > 0 and record["tid"] > 0 for record in records)
 
@@ -334,8 +355,11 @@ def main() -> None:
         for event in events
         if event["event_type"] in {"cuda_api_entry", "cuda_api_exit"}
     )
+    expected_activity_clock = (
+        "cupti_normalized_to_host_monotonic" if expect_aligned else "cupti"
+    )
     assert all(
-        event["clock_domain"] == "cupti_normalized_to_host_monotonic"
+        event["clock_domain"] == expected_activity_clock
         and event["timestamp_error_ns"] is None
         and event["timestamp_raw"] == event["timestamp_ns"]
         for event in events
@@ -384,25 +408,31 @@ def main() -> None:
         >= measurement["measurement"]["latency_ns"]["min"]
     )
     assert measurement["correlation"]["confidence"] == "exact"
-    assert (
-        measurement["clock"]["alignment"]
-        == "cupti_normalized_to_host_monotonic"
+    expected_measurement_clock = (
+        "cupti_normalized_to_host_monotonic"
+        if expect_aligned
+        else "cupti_same_domain"
     )
-    assert measurement["clock"]["estimated_error_ns"] is None
-    assert cross_measurement["measurement"]["samples"]["matched"] == 3
-    assert cross_measurement["measurement"]["latency_ns"]["min"] > 0
-    assert cross_measurement["correlation"]["confidence"] == "exact"
-    assert (
-        cross_measurement["clock"]["alignment"]
-        == "cupti_normalized_to_host_monotonic"
+    assert measurement["clock"]["alignment"] == expected_measurement_clock
+    assert measurement["clock"]["estimated_error_ns"] == (
+        None if expect_aligned else 0
     )
-    assert cross_measurement["clock"]["estimated_error_ns"] is None
-    assert [warning["code"] for warning in cross_measurement["warnings"]] == [
-        "CLOCK_ERROR_UNAVAILABLE"
-    ]
-    assert driver_measurement["measurement"]["samples"]["matched"] == 3
-    assert driver_measurement["measurement"]["latency_ns"]["min"] > 0
-    assert driver_measurement["correlation"]["confidence"] == "exact"
+    if expect_aligned:
+        assert cross_measurement["measurement"]["samples"]["matched"] == 3
+        assert cross_measurement["measurement"]["latency_ns"]["min"] > 0
+        assert cross_measurement["correlation"]["confidence"] == "exact"
+        assert (
+            cross_measurement["clock"]["alignment"]
+            == "cupti_normalized_to_host_monotonic"
+        )
+        assert cross_measurement["clock"]["estimated_error_ns"] is None
+        assert [warning["code"] for warning in cross_measurement["warnings"]] == [
+            "CLOCK_ERROR_UNAVAILABLE"
+        ]
+        assert driver_measurement is not None
+        assert driver_measurement["measurement"]["samples"]["matched"] == 3
+        assert driver_measurement["measurement"]["latency_ns"]["min"] > 0
+        assert driver_measurement["correlation"]["confidence"] == "exact"
     assert memcpy_measurement["measurement"]["samples"]["matched"] == 2
     assert memcpy_measurement["measurement"]["latency_ns"]["min"] > 0
     assert memcpy_measurement["correlation"]["confidence"] == "exact"
@@ -416,15 +446,22 @@ def main() -> None:
                 "records": len(records),
                 "events": len(events),
                 "matched": measurement["measurement"]["samples"]["matched"],
-                "cross_domain_matched": cross_measurement["measurement"]["samples"][
-                    "matched"
-                ],
-                "api_to_kernel_min_ns": cross_measurement["measurement"]["latency_ns"][
-                    "min"
-                ],
-                "driver_to_kernel_matched": driver_measurement["measurement"]["samples"][
-                    "matched"
-                ],
+                "clock_aligned": expect_aligned,
+                "cross_domain_matched": (
+                    cross_measurement["measurement"]["samples"]["matched"]
+                    if expect_aligned
+                    else 0
+                ),
+                "api_to_kernel_min_ns": (
+                    cross_measurement["measurement"]["latency_ns"]["min"]
+                    if expect_aligned
+                    else None
+                ),
+                "driver_to_kernel_matched": (
+                    driver_measurement["measurement"]["samples"]["matched"]
+                    if driver_measurement is not None
+                    else 0
+                ),
                 "memcpy_matched": memcpy_measurement["measurement"]["samples"][
                     "matched"
                 ],

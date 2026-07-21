@@ -64,6 +64,8 @@ int xprobe_cupti_agent_flush(void)
 
 #define XPROBE_CUPTI_MAX_RECORDS 65536U
 #define XPROBE_CUPTI_ACTIVITY_BUFFER_SIZE (8U * 1024U * 1024U)
+#define XPROBE_CUPTI_CLOCK_MARGIN_NS 1000000000U
+#define XPROBE_CUPTI_CORRELATION_CLOCK_MARGIN_NS 1000000U
 
 _Static_assert(sizeof(struct xprobe_cupti_output_header) == 48U,
                "unexpected CUPTI output header layout");
@@ -84,6 +86,9 @@ static _Atomic int agent_status = XPROBE_CUPTI_AGENT_UNAVAILABLE;
 static _Atomic unsigned int last_cupti_result;
 static _Atomic int output_written;
 static uint32_t runtime_cupti_version;
+static int64_t activity_timestamp_offset_ns;
+static uint64_t capture_start_timestamp_ns;
+static _Atomic int clock_alignment_warning_emitted;
 static CUpti_SubscriberHandle subscriber;
 static int subscriber_active;
 static int agent_initialized;
@@ -118,6 +123,8 @@ static void reset_capture(void)
     atomic_store_explicit(&completed_buffers, 0U, memory_order_relaxed);
     atomic_store_explicit(&last_cupti_result, 0U, memory_order_relaxed);
     atomic_store_explicit(&output_written, 0, memory_order_relaxed);
+    atomic_store_explicit(&clock_alignment_warning_emitted, 0,
+                          memory_order_relaxed);
 }
 
 static void remember_cupti_error(CUptiResult result)
@@ -163,12 +170,62 @@ static int monotonic_timestamp_ns(uint64_t *timestamp_ns)
     return XPROBE_CUPTI_AGENT_READY;
 }
 
+#if CUPTI_API_VERSION >= 130000
 static uint64_t activity_timestamp(void)
 {
     uint64_t timestamp_ns = 0U;
 
     (void)monotonic_timestamp_ns(&timestamp_ns);
     return timestamp_ns;
+}
+#else
+
+static int calibrate_activity_timestamp(void)
+{
+    uint64_t host_before;
+    uint64_t host_after;
+    uint64_t host_midpoint;
+    uint64_t cupti_timestamp;
+    uint64_t difference;
+    CUptiResult result;
+
+    if (monotonic_timestamp_ns(&host_before) != XPROBE_CUPTI_AGENT_READY) {
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
+    result = cuptiGetTimestamp(&cupti_timestamp);
+    if (result != CUPTI_SUCCESS) {
+        report_cupti_error("cuptiGetTimestamp", result);
+        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+    }
+    if (monotonic_timestamp_ns(&host_after) != XPROBE_CUPTI_AGENT_READY) {
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
+    host_midpoint = host_before + (host_after - host_before) / 2U;
+    if (cupti_timestamp >= host_midpoint) {
+        difference = cupti_timestamp - host_midpoint;
+        if (difference > (uint64_t)INT64_MAX) {
+            fprintf(stderr, "xprobe CUPTI: activity clock offset exceeds int64\n");
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+        activity_timestamp_offset_ns = -(int64_t)difference;
+    } else {
+        difference = host_midpoint - cupti_timestamp;
+        if (difference > (uint64_t)INT64_MAX) {
+            fprintf(stderr, "xprobe CUPTI: activity clock offset exceeds int64\n");
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+        activity_timestamp_offset_ns = (int64_t)difference;
+    }
+    return XPROBE_CUPTI_AGENT_READY;
+}
+#endif
+
+static uint64_t normalize_activity_timestamp(uint64_t timestamp_ns)
+{
+    if (activity_timestamp_offset_ns < 0) {
+        return timestamp_ns - (uint64_t)(-activity_timestamp_offset_ns);
+    }
+    return timestamp_ns + (uint64_t)activity_timestamp_offset_ns;
 }
 
 static void copy_name(char destination[XPROBE_CUPTI_NAME_LENGTH],
@@ -293,7 +350,7 @@ static void enqueue_kernel_record(uint32_t device_id, uint32_t context_id,
 {
     struct xprobe_cupti_record record;
 
-    initialize_record(&record, kind, timestamp_ns);
+    initialize_record(&record, kind, normalize_activity_timestamp(timestamp_ns));
     record.device_id = device_id;
     record.context_id = context_id;
     record.stream_id = stream_id;
@@ -361,7 +418,7 @@ static void enqueue_memcpy_record(const CUpti_ActivityMemcpy6 *memcpy_record,
 {
     struct xprobe_cupti_record record;
 
-    initialize_record(&record, kind, timestamp_ns);
+    initialize_record(&record, kind, normalize_activity_timestamp(timestamp_ns));
     record.device_id = memcpy_record->deviceId;
     record.context_id = memcpy_record->contextId;
     record.stream_id = memcpy_record->streamId;
@@ -377,7 +434,7 @@ static void enqueue_memset_record(const CUpti_ActivityMemset4 *memset_record,
 {
     struct xprobe_cupti_record record;
 
-    initialize_record(&record, kind, timestamp_ns);
+    initialize_record(&record, kind, normalize_activity_timestamp(timestamp_ns));
     record.device_id = memset_record->deviceId;
     record.context_id = memset_record->contextId;
     record.stream_id = memset_record->streamId;
@@ -548,6 +605,64 @@ static int receive_all(int descriptor, void *data, size_t size)
     return 0;
 }
 
+static int activity_timestamps_are_host_monotonic(uint64_t available)
+{
+    uint64_t capture_end_timestamp_ns;
+    const struct xprobe_cupti_record *first_kernel = NULL;
+
+    if (monotonic_timestamp_ns(&capture_end_timestamp_ns) !=
+        XPROBE_CUPTI_AGENT_READY) {
+        return 0;
+    }
+    for (uint64_t index = 0U; index < available; ++index) {
+        const struct xprobe_cupti_record *record = &records[index];
+        uint64_t timestamp_ns = record->timestamp_ns;
+        int is_activity = record->kind >= XPROBE_CUPTI_GPU_KERNEL_START &&
+                          record->kind <= XPROBE_CUPTI_GPU_MEMSET_END;
+
+        if (is_activity == 0) {
+            continue;
+        }
+        if ((timestamp_ns < capture_start_timestamp_ns &&
+             capture_start_timestamp_ns - timestamp_ns >
+                 XPROBE_CUPTI_CLOCK_MARGIN_NS) ||
+            (timestamp_ns > capture_end_timestamp_ns &&
+             timestamp_ns - capture_end_timestamp_ns >
+                 XPROBE_CUPTI_CLOCK_MARGIN_NS)) {
+            goto unaligned;
+        }
+        if (first_kernel == NULL &&
+            record->kind == XPROBE_CUPTI_GPU_KERNEL_START) {
+            first_kernel = record;
+        }
+    }
+    if (first_kernel != NULL) {
+        for (uint64_t index = 0U; index < available; ++index) {
+            const struct xprobe_cupti_record *record = &records[index];
+
+            if (record->kind == XPROBE_CUPTI_CUDA_API_ENTRY &&
+                record->correlation_id == first_kernel->correlation_id) {
+                if (first_kernel->timestamp_ns < record->timestamp_ns &&
+                    record->timestamp_ns - first_kernel->timestamp_ns >
+                        XPROBE_CUPTI_CORRELATION_CLOCK_MARGIN_NS) {
+                    goto unaligned;
+                }
+                break;
+            }
+        }
+    }
+    return 1;
+
+unaligned:
+    if (atomic_exchange_explicit(&clock_alignment_warning_emitted, 1,
+                                 memory_order_relaxed) == 0) {
+        fprintf(stderr,
+                "xprobe CUPTI: activity timestamps are not aligned to "
+                "CLOCK_MONOTONIC\n");
+    }
+    return 0;
+}
+
 static void initialize_output_header(struct xprobe_cupti_output_header *header,
                                      uint64_t available)
 {
@@ -556,8 +671,10 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
     header->abi_version = XPROBE_CUPTI_AGENT_ABI_VERSION;
     header->header_size = sizeof(*header);
     header->record_size = sizeof(records[0]);
-    header->feature_flags = XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS |
-                            XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS;
+    header->feature_flags = XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS;
+    if (activity_timestamps_are_host_monotonic(available) != 0) {
+        header->feature_flags |= XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS;
+    }
     header->record_count = available;
     header->dropped_records =
         atomic_load_explicit(&dropped_records, memory_order_relaxed);
@@ -813,7 +930,9 @@ static void shutdown_agent(void)
 
 static int initialize_agent(void)
 {
+#if CUPTI_API_VERSION >= 130000
     CUpti_TimestampCallbackFunc timestamp_callback = activity_timestamp;
+#endif
     CUptiResult result;
 
     result = cuptiGetVersion(&runtime_cupti_version);
@@ -821,18 +940,30 @@ static int initialize_agent(void)
         report_cupti_error("cuptiGetVersion", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
+    if (monotonic_timestamp_ns(&capture_start_timestamp_ns) !=
+        XPROBE_CUPTI_AGENT_READY) {
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
     result = cuptiSubscribe(&subscriber, api_callback, NULL);
     if (result != CUPTI_SUCCESS) {
         report_cupti_error("cuptiSubscribe", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
     subscriber_active = 1;
+#if CUPTI_API_VERSION < 130000
+    int calibration_status = calibrate_activity_timestamp();
+    if (calibration_status != XPROBE_CUPTI_AGENT_READY) {
+        shutdown_agent();
+        return calibration_status;
+    }
+#else
     result = cuptiActivityRegisterTimestampCallback(timestamp_callback);
     if (result != CUPTI_SUCCESS) {
         report_cupti_error("cuptiActivityRegisterTimestampCallback", result);
         shutdown_agent();
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
+#endif
     result = cuptiActivityRegisterCallbacks(activity_buffer_requested,
                                             activity_buffer_completed);
     if (result != CUPTI_SUCCESS) {

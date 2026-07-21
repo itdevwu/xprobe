@@ -8,20 +8,22 @@ fi
 
 build_dir=/tmp/xprobe-cupti-live
 cuda_root=/usr/local/cuda
-agent="${build_dir}/libxprobe-cupti.so"
+agent=${XPROBE_PREBUILT_AGENT:-${build_dir}/libxprobe-cupti.so}
 fixture="${build_dir}/xprobe-cuda-launch"
 compute_capability=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed -n '1p')
 compute_arch=${compute_capability//./}
 
 mkdir -p "${build_dir}"
 
-gcc \
-  -std=c11 -D_GNU_SOURCE -DXPROBE_HAS_CUPTI=1 \
-  -fPIC -shared -pthread -O2 -Wall -Wextra -Wpedantic -Werror \
-  -I/workspace/cupti/include -isystem "${cuda_root}/include" \
-  /workspace/cupti/src/cupti_agent.c \
-  -L"${cuda_root}/lib64" -Wl,-rpath,"${cuda_root}/lib64" -lcupti \
-  -o "${agent}"
+if [[ -z ${XPROBE_PREBUILT_AGENT:-} ]]; then
+  gcc \
+    -std=c11 -D_GNU_SOURCE -DXPROBE_HAS_CUPTI=1 \
+    -fPIC -shared -pthread -O2 -Wall -Wextra -Wpedantic -Werror \
+    -I/workspace/cupti/include -isystem "${cuda_root}/include" \
+    /workspace/cupti/src/cupti_agent.c \
+    -L"${cuda_root}/lib64" -Wl,-rpath,"${cuda_root}/lib64" -lcupti \
+    -o "${agent}"
+fi
 
 nvcc \
   -std=c++17 -O2 \
