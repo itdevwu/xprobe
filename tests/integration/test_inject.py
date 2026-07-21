@@ -7,31 +7,48 @@ import tempfile
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: test_inject.py <container-image>")
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit("usage: test_inject.py <container-image> [package-root]")
     workspace = pathlib.Path(__file__).resolve().parents[2]
+    package = pathlib.Path(sys.argv[2]).resolve() if len(sys.argv) == 3 else None
     with tempfile.TemporaryDirectory(prefix="xprobe-inject-") as output_dir:
-        completed = subprocess.run(
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "--gpus",
+            "all",
+            "--cap-add",
+            "SYS_PTRACE",
+            "--security-opt",
+            "seccomp=unconfined",
+            "--volume",
+            f"{workspace}:/workspace:ro",
+            "--volume",
+            f"{output_dir}:/output",
+        ]
+        if package is not None:
+            command.extend(
+                [
+                    "--volume",
+                    f"{package}:/package:ro",
+                    "--env",
+                    "XPROBE_BIN=/package/bin/xprobe",
+                    "--env",
+                    "XPROBE_AUTO_AGENT=1",
+                ]
+            )
+        command.extend(
             [
-                "docker",
-                "run",
-                "--rm",
-                "--gpus",
-                "all",
-                "--cap-add",
-                "SYS_PTRACE",
-                "--security-opt",
-                "seccomp=unconfined",
-                "--volume",
-                f"{workspace}:/workspace:ro",
-                "--volume",
-                f"{output_dir}:/output",
                 "--workdir",
                 "/workspace",
                 sys.argv[1],
                 "/workspace/tests/integration/run-inject-live.sh",
                 "/output",
-            ],
+            ]
+        )
+        completed = subprocess.run(
+            command,
             check=False,
             capture_output=True,
             text=True,
@@ -56,6 +73,16 @@ def main() -> None:
         assert any(warning["code"] == "CUPTI_AGENT_INJECTED" for warning in first["warnings"])
         assert all(warning["code"] != "CUPTI_AGENT_INJECTED" for warning in second["warnings"])
         assert int((output / "mapped-agents.txt").read_text()) == 1
+        if package is not None:
+            expected_major = 12 if ":12." in sys.argv[1] else 13
+            injected = next(
+                warning
+                for warning in first["warnings"]
+                if warning["code"] == "CUPTI_AGENT_INJECTED"
+            )
+            assert injected["details"]["cuda_major"] == expected_major
+            assert f"/cuda{expected_major}/" in injected["details"]["agent_path"]
+            assert "libcupti.so" in injected["details"]["cupti_path"]
         print(
             json.dumps(
                 {

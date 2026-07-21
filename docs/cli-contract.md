@@ -1,6 +1,6 @@
 # CLI contract
 
-xprobe 0.1.0 exposes exactly four public commands: `doctor`, `discover`,
+xprobe 0.2.0 exposes exactly four public commands: `doctor`, `discover`,
 `validate`, and `measure`.
 
 ## Common behavior
@@ -32,7 +32,8 @@ xprobe doctor --json --non-interactive --no-color
 Reports Linux/kernel identity, BTF, BPF/perf permissions, lockdown, ptrace
 policy, NVIDIA driver, CUDA toolkit/driver, CUPTI, namespaces, and conservative
 capability booleans. `ok: true` means diagnosis completed, not that every
-capability is available.
+capability is available. The CUPTI check lists each supported installed major
+and its resolved library path.
 
 ## `discover`
 
@@ -82,6 +83,11 @@ activity endpoints. Temporal policies always warn that they are heuristic.
 `injection_required`. The last value sets `target_mutation: true` and emits
 `TARGET_PROCESS_WILL_BE_MODIFIED`; it does not make an otherwise collectable
 request invalid. Callers must still stop on `valid: false`.
+Mapped CUDA/CUPTI majors that conflict or fall outside 12 and 13 produce
+`UNSUPPORTED_CUDA_VERSION`.
+CUDA major support does not imply host-clock alignment: `measure` accepts
+GPU-only pairs in the CUPTI clock and rejects CPU/GPU subtraction when the
+capture omits the host-monotonic feature flag.
 
 ## `measure`
 
@@ -120,7 +126,9 @@ mode. `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000.
 Live host endpoints attach PID-scoped eBPF probes. CUDA endpoints automatically
 activate the CUPTI agent. If it is absent, `--agent` or
 `XPROBE_CUPTI_AGENT_PATH` selects the shared object; otherwise xprobe searches
-its installed `../lib/xprobe` path and development build path. Injection
+`../lib/xprobe/cuda12` or `../lib/xprobe/cuda13` according to the target and
+then the matching development build path. An unobservable target major is
+accepted only when exactly one supported CUPTI major is installed. Injection
 requires Linux x86_64, a shared mount namespace, and ptrace permission. It emits
 a stderr warning and `CUPTI_AGENT_INJECTED`. Final stop disables CUPTI and
 removes the socket while leaving the `.so` mapped.
@@ -150,6 +158,6 @@ error are never silently converted to high-quality results.
 
 ## Compatibility
 
-Earlier low-level command spellings remain hidden during the 0.1 transition so
+Earlier low-level command spellings remain hidden during the pre-1.0 transition so
 existing integration fixtures can decode captures. They are not public API and
 must not be used by Skills or new automation.

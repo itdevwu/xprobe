@@ -16,6 +16,10 @@ jobs:
           components: clippy,rustfmt
       - uses: taiki-e/install-action@just
       - run: just test-bpf-live
+      - run: just test-cupti-live-cuda12
+      - run: just test-cupti-live-cuda12-min
+      - run: just test-injection-live-cuda12
+      - run: just test-multisource-live-cuda12
       - run: just test-cupti-live
       - run: just test-injection-live
       - run: just test-multisource-live

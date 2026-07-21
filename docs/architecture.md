@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the implemented xprobe 0.1.0 architecture.
+This document describes the implemented xprobe 0.2.0 architecture.
 
 ## Boundary
 
@@ -76,11 +76,18 @@ host endpoint. The BPF path only filters identity, records monotonic timestamps
 and CPU/TID, updates bounded counters, and submits fixed records. Rust ownership
 detaches links on every return path.
 
-CUDA events use an in-process CUPTI agent. It subscribes to Runtime and Driver
-API callbacks and concurrent kernel, memcpy, and memset activity. Callbacks
+CUDA events use an in-process CUPTI Agent. CUDA 12 and CUDA 13 builds share the
+same source and capture ABI but link `libcupti.so.12` and `libcupti.so.13`
+respectively. CUDA 12 decodes Kernel9 records; CUDA 13 selects Kernel10,
+Kernel11, or Kernel12 from the runtime CUPTI version. The Agent subscribes to
+Runtime and Driver API callbacks and concurrent kernel, memcpy, and memset activity. Callbacks
 write fixed records to a bounded 65,536-slot array without blocking I/O. CUPTI
 activity timestamps are normalized to `CLOCK_MONOTONIC` through its timestamp
-callback; ABI feature flags declare that semantic.
+callback or an explicit CUDA 12 clock calibration. Before each capture is
+written, activity timestamps must fall within the bounded Agent activation and
+snapshot window. The ABI host-monotonic feature flag is cleared when that check
+fails, preserving GPU same-domain durations while preventing cross-domain
+subtraction.
 
 The Unix socket control protocol has two commands: snapshot and stop. Stop
 flushes final activity, returns the final capture, disables activities,
@@ -91,7 +98,8 @@ again.
 ## Online injection
 
 When CUDA collection is required and no compatibility socket was supplied,
-`measure` uses ptrace on Linux x86_64. It resolves target `malloc`, `free`,
+`measure` derives the major from mapped CUPTI/CUDART libraries and selects the
+matching installed Agent. It then uses ptrace on Linux x86_64. It resolves target `malloc`, `free`,
 `dlopen`, and `dlsym`, executes them on one stopped target thread, and calls
 `xprobe_cupti_agent_start` with a private socket path. Each remote call saves and
 restores registers and the touched stack word. An unexpected trap, timeout, or
