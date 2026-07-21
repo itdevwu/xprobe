@@ -6,8 +6,8 @@ use regex::Regex;
 use xprobe_protocol::{
     ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary,
     ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics, MatchPolicy,
-    Measurement, MeasurementResult, MemcpyKind, SampleSummary, SchemaVersion, SessionStatus,
-    Warning,
+    MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, SampleSummary, SchemaVersion,
+    SessionStatus, Warning,
 };
 
 #[derive(Debug, Clone)]
@@ -375,8 +375,15 @@ impl Selector {
 }
 
 #[derive(Debug)]
-struct Outcome {
-    latencies: Vec<u64>,
+struct Pair<'a> {
+    start: &'a Event,
+    end: &'a Event,
+    latency_ns: u64,
+}
+
+#[derive(Debug)]
+struct Outcome<'a> {
+    pairs: Vec<Pair<'a>>,
     unmatched_start: u64,
     unmatched_end: u64,
     ambiguous: u64,
@@ -422,11 +429,16 @@ pub fn measure(
         MatchPolicy::StackNested => correlate_stack_nested(&starts, &ends, options.samples),
         MatchPolicy::StreamOrder => correlate_stream_order(&starts, &ends, options.samples),
     };
-    if outcome.latencies.is_empty() {
+    if outcome.pairs.is_empty() {
         return Err(MeasureError::NoMatchedSamples);
     }
 
-    let matched = outcome.latencies.len() as u64;
+    let matched = outcome.pairs.len() as u64;
+    let latencies = outcome
+        .pairs
+        .iter()
+        .map(|pair| pair.latency_ns)
+        .collect::<Vec<_>>();
     let denominator = matched + outcome.unmatched_start + outcome.unmatched_end + outcome.ambiguous;
     let (method, confidence) = correlation_metadata(options.match_policy);
     let warnings = measurement_warnings(options, &starts, &ends);
@@ -450,7 +462,7 @@ pub fn measure(
                 ambiguous: outcome.ambiguous,
                 dropped: options.dropped_events,
             },
-            latency_ns: statistics(&outcome.latencies),
+            latency_ns: statistics(&latencies),
         },
         correlation: CorrelationSummary {
             method: method.to_owned(),
@@ -464,13 +476,22 @@ pub fn measure(
                 ClockDomain::CuptiNormalizedToHostMonotonic => "cupti_normalized_to_host_monotonic",
             }
             .to_owned(),
-            estimated_error_ns: maximum_timestamp_error(&starts, &ends),
+            estimated_error_ns: maximum_timestamp_error(&outcome.pairs),
         },
         collection: CollectionSummary {
             host_events,
             cuda_events,
             dropped_events: options.dropped_events,
         },
+        evidence: outcome
+            .pairs
+            .into_iter()
+            .map(|pair| MatchedEventPair {
+                start: pair.start.clone(),
+                end: pair.end.clone(),
+                latency_ns: pair.latency_ns,
+            })
+            .collect(),
         warnings,
     })
 }
@@ -630,7 +651,11 @@ const fn clock_group(domain: &ClockDomain) -> u8 {
     }
 }
 
-fn correlate_exact(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+fn correlate_exact<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    limit: Option<usize>,
+) -> Outcome<'a> {
     let mut start_groups: BTreeMap<u32, Vec<&Event>> = BTreeMap::new();
     let mut end_groups: BTreeMap<u32, Vec<&Event>> = BTreeMap::new();
     let mut unmatched_start = 0_u64;
@@ -664,33 +689,41 @@ fn correlate_exact(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> 
         let start = group[0];
         let end = end_group[0];
         if let Some(latency) = end.timestamp_ns.checked_sub(start.timestamp_ns) {
-            pairs.push((start.timestamp_ns, latency));
+            pairs.push(Pair {
+                start,
+                end,
+                latency_ns: latency,
+            });
         } else {
             unmatched_start += 1;
             unmatched_end += 1;
         }
     }
     unmatched_end += end_groups.values().map(Vec::len).sum::<usize>() as u64;
-    pairs.sort_by_key(|(timestamp, _)| *timestamp);
+    pairs.sort_by_key(|pair| pair.start.timestamp_ns);
     if let Some(limit) = limit {
         pairs.truncate(limit);
     }
     Outcome {
-        latencies: pairs.into_iter().map(|(_, latency)| latency).collect(),
+        pairs,
         unmatched_start,
         unmatched_end,
         ambiguous,
     }
 }
 
-fn correlate_first_after(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+fn correlate_first_after<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    limit: Option<usize>,
+) -> Outcome<'a> {
     let limit = limit.unwrap_or(usize::MAX);
-    let mut latencies = Vec::new();
+    let mut pairs = Vec::new();
     let mut unmatched_start = 0_u64;
     let mut unmatched_end = 0_u64;
     let mut end_index = 0;
     for (start_index, start) in starts.iter().enumerate() {
-        if latencies.len() == limit {
+        if pairs.len() == limit {
             break;
         }
         while end_index < ends.len() && ends[end_index].timestamp_ns < start.timestamp_ns {
@@ -698,35 +731,43 @@ fn correlate_first_after(starts: &[&Event], ends: &[&Event], limit: Option<usize
             end_index += 1;
         }
         if let Some(end) = ends.get(end_index) {
-            latencies.push(end.timestamp_ns - start.timestamp_ns);
+            pairs.push(Pair {
+                start,
+                end,
+                latency_ns: end.timestamp_ns - start.timestamp_ns,
+            });
             end_index += 1;
         } else {
             unmatched_start += (starts.len() - start_index) as u64;
             break;
         }
     }
-    if latencies.len() < limit {
+    if pairs.len() < limit {
         unmatched_end += (ends.len() - end_index) as u64;
     }
     Outcome {
-        latencies,
+        pairs,
         unmatched_start,
         unmatched_end,
         ambiguous: 0,
     }
 }
 
-fn correlate_nearest(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+fn correlate_nearest<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    limit: Option<usize>,
+) -> Outcome<'a> {
     let limit = limit.unwrap_or(usize::MAX);
     let mut available = BTreeMap::<u64, Vec<&Event>>::new();
     for end in ends {
         available.entry(end.timestamp_ns).or_default().push(end);
     }
-    let mut latencies = Vec::new();
+    let mut pairs = Vec::new();
     let mut unmatched_start = 0_u64;
     let mut reached_limit = false;
     for (index, start) in starts.iter().enumerate() {
-        if latencies.len() == limit {
+        if pairs.len() == limit {
             reached_limit = true;
             break;
         }
@@ -752,17 +793,21 @@ fn correlate_nearest(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -
                 break;
             }
         };
-        latencies.push(selected.abs_diff(start.timestamp_ns));
         let bucket = available
             .get_mut(&selected)
             .expect("selected timestamp must remain available");
-        bucket.pop().expect("timestamp bucket must be nonempty");
+        let end = bucket.pop().expect("timestamp bucket must be nonempty");
+        pairs.push(Pair {
+            start,
+            end,
+            latency_ns: selected.abs_diff(start.timestamp_ns),
+        });
         if bucket.is_empty() {
             available.remove(&selected);
         }
     }
     Outcome {
-        latencies,
+        pairs,
         unmatched_start,
         unmatched_end: if reached_limit {
             0
@@ -773,7 +818,11 @@ fn correlate_nearest(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -
     }
 }
 
-fn correlate_stack_nested(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+fn correlate_stack_nested<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    limit: Option<usize>,
+) -> Outcome<'a> {
     let limit = limit.unwrap_or(usize::MAX);
     let mut timeline = starts
         .iter()
@@ -790,15 +839,19 @@ fn correlate_stack_nested(starts: &[&Event], ends: &[&Event], limit: Option<usiz
             stacks.entry(key).or_default().push(event);
         } else if let Some(start) = stacks.get_mut(&key).and_then(Vec::pop) {
             if pairs.len() < limit {
-                pairs.push((start.timestamp_ns, event.timestamp_ns - start.timestamp_ns));
+                pairs.push(Pair {
+                    start,
+                    end: event,
+                    latency_ns: event.timestamp_ns - start.timestamp_ns,
+                });
             }
         } else {
             unmatched_end += 1;
         }
     }
-    pairs.sort_by_key(|(timestamp, _)| *timestamp);
+    pairs.sort_by_key(|pair| pair.start.timestamp_ns);
     Outcome {
-        latencies: pairs.into_iter().map(|(_, latency)| latency).collect(),
+        pairs,
         unmatched_start: stacks.values().map(Vec::len).sum::<usize>() as u64,
         unmatched_end,
         ambiguous: 0,
@@ -807,7 +860,11 @@ fn correlate_stack_nested(starts: &[&Event], ends: &[&Event], limit: Option<usiz
 
 type StreamKey = (u32, u32, u32, u64);
 
-fn correlate_stream_order(starts: &[&Event], ends: &[&Event], limit: Option<usize>) -> Outcome {
+fn correlate_stream_order<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    limit: Option<usize>,
+) -> Outcome<'a> {
     let mut start_groups = BTreeMap::<StreamKey, Vec<&Event>>::new();
     let mut end_groups = BTreeMap::<StreamKey, Vec<&Event>>::new();
     let mut unmatched_start = group_by_stream(starts, &mut start_groups);
@@ -827,7 +884,11 @@ fn correlate_stream_order(starts: &[&Event], ends: &[&Event], limit: Option<usiz
                 end_index += 1;
             }
             if let Some(end) = end_group.get(end_index) {
-                pairs.push((start.timestamp_ns, end.timestamp_ns - start.timestamp_ns));
+                pairs.push(Pair {
+                    start,
+                    end,
+                    latency_ns: end.timestamp_ns - start.timestamp_ns,
+                });
                 end_index += 1;
             } else {
                 unmatched_start += 1;
@@ -836,12 +897,12 @@ fn correlate_stream_order(starts: &[&Event], ends: &[&Event], limit: Option<usiz
         unmatched_end += (end_group.len() - end_index) as u64;
     }
     unmatched_end += end_groups.values().map(Vec::len).sum::<usize>() as u64;
-    pairs.sort_by_key(|(timestamp, _)| *timestamp);
+    pairs.sort_by_key(|pair| pair.start.timestamp_ns);
     if let Some(limit) = limit {
         pairs.truncate(limit);
     }
     Outcome {
-        latencies: pairs.into_iter().map(|(_, latency)| latency).collect(),
+        pairs,
         unmatched_start,
         unmatched_end,
         ambiguous: 0,
@@ -906,13 +967,20 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
     sorted[rank.saturating_sub(1)]
 }
 
-fn maximum_timestamp_error(starts: &[&Event], ends: &[&Event]) -> u64 {
-    starts
+fn maximum_timestamp_error(pairs: &[Pair<'_>]) -> Option<u64> {
+    pairs
         .iter()
-        .chain(ends)
-        .filter_map(|event| event.timestamp_error_ns)
-        .max()
-        .unwrap_or(0)
+        .flat_map(|pair| [pair.start, pair.end])
+        .map(|event| {
+            if event.clock_domain == ClockDomain::CuptiNormalizedToHostMonotonic {
+                event.timestamp_error_ns
+            } else {
+                Some(event.timestamp_error_ns.unwrap_or(0))
+            }
+        })
+        .try_fold(0_u64, |maximum, error| {
+            error.map(|error| maximum.max(error))
+        })
 }
 
 fn warning(code: &str, message: &str) -> Warning {
@@ -1095,7 +1163,7 @@ mod tests {
 
         let result = measure(&events, &options(MatchPolicy::Exact)).unwrap();
         assert_eq!(result.clock.alignment, "cupti_normalized_to_host_monotonic");
-        assert_eq!(result.clock.estimated_error_ns, 7);
+        assert_eq!(result.clock.estimated_error_ns, Some(7));
         assert!(result.warnings.is_empty());
     }
 

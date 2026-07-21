@@ -117,6 +117,7 @@ fn write_host_capture(path: &PathBuf, timestamp_ns: u64) {
 #[test]
 fn measures_exact_kernel_durations_from_a_completed_capture() {
     let path = capture_path("exact");
+    let evidence_path = capture_path("exact-evidence.jsonl");
     write_capture(
         &path,
         &[
@@ -141,6 +142,10 @@ fn measures_exact_kernel_durations_from_a_completed_capture() {
             "2",
             "--name",
             "kernel_duration",
+            "--events-out",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
             "--json",
             "--non-interactive",
             "--no-color",
@@ -164,6 +169,11 @@ fn measures_exact_kernel_durations_from_a_completed_capture() {
     assert_eq!(result.measurement.latency_ns.max, 80);
     assert_eq!(result.correlation.confidence, CorrelationConfidence::Exact);
     assert_eq!(result.clock.alignment, "cupti_same_domain");
+    assert_eq!(result.evidence.len(), 2);
+    assert_eq!(result.evidence[0].latency_ns, 50);
+    let evidence = fs::read_to_string(&evidence_path).expect("evidence must be written");
+    fs::remove_file(evidence_path).expect("evidence fixture must be removed");
+    assert_eq!(evidence.lines().count(), 4);
 }
 
 #[test]
@@ -240,7 +250,7 @@ fn measures_api_to_kernel_latency_from_a_normalized_capture() {
     assert_eq!(result.measurement.samples.matched, 1);
     assert_eq!(result.measurement.latency_ns.min, 125);
     assert_eq!(result.clock.alignment, "cupti_normalized_to_host_monotonic");
-    assert_eq!(result.clock.estimated_error_ns, 0);
+    assert_eq!(result.clock.estimated_error_ns, None);
     assert_eq!(result.warnings[0].code, "CLOCK_ERROR_UNAVAILABLE");
 }
 

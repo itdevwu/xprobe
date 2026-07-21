@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{SchemaVersion, Warning};
+use crate::{Event, SchemaVersion, Warning};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -55,8 +55,17 @@ pub struct MeasurementResult {
     pub correlation: CorrelationSummary,
     pub clock: ClockQuality,
     pub collection: CollectionSummary,
+    pub evidence: Vec<MatchedEventPair>,
     #[serde(default)]
     pub warnings: Vec<Warning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MatchedEventPair {
+    pub start: Event,
+    pub end: Event,
+    pub latency_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -110,7 +119,7 @@ pub struct CorrelationSummary {
 #[serde(deny_unknown_fields)]
 pub struct ClockQuality {
     pub alignment: String,
-    pub estimated_error_ns: u64,
+    pub estimated_error_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -50,7 +50,7 @@ enum Command {
     Resolve(ResolveArgs),
     /// Validate two event selectors and their correlation policy.
     Validate(ValidateArgs),
-    /// Measure latency from a completed bounded capture.
+    /// Measure latency between two events in files or a running process.
     Measure(MeasureArgs),
     /// Run a live measurement from a versioned specification.
     #[command(hide = true)]
@@ -79,7 +79,7 @@ struct TraceArgs {
     spec: PathBuf,
 
     /// Unix socket exposed by the target's xprobe CUPTI agent.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     cupti_socket: Option<PathBuf>,
 
     /// Emit only the versioned JSON result on stdout.
@@ -253,6 +253,10 @@ struct ValidateArgs {
 
 #[derive(Debug, Args)]
 struct MeasureArgs {
+    /// Versioned `MeasurementSpec` JSON for a live target.
+    #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "samples", "duration_ms", "name"])]
+    spec: Option<PathBuf>,
+
     /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
     #[arg(long)]
     input: Vec<PathBuf>,
@@ -262,12 +266,20 @@ struct MeasureArgs {
     pid: Option<u32>,
 
     /// Unix socket exposed by the target's xprobe CUPTI agent.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     cupti_socket: Option<PathBuf>,
 
     /// CUPTI agent shared object used for automatic online injection.
     #[arg(long)]
     agent: Option<PathBuf>,
+
+    /// Write matched start/end evidence events to this file.
+    #[arg(long)]
+    events_out: Option<PathBuf>,
+
+    /// Evidence event format; defaults to jsonl when --events-out is set.
+    #[arg(long, value_enum)]
+    format: Option<ExportFormatArg>,
 
     /// Bound foreground collection and cleanup to this many milliseconds.
     #[arg(long, default_value_t = 30_000)]
@@ -275,15 +287,15 @@ struct MeasureArgs {
 
     /// Start event selector.
     #[arg(long)]
-    from: String,
+    from: Option<String>,
 
     /// End event selector.
     #[arg(long)]
-    to: String,
+    to: Option<String>,
 
-    /// Correlation policy: exact or first-after.
+    /// Correlation policy.
     #[arg(long = "match")]
-    match_policy: String,
+    match_policy: Option<String>,
 
     /// Stop after this many matched samples.
     #[arg(long)]
@@ -608,10 +620,13 @@ fn write_export_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 fn run_measure(args: MeasureArgs) -> ExitCode {
     let MeasureArgs {
+        spec,
         input,
         pid,
         cupti_socket,
         agent,
+        events_out,
+        format,
         timeout_ms,
         from,
         to,
@@ -624,19 +639,20 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         no_color: _,
         non_interactive: _,
     } = args;
-    let match_policy = match match_policy.as_str() {
-        "exact" => MatchPolicy::Exact,
-        "first-after" | "first_after" => MatchPolicy::FirstAfter,
-        "nearest" => MatchPolicy::Nearest,
-        "stack-nested" | "stack_nested" => MatchPolicy::StackNested,
-        "stream-order" | "stream_order" => MatchPolicy::StreamOrder,
-        _ => {
-            return emit_error(
-                ErrorCode::InvalidCorrelationPolicy,
-                "unsupported measurement correlation policy".to_owned(),
-                true,
-                json,
-            );
+    if let Some(spec) = spec {
+        return run_measure_spec(
+            &spec,
+            cupti_socket,
+            agent,
+            events_out.as_deref(),
+            format,
+            json,
+        );
+    }
+    let (from, to, match_policy) = match parse_measure_selection(from, to, match_policy) {
+        Ok(selection) => selection,
+        Err(error) => {
+            return emit_error(error.code, error.message, error.recoverable, json);
         }
     };
     let session_id = format!("xp_measure_{}", std::process::id());
@@ -671,31 +687,227 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             options,
         };
         return match collect_live_measurement(&request) {
-            Ok(result) => emit_measurement(&result, json),
+            Ok(result) => finish_measurement(&result, events_out.as_deref(), format, json),
             Err(error) => emit_error(error.code, error.message, error.recoverable, json),
         };
     }
-    if input.is_empty() {
-        return emit_error(
-            ErrorCode::TraceExportFailed,
-            "measure requires --input or --pid".to_owned(),
-            true,
-            json,
-        );
-    }
-    if cupti_socket.is_some() {
-        return emit_error(
-            ErrorCode::InvalidEventSelector,
-            "--cupti-socket requires --pid".to_owned(),
-            true,
-            json,
-        );
-    }
+    run_completed_measurement(
+        &input,
+        &options,
+        cupti_socket.is_some(),
+        agent.is_some(),
+        events_out.as_deref(),
+        format,
+        json,
+    )
+}
 
-    match measure_completed_inputs(&input, &options) {
-        Ok(result) => emit_measurement(&result, json),
+fn parse_measure_selection(
+    from: Option<String>,
+    to: Option<String>,
+    policy: Option<String>,
+) -> Result<(String, String, MatchPolicy), CommandFailure> {
+    let Some(from) = from else {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            "measure requires --from unless --spec is used",
+            true,
+        ));
+    };
+    let Some(to) = to else {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            "measure requires --to unless --spec is used",
+            true,
+        ));
+    };
+    let Some(policy) = policy else {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidCorrelationPolicy,
+            "measure requires --match unless --spec is used",
+            true,
+        ));
+    };
+    let policy = match policy.as_str() {
+        "exact" => MatchPolicy::Exact,
+        "first-after" | "first_after" => MatchPolicy::FirstAfter,
+        "nearest" => MatchPolicy::Nearest,
+        "stack-nested" | "stack_nested" => MatchPolicy::StackNested,
+        "stream-order" | "stream_order" => MatchPolicy::StreamOrder,
+        _ => {
+            return Err(CommandFailure::new(
+                ErrorCode::InvalidCorrelationPolicy,
+                "unsupported measurement correlation policy",
+                true,
+            ));
+        }
+    };
+    Ok((from, to, policy))
+}
+
+fn run_completed_measurement(
+    input: &[PathBuf],
+    options: &MeasureOptions,
+    has_cupti_socket: bool,
+    has_agent: bool,
+    events_out: Option<&Path>,
+    format: Option<ExportFormatArg>,
+    json: bool,
+) -> ExitCode {
+    let invalid = if input.is_empty() {
+        Some((
+            ErrorCode::TraceExportFailed,
+            "measure requires --input or --pid",
+        ))
+    } else if has_cupti_socket {
+        Some((
+            ErrorCode::InvalidEventSelector,
+            "--cupti-socket requires --pid",
+        ))
+    } else if has_agent {
+        Some((ErrorCode::InvalidEventSelector, "--agent requires --pid"))
+    } else {
+        None
+    };
+    if let Some((code, message)) = invalid {
+        return emit_error(code, message.to_owned(), true, json);
+    }
+    match measure_completed_inputs(input, options) {
+        Ok(result) => finish_measurement(&result, events_out, format, json),
         Err(error) => emit_error(error.code, error.message, error.recoverable, json),
     }
+}
+
+fn run_measure_spec(
+    path: &Path,
+    cupti_socket: Option<PathBuf>,
+    agent_path: Option<PathBuf>,
+    events_out: Option<&Path>,
+    format: Option<ExportFormatArg>,
+    json: bool,
+) -> ExitCode {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::TraceExportFailed,
+                format!("failed to read {}: {error}", path.display()),
+                false,
+                json,
+            );
+        }
+    };
+    let spec: MeasurementSpec = match serde_json::from_slice(&bytes) {
+        Ok(spec) => spec,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::InvalidEventSelector,
+                format!("invalid MeasurementSpec {}: {error}", path.display()),
+                true,
+                json,
+            );
+        }
+    };
+    let samples = match spec.samples.map(usize::try_from).transpose() {
+        Ok(samples) => samples,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::SessionLimitExceeded,
+                format!("MeasurementSpec samples exceed this platform: {error}"),
+                true,
+                json,
+            );
+        }
+    };
+    let max_events = match usize::try_from(spec.max_events) {
+        Ok(max_events) => max_events,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::SessionLimitExceeded,
+                format!("MeasurementSpec max_events exceed this platform: {error}"),
+                true,
+                json,
+            );
+        }
+    };
+    let request = LiveMeasureRequest {
+        pid: spec.target.pid,
+        expected_target: Some(spec.target),
+        cupti_socket,
+        agent_path,
+        timeout: Duration::from_millis(spec.timeout_ms),
+        match_policy_text: match_policy_name(spec.match_policy),
+        options: MeasureOptions {
+            session_id: format!("xp_measure_{}", std::process::id()),
+            name: spec.name,
+            start_selector: spec.start_selector,
+            end_selector: spec.end_selector,
+            match_policy: spec.match_policy,
+            samples,
+            duration: spec.duration_ms.map(Duration::from_millis),
+            max_events,
+            dropped_events: 0,
+        },
+    };
+    match collect_live_measurement(&request) {
+        Ok(result) => finish_measurement(&result, events_out, format, json),
+        Err(error) => emit_error(error.code, error.message, error.recoverable, json),
+    }
+}
+
+fn finish_measurement(
+    result: &MeasurementResult,
+    events_out: Option<&Path>,
+    format: Option<ExportFormatArg>,
+    json: bool,
+) -> ExitCode {
+    if format.is_some() && events_out.is_none() {
+        return emit_error(
+            ErrorCode::TraceExportFailed,
+            "--format requires --events-out".to_owned(),
+            true,
+            json,
+        );
+    }
+    if let Some(path) = events_out {
+        let format = format.unwrap_or(ExportFormatArg::Jsonl);
+        if let Err(error) = export_measurement_evidence(result, path, format) {
+            return emit_error(
+                ErrorCode::TraceExportFailed,
+                error.message,
+                error.recoverable,
+                json,
+            );
+        }
+    }
+    emit_measurement(result, json)
+}
+
+fn export_measurement_evidence(
+    result: &MeasurementResult,
+    path: &Path,
+    format: ExportFormatArg,
+) -> Result<(), CommandFailure> {
+    let mut seen = BTreeSet::new();
+    let events = result
+        .evidence
+        .iter()
+        .flat_map(|pair| [&pair.start, &pair.end])
+        .filter(|event| seen.insert((event.session_id.clone(), event.event_id.clone())))
+        .cloned()
+        .collect::<Vec<_>>();
+    let artifact = match format {
+        ExportFormatArg::Jsonl => events_to_jsonl(&events),
+        ExportFormatArg::Chrome => events_to_chrome_trace(&events),
+    }
+    .map_err(|error| CommandFailure::new(ErrorCode::TraceExportFailed, error.to_string(), false))?;
+    write_export_file(path, artifact.as_bytes()).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!("failed to write {}: {error}", path.display()),
+            false,
+        )
+    })
 }
 
 fn measure_completed_inputs(
@@ -1891,6 +2103,7 @@ fn print_measurement_result(result: &MeasurementResult) {
         result.measurement.name.as_deref().unwrap_or("unnamed")
     );
     println!("Matched samples: {}", result.measurement.samples.matched);
+    println!("Evidence pairs: {}", result.evidence.len());
     println!("Correlation: {}", result.correlation.method);
     println!("Clock: {}", result.clock.alignment);
     println!("Latency (ns):");

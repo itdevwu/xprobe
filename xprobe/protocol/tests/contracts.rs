@@ -230,6 +230,7 @@ fn measurement_result_contract_round_trips() {
             "cuda_events": 1,
             "dropped_events": 0
         },
+        "evidence": [],
         "warnings": []
     }));
 }

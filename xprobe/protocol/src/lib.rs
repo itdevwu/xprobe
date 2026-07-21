@@ -26,8 +26,8 @@ pub use event::{
 pub use export::{ExportFormat, TraceExportResult};
 pub use measurement::{
     ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary, LatencyStatistics,
-    MatchPolicy, Measurement, MeasurementResult, MeasurementSpec, SampleSummary, SessionStatus,
-    TargetIdentity,
+    MatchPolicy, MatchedEventPair, Measurement, MeasurementResult, MeasurementSpec, SampleSummary,
+    SessionStatus, TargetIdentity,
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};

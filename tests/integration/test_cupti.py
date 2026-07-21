@@ -388,7 +388,7 @@ def main() -> None:
         measurement["clock"]["alignment"]
         == "cupti_normalized_to_host_monotonic"
     )
-    assert measurement["clock"]["estimated_error_ns"] == 0
+    assert measurement["clock"]["estimated_error_ns"] is None
     assert cross_measurement["measurement"]["samples"]["matched"] == 3
     assert cross_measurement["measurement"]["latency_ns"]["min"] > 0
     assert cross_measurement["correlation"]["confidence"] == "exact"
@@ -396,7 +396,7 @@ def main() -> None:
         cross_measurement["clock"]["alignment"]
         == "cupti_normalized_to_host_monotonic"
     )
-    assert cross_measurement["clock"]["estimated_error_ns"] == 0
+    assert cross_measurement["clock"]["estimated_error_ns"] is None
     assert [warning["code"] for warning in cross_measurement["warnings"]] == [
         "CLOCK_ERROR_UNAVAILABLE"
     ]
