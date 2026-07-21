@@ -1,153 +1,132 @@
 # Architecture
 
-This document describes the implemented architecture and the boundaries that
-new components must preserve. Future ideas live in `PLAN.md` until code and
-tests make them real.
+This document describes xprobe 0.1.0. `PLAN.md` contains earlier design options
+and is not normative.
 
-## System boundary
+## Boundary
 
 ```text
-Human or coding agent
+human or coding agent
         |
-        | shell + versioned JSON
+        | doctor -> discover -> validate -> measure
+        | versioned JSON
         v
 xprobe CLI
         |
-        | typed Rust API
+        +-- core: procfs identity, ELF discovery/resolution, validation, injection
+        +-- collector: PID-scoped eBPF and CUPTI snapshots
+        +-- correlator: bounded pairing, quality, statistics, evidence
+        +-- exporter: JSONL and Chrome trace artifacts
         v
-core inspection and measurement orchestration
-        |
-        +-- host collector (eBPF uprobe entry events)
-        +-- device collector (in-process CUPTI agent)
-        +-- Event normalization and JSONL export
-        +-- CUPTI-to-host clock normalization
-        +-- completed-capture correlation and statistics
+running process or completed capture files
 ```
 
-The caller selects targets and events and interprets results. `xprobe` performs
-deterministic discovery, validation, collection, correlation, statistics, and
-cleanup. It does not contain an agent runtime or model integration.
+There is no daemon and no persistent session API. A foreground `measure` owns
+attachment, collection, correlation, logical CUPTI shutdown, and cleanup.
 
-## Workspace ownership
+## Workspace
 
-| Path | Responsibility | Current state |
+| Path | Responsibility |
+| --- | --- |
+| `xprobe/cli` | Four public commands, rendering, exit codes, orchestration |
+| `xprobe/core` | doctor, process identity, discovery, ELF resolution, validation, ptrace injection |
+| `xprobe/protocol` | Strict serde contracts and generated JSON Schema |
+| `xprobe/collector` | eBPF collection, CUPTI control protocol and ABI decoding |
+| `xprobe/correlator` | Selector matching, pair evidence, statistics and quality |
+| `xprobe/exporter` | Event JSONL and Chrome Trace Event Format |
+| `bpf/` | PID-scoped uprobe/uretprobe programs |
+| `cupti/` | Reusable in-process CUDA callback/activity agent |
+
+## Identity and discovery
+
+A target identity is its PID plus `/proc/<pid>/stat` start time. xprobe verifies
+that pair before and after metadata operations and attachment. PID reuse returns
+`TARGET_REUSED`; disappearance returns `TARGET_EXITED`.
+
+`discover` reads the executable and mapped ELF libraries. It emits bounded
+entry/return selectors for text symbols, CUDA Runtime/Driver callback selectors
+for exported API symbols, and CUPTI activity templates for kernels, memcpy, and
+memset. Discovery does not attach. GPU activity templates are marked as
+requiring observation because static ELF metadata cannot enumerate future
+kernel names.
+
+Host selector resolution converts ELF virtual addresses through load segments
+to file offsets, then through `/proc/<pid>/maps` to runtime addresses. This
+supports executables, PIE, and shared libraries without assuming that a mapping
+base is a symbol address.
+
+## Validation
+
+`validate` is read-only. It resolves host selectors, parses CUDA selectors,
+checks correlation-policy compatibility, and reports eBPF, CUPTI, callback,
+activity, and clock requirements. CUPTI activation is one of:
+
+- `not_required`
+- `already_loaded`
+- `injection_required`
+
+`injection_required` keeps validation valid when all semantic requirements are
+met, sets `target_mutation: true`, and emits `TARGET_PROCESS_WILL_BE_MODIFIED`.
+Malformed selectors, unresolved symbols, invalid policies, and unavailable
+required host collection remain explicit issues or errors.
+
+## Collection
+
+Host events use libbpf-rs with one PID-scoped uprobe or uretprobe per unique
+host endpoint. The BPF path only filters identity, records monotonic timestamps
+and CPU/TID, updates bounded counters, and submits fixed records. Rust ownership
+detaches links on every return path.
+
+CUDA events use an in-process CUPTI agent. It subscribes to Runtime and Driver
+API callbacks and concurrent kernel, memcpy, and memset activity. Callbacks
+write fixed records to a bounded 65,536-slot array without blocking I/O. CUPTI
+activity timestamps are normalized to `CLOCK_MONOTONIC` through its timestamp
+callback; ABI feature flags declare that semantic.
+
+The Unix socket control protocol has two commands: snapshot and stop. Stop
+flushes final activity, returns the final capture, disables activities,
+unsubscribes callbacks, closes and unlinks the socket, and leaves the shared
+object mapped. A later measurement resets the bounded buffers and subscribes
+again.
+
+## Online injection
+
+When CUDA collection is required and no compatibility socket was supplied,
+`measure` uses ptrace on Linux x86_64. It resolves target `malloc`, `free`,
+`dlopen`, and `dlsym`, executes them on one stopped target thread, and calls
+`xprobe_cupti_agent_start` with a private socket path. Each remote call saves and
+restores registers and the touched stack word. An unexpected trap, timeout, or
+syscall error fails explicitly; the cleanup path restores target state before
+detach.
+
+The target must share xprobe's mount namespace so the agent path has the same
+meaning. ptrace policy, credentials, and LSMs still apply. xprobe warns on
+stderr and records `CUPTI_AGENT_INJECTED` in the result. It never `dlclose`s the
+agent because unloading callback code in a live CUDA process is unsafe.
+
+## Correlation and evidence
+
+All sources normalize into the versioned `Event` type. `measure` supports:
+
+| Policy | Pairing | Confidence |
 | --- | --- | --- |
-| `xprobe/cli` | Arguments, rendering, exit codes | Inspection, capture, measurement, trace, and export commands |
-| `xprobe/core` | Deterministic environment and process logic | Inspection, identity verification, ELF probe resolution |
-| `xprobe/protocol` | Public serde types and schema generation | Implemented |
-| `xprobe/collector` | Host and device collector interfaces | Host uprobe collector and CUPTI decoder |
-| `xprobe/correlator` | Event matching and statistics | Exact, temporal, nested, and stream-order measurement |
-| `xprobe/exporter` | JSONL and trace export | Event JSONL and Chrome Trace Event Format |
-| `xprobe/daemon` | Future privilege-separated sessions | Skeleton |
-| `bpf/` | eBPF programs and build | PID-scoped uprobe and ring buffer |
-| `cupti/` | In-process CUPTI agent | Runtime/Driver callback and GPU activity capture |
+| `exact` | CUPTI correlation ID | exact |
+| `first-after` | First unused end at or after each start | heuristic |
+| `nearest` | Nearest unused end by timestamp | heuristic |
+| `stack-nested` | Per-thread LIFO host entry/return | high |
+| `stream-order` | Ordered activity within device/context/stream | high |
 
-## Public contracts
+Every result includes full matched start/end events and `latency_ns` in
+`evidence`. Statistics are derived from those pairs. Drops, unmatched events,
+ambiguity, policy, confidence, and clock quality remain visible. A normalized
+CUPTI event without a reported interpolation bound makes
+`estimated_error_ns: null` and emits `CLOCK_ERROR_UNAVAILABLE`.
 
-All public records carry schema version `1.0`. Rust protocol types generate the
-checked-in files under `schemas/`; `just schemas` regenerates them and tests
-reject drift. Unknown fields and unsupported versions are rejected.
+## Contracts and failure model
 
-Current schemas cover:
-
-- normalized events;
-- structured errors;
-- environment capabilities;
-- process inspection;
-- resolved userspace probes;
-- bounded host capture results;
-- measurement specifications and results.
-
-## Process identity
-
-A PID alone is not a stable identity. Process operations read Linux procfs
-start-time field 22 before and after inspection and represent the target as:
-
-```text
-PID + process start time in kernel clock ticks
-```
-
-A changed start time produces `TARGET_REUSED`; disappearance during inspection
-or collection produces `TARGET_EXITED`. The CLI verifies the identity again
-after detaching the probe. No result is returned for a reused or exited target.
-
-## Probe resolution
-
-The core resolver parses a userspace event selector, reads the selected ELF
-file, and matches it against file-backed regions in `/proc/<pid>/maps`. Symbol
-virtual addresses are converted through ELF load segments to file offsets; the
-file offset and matching process map then determine the runtime address. This
-calculation handles fixed-address executables, PIE executables, and shared
-libraries without treating a process mapping base as a symbol address.
-
-Resolution reports the canonical binary path, GNU Build ID when present,
-symbol metadata, probe kind, file offset, runtime address, and exact map used as
-evidence. The target identity is checked before and after resolution. Resolution
-does not attach a probe or mutate the target.
-
-Validation composes process inspection and probe resolution with CUDA selector
-parsing and a correlation-policy compatibility matrix. Input errors fail
-immediately; unavailable runtime requirements produce a successful validation
-report with `valid: false` and structured issues. Heuristic temporal policies
-are always labeled as warnings. Validation performs no collection and reports
-`target_mutation: false`. Cross-domain selectors expose
-`needs_clock_alignment: true`. The capture
-`HOST_MONOTONIC_TIMESTAMPS` feature provides the required CUPTI-to-host
-normalization; validation retains the requirement so orchestration can select a
-compatible collector.
-
-## Host and device collection
-
-The implemented host collector embeds a Clang-built BPF object, loads it with
-libbpf-rs, attaches one PID-scoped function-entry uprobe or function-return
-uretprobe, and consumes fixed-size records from a ring buffer. The target PID
-namespace device and inode are passed to BPF so emitted PID/TID values match the
-namespace used by the CLI. Collection stops at a caller-supplied sample limit
-or deadline, reports ring-buffer drops, and detaches through Rust ownership on
-every return path.
-
-The BPF hot path performs only namespace identity filtering, timestamp and CPU
-capture, sequence/drop accounting, and ring-buffer submission. Symbol lookup,
-JSON construction, and timeout handling remain in userspace.
-
-CUPTI callback and activity collection runs inside the target process. The
-agent subscribes to all CUDA Runtime/Driver API entry/exit callbacks and
-concurrent kernel, memcpy, and memset activity. CUPTI correlation IDs provide the exact
-join key for start/end intervals and API-to-kernel records. Callback paths
-reserve slots in a bounded in-memory array; activity parsing, draining, and
-binary output happen outside the runtime API callback.
-
-The collector decodes the fixed CUPTI ABI into the same protocol `Event` type
-used by eBPF collectors. Before enabling activity collection, the agent
-registers `CLOCK_MONOTONIC` as CUPTI's timestamp callback. CUPTI linearly maps
-GPU timestamps into that clock during activity post-processing. Capture ABI v1
-uses feature flags to declare this timestamp semantic and transfer record
-support while retaining the 200-byte record layout. The exporter writes either
-source as compact JSONL.
-
-The correlator can measure a completed CUPTI capture within one clock domain or
-between host callback and normalized GPU timestamps.
-Exact matching groups events by CUPTI correlation ID and rejects ambiguous
-groups. First-after matching is chronological, one-to-one, and explicitly
-heuristic. Both paths enforce sample, duration, and event-count bounds and
-report dropped, unmatched, and ambiguous records. API-to-GPU subtraction from
-a capture without host-monotonic timestamps returns `CLOCK_ALIGNMENT_FAILED`.
-
-The completed-capture importer accepts CUPTI binary, host capture JSON, and
-Event JSONL inputs. It rejects mixed target PIDs, accumulates source drop
-counters, sorts all events by normalized timestamp, and assigns one measurement
-session identity. Repeated `--input` arguments therefore support host-to-GPU
-`first-after` measurement without implying that the files prove causality.
-
-Supported loading paths are CUDA startup injection through
-`CUDA_INJECTION64_PATH` and explicit application/plugin initialization before
-the first CUDA API. Runtime `ptrace` plus `dlopen` injection is outside the
-default architecture and requires a separate security design. See
-[CUPTI agent](cupti-agent.md) for the raw ABI and lifecycle.
-
-## Failure model
-
-Expected absence is data: a missing optional kernel interface or uninstalled
-tool becomes an explicit `unavailable` or `unknown` check. Unexpected I/O,
-malformed procfs data, and failed required commands return errors immediately.
-The implementation does not silently substitute defaults.
+Public records use schema version `1.0`; generated schemas are checked in and
+tested for drift. Unknown fields and unsupported versions fail deserialization.
+Expected capability absence is represented as available/restricted/unavailable
+data. Unexpected I/O, malformed procfs/ELF/capture data, target changes,
+collector errors, and cleanup failures return errors rather than partial
+success.

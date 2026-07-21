@@ -11,9 +11,9 @@ Report unmatched and ambiguous counts alongside matched samples. For a broad
 selector, state that another eligible event could have changed the pairing.
 
 Compare latency values only when the result reports a shared or normalized clock
-domain. Include `estimated_error_ns` when it is nonzero. If the result warns that
-clock error is unavailable, state that the measurement has no quantified clock
-error bound.
+domain. Report `estimated_error_ns`; `null` means no quantified interpolation
+error bound. Inspect the full start and end events in every `evidence` pair when
+checking selector scope, correlation IDs, streams, and timestamps.
 
 `completed` means the requested bound was reached. `timed_out` may still contain
 useful partial evidence, but it must be identified as partial.

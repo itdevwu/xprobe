@@ -1,43 +1,37 @@
+<div align="center">
+
 # xprobe
 
-`xprobe` is a deterministic Linux runtime probe for measuring latency between
-host events and NVIDIA GPU events. Its public interface is a non-interactive
-CLI with versioned JSON contracts, intended for both performance engineers and
-coding agents.
+_AI harness native profiler._
 
-The repository is under active development. The current executable discovers
-local tracing capabilities, inspects target processes, and captures bounded
-userspace function entry and return events with eBPF uprobes and uretprobes. It
-also resolves symbol and file-offset probe selectors against live PIE
-executables and shared libraries. Its in-process CUPTI agent captures CUDA
-launch boundaries and correlated GPU kernel, memcpy, and memset intervals to a
-versioned binary stream.
+</div>
 
-## Current capabilities
+`xprobe` is a bounded Linux profiler for measuring time between host and NVIDIA
+GPU events. It is designed for coding agents and performance engineers: four
+commands, strict JSON contracts, explicit correlation quality, and no daemon or
+server lifecycle.
 
-| Area | Status |
+## Public CLI
+
+| Command | Purpose |
 | --- | --- |
-| `doctor` environment inspection | Implemented |
-| `inspect --pid` process inspection | Implemented |
-| Versioned public JSON schemas | Implemented |
-| `resolve` for PIE, shared libraries, symbols, offsets, and Build IDs | Implemented |
-| Deterministic selector and correlation validation | Implemented |
-| PID-scoped eBPF uprobe and uretprobe collection | Implemented through `dev uprobe` |
-| eBPF build pipeline | Embedded libbpf object and ring buffer |
-| CUPTI agent | Runtime launch callbacks plus kernel and transfer activity |
-| CUDA raw capture | Startup injection or explicit application integration |
-| Unified Event JSONL | Implemented for uprobe and CUPTI captures |
-| Completed-capture exact and first-after measurement | Implemented across host and CUDA inputs |
-| CUPTI-to-host clock normalization | Declared by the capture feature flags |
-| Live host and CUDA capture correlation | Implemented for completed captures |
+| `doctor` | Report local eBPF, ptrace, NVIDIA, CUDA, and CUPTI capabilities |
+| `discover` | List host symbols, CUDA API selectors, and observable GPU activities for a PID |
+| `validate` | Resolve two selectors and report collection, mutation, clock, and policy requirements without attaching |
+| `measure` | Collect or import bounded events, correlate pairs, emit statistics and full event evidence |
 
-## Quick start
+`measure --pid` automatically loads the CUPTI agent when a CUDA endpoint needs
+it. The command writes a warning to stderr and adds `CUPTI_AGENT_INJECTED` to
+the JSON result. After collection it disables CUPTI and removes its socket, but
+keeps `libxprobe-cupti.so` mapped so later measurements can reactivate it.
 
-Requirements:
+## Requirements
 
-- Rust 1.85 or newer, managed with `rustup`
-- Mamba or Conda
-- Linux x86_64
+- Linux x86_64 and Rust 1.85 or newer
+- Mamba/Conda for the native development toolchain
+- eBPF privileges for host selectors
+- ptrace permission for online CUPTI injection
+- NVIDIA driver, CUDA, and CUPTI for GPU selectors
 
 ```bash
 mamba env create --file environment.yml
@@ -46,57 +40,64 @@ just build
 just test
 ```
 
-Inspect the current environment and a target process:
+## Example
 
 ```bash
-target/debug/xprobe doctor --json --non-interactive --no-color
-target/debug/xprobe inspect --pid <pid> --json --non-interactive --no-color
-target/debug/xprobe resolve --pid <pid> \
-  --selector 'uprobe:/path/to/lib.so:function_name:entry' \
-  --json --non-interactive --no-color
-target/debug/xprobe validate --pid <pid> \
-  --from 'uprobe:/path/to/lib.so:function_name:entry' \
-  --to 'cuda:kernel_start:name~kernel.*' --match first-after \
-  --json --non-interactive --no-color
-target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
-  --samples 10 --timeout-ms 5000 --json --non-interactive --no-color
-target/debug/xprobe dev uprobe --pid <pid> --binary <path> --symbol <symbol> \
-  --return --samples 10 --timeout-ms 5000 --json --non-interactive --no-color
-target/debug/xprobe dev cupti --input /tmp/xprobe-cupti.bin \
-  --session-id xp_cuda_1 --json --non-interactive --no-color
-target/debug/xprobe measure --input /tmp/xprobe-cupti.bin \
-  --from 'cuda:kernel_start:name~kernel.*' \
-  --to 'cuda:kernel_end:name~kernel.*' --match exact --samples 100 \
+xprobe doctor --json --non-interactive --no-color
+
+xprobe discover --pid 4242 --query launch --limit 50 \
   --json --non-interactive --no-color
 
-target/debug/xprobe measure \
-  --input /tmp/xprobe-host.json --input /tmp/xprobe-cupti.bin \
-  --from 'uprobe:/srv/app/libserver.so:handle_request:entry' \
-  --to 'cuda:kernel_start:name~kernel.*' --match first-after --samples 100 \
+xprobe validate --pid 4242 \
+  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
+  --to 'cuda:kernel_start:name~flash.*' \
+  --match exact --json --non-interactive --no-color
+
+xprobe measure --pid 4242 \
+  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
+  --to 'cuda:kernel_start:name~flash.*' \
+  --match exact --samples 100 --timeout-ms 30000 \
+  --events-out /tmp/xprobe-events.jsonl \
   --json --non-interactive --no-color
 ```
 
-Machine-readable results are written to stdout. Runtime logs and human errors
-are written to stderr.
+`measure` also accepts completed `--input` captures and versioned live
+`--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
+contain every matched start/end event, latency statistics, unmatched and
+ambiguous counts, drops, clock quality, correlation confidence, and warnings.
+
+## Install
+
+Release archives contain `bin/xprobe`, `lib/xprobe/libxprobe-cupti.so`, the C
+header, schemas, docs, and the repository Skill. To build the archive from a
+CUDA devel environment:
+
+```bash
+just package
+```
+
+The packaging script rejects an ABI-only agent that is not linked to CUPTI.
+
+## Support
+
+| Surface | 0.1.0 support |
+| --- | --- |
+| OS/architecture | Linux x86_64 |
+| Host events | ELF function entry/return through PID-scoped uprobes |
+| CUDA callbacks | Runtime and Driver API entry/exit |
+| GPU activity | Kernel, memcpy, and memset start/end |
+| Correlation | exact, first-after, nearest, stack-nested, stream-order |
+| Online injection | same mount namespace; ptrace permission required |
+| Tested GPU | NVIDIA GeForce RTX 3060 Laptop GPU, driver 592.00, compute capability 8.6 |
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
 - [CLI contract](docs/cli-contract.md)
-- [Development environment](docs/development.md)
-- [CUPTI agent](docs/cupti-agent.md)
+- [CUPTI agent and injection](docs/cupti-agent.md)
+- [Development and hardware tests](docs/development.md)
+- [Agent integration](docs/agent-integration.md)
 - [Public JSON schemas](schemas/)
 
-[`PLAN.md`](PLAN.md) records design exploration and future ideas. It is useful
-background, but it is not a normative description of implemented behavior.
-
-## Project principles
-
-```text
-The caller decides what to observe.
-xprobe validates and measures.
-The caller interprets the evidence.
-```
-
-`xprobe` does not call model APIs, infer causality from temporal proximity, or
-inject libraries into running processes by default.
+Implemented behavior is defined by code, tests, and schemas. [`PLAN.md`](PLAN.md)
+is design history, not a release contract. Licensed under Apache-2.0.

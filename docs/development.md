@@ -70,6 +70,16 @@ headers, `nvcc`, and CUPTI:
 just test-cupti-live
 ```
 
+Run online ptrace injection, stop, and reactivation twice against a target that
+does not preload the agent:
+
+```bash
+just test-injection-live
+```
+
+This container adds `SYS_PTRACE` and disables seccomp for ptrace only. It mounts
+the workspace read-only and does not use `--privileged`.
+
 Run the combined host uprobe and CUPTI measurement test with both GPU and BPF
 access:
 
@@ -94,8 +104,8 @@ just benchmark-gpu
 See `docs/agent-integration.md` and `docs/benchmarks.md` for the tested contract
 and benchmark interpretation.
 
-The test mounts the workspace read-only, compiles the agent and a CUDA fixture
-inside the container, injects the agent at CUDA startup, and verifies three API
+The startup-injection test mounts the workspace read-only, compiles the agent
+and a CUDA fixture inside the container, and verifies three API
 entries, API exits, kernel starts, and kernel ends, three memcpy intervals, and
 one memset interval with matching correlation IDs. The resulting capture is
 decoded by the host CLI and checked as ordered Event JSONL, then measured for

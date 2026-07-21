@@ -23,6 +23,15 @@ target_compile_features(xprobe-cupti PRIVATE c_std_11)
 target_compile_options(xprobe-cupti PRIVATE -Wall -Wextra -Wpedantic -Werror)
 set_target_properties(xprobe-cupti PROPERTIES OUTPUT_NAME xprobe-cupti)
 
+install(
+  TARGETS xprobe-cupti
+  LIBRARY DESTINATION lib/xprobe
+)
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
+
 if(XPROBE_CUPTI_INCLUDE_DIR AND XPROBE_CUPTI_LIBRARY)
   find_package(Threads REQUIRED)
   target_compile_definitions(xprobe-cupti PRIVATE XPROBE_HAS_CUPTI=1 _GNU_SOURCE)

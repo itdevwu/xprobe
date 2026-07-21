@@ -1,0 +1,22 @@
+name: Hardware Integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-and-bpf:
+    runs-on: [self-hosted, linux, x64, nvidia]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: taiki-e/install-action@just
+      - run: just test-bpf-live
+      - run: just test-cupti-live
+      - run: just test-injection-live
+      - run: just test-multisource-live
+      - run: just benchmark-gpu

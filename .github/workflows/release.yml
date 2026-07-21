@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    container:
+      image: nvcr.io/nvidia/cuda:13.3.0-devel-ubuntu24.04@sha256:69e9e39eb8fe2cda271654a0f5eac2f1bb946b2fb9c460eb19c7c3c155f4e64e
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake autopoint build-essential ca-certificates clang \
+            cmake curl libtool ninja-build pkg-config python3
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build release archive
+        run: scripts/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xprobe-linux-x86_64
+          path: dist/*.tar.gz*
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz*
+          generate_release_notes: true

@@ -55,5 +55,8 @@ lint:
 schemas:
     cargo run --package xprobe-protocol --bin generate-schemas
 
+package:
+    scripts/package-release.sh
+
 gpu-smoke:
     docker run --rm --runtime=nvidia --gpus all {{cuda_smoke_image}} nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader

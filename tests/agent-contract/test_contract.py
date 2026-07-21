@@ -10,13 +10,9 @@ import sys
 COMMON_FLAGS = ["--json", "--non-interactive", "--no-color"]
 STABLE_COMMANDS = {
     "doctor",
-    "inspect",
-    "resolve",
+    "discover",
     "validate",
     "measure",
-    "trace",
-    "export",
-    "capture",
 }
 SKILL_PATH = "skills/xprobe-measure-latency/SKILL.md"
 
@@ -50,12 +46,10 @@ def check_skill(workspace: pathlib.Path) -> None:
 
     ordered_steps = [
         "xprobe doctor",
-        "xprobe inspect",
-        "xprobe resolve",
+        "xprobe discover",
         "xprobe validate",
-        "Run a bounded foreground `measure`",
+        "xprobe measure",
         "Check `status`",
-        "finish cleanup",
     ]
     positions = [skill.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
@@ -66,9 +60,11 @@ def check_skill(workspace: pathlib.Path) -> None:
         "clock alignment",
         "correlation method",
         "confidence",
+        "evidence",
     ):
         assert quality_field in skill
-    assert "Do not restart, inject into, signal, or modify" in skill
+    assert "Expect a warning on automatic CUPTI injection" in skill
+    assert "leave the CUPTI shared object mapped" in skill
     assert "Do not use unbounded" in skill
 
     entries = {
@@ -105,12 +101,20 @@ def main() -> None:
         for line in help_result.stdout.splitlines()
         if line.startswith("  ") and line.strip() and not line.lstrip().startswith("-")
     }
-    assert STABLE_COMMANDS <= commands, {"commands": sorted(commands)}
+    commands.discard("help")
+    assert STABLE_COMMANDS == commands, {"commands": sorted(commands)}
 
     doctor = run_json(binary, ["doctor"])
     assert "capabilities" in doctor and "checks" in doctor
-    inspected = run_json(binary, ["inspect", "--pid", str(os.getpid())])
-    assert inspected["target"]["pid"] == os.getpid()
+    discovered = run_json(
+        binary,
+        ["discover", "--pid", str(os.getpid()), "--query", "cuda:kernel_start", "--limit", "10"],
+    )
+    assert discovered["target"]["pid"] == os.getpid()
+    assert any(
+        event["selector"] == "cuda:kernel_start:name~.*"
+        for event in discovered["events"]
+    )
     validated = run_json(
         binary,
         [
@@ -126,7 +130,13 @@ def main() -> None:
         ],
     )
     assert validated["requirements"]["needs_cupti"] is True
-    assert validated["requirements"]["target_mutation"] is False
+    assert validated["requirements"]["agent_activation"] == "injection_required"
+    assert validated["requirements"]["target_mutation"] is True
+    assert validated["valid"] is True
+    assert any(
+        warning["code"] == "TARGET_PROCESS_WILL_BE_MODIFIED"
+        for warning in validated["warnings"]
+    )
 
     check_skill(workspace)
     check_schemas(workspace)

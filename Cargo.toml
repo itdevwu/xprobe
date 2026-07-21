@@ -4,7 +4,6 @@ members = [
     "xprobe/collector",
     "xprobe/core",
     "xprobe/correlator",
-    "xprobe/daemon",
     "xprobe/exporter",
     "xprobe/protocol",
 ]

@@ -1,57 +1,27 @@
 # CLI contract
 
-The CLI is designed for deterministic use by both humans and programs.
+xprobe 0.1.0 exposes exactly four public commands: `doctor`, `discover`,
+`validate`, and `measure`.
 
 ## Common behavior
 
-Implemented commands accept:
+All commands support `--json --non-interactive --no-color`. JSON mode writes one
+versioned document to stdout. Diagnostics, including the online-injection
+warning, go to stderr. Commands never prompt.
 
-```text
---json
---non-interactive
---no-color
-```
+Success and error records carry `schema_version: "1.0"`. Unknown JSON fields
+and unsupported schema versions are rejected.
 
-In JSON mode, non-streaming commands write exactly one JSON document. Event
-stream commands write one JSON document per line. Human diagnostics and logs
-belong on stderr. Commands never prompt for a target or wait for Enter.
-
-Every JSON success or error carries `schema_version: "1.0"`. The checked-in
-schemas are the machine-readable contract.
-
-## Exit codes
-
-| Code | Meaning |
+| Exit | Meaning |
 | --- | --- |
 | `0` | Command completed and emitted a result |
-| `1` | Internal, I/O, or malformed-system-data failure |
-| `2` | Invalid command-line arguments, emitted by Clap |
-| `3` | Target not found, exited, or was reused |
-| `4` | Permission denied while inspecting or attaching to the target |
+| `1` | Validation, collection, decode, export, cleanup, or internal failure |
+| `2` | Invalid CLI syntax from Clap |
+| `3` | Target missing, exited, or reused |
+| `4` | Permission denied for inspection, eBPF, or ptrace |
 
-Capability absence does not make `doctor` fail. `ok: true` means the inspection
-completed; callers must read individual capability and check statuses.
-
-## Errors
-
-Runtime failures use the stable error envelope:
-
-```json
-{
-  "schema_version": "1.0",
-  "ok": false,
-  "error": {
-    "code": "TARGET_NOT_FOUND",
-    "message": "target PID 4294967295 was not found",
-    "recoverable": true,
-    "details": {},
-    "hints": []
-  }
-}
-```
-
-Unknown or malformed procfs data is not converted to a successful partial
-result.
+Runtime failures use `schemas/error.schema.json` and include a stable code,
+message, recoverability, details, and hints.
 
 ## `doctor`
 
@@ -59,80 +29,25 @@ result.
 xprobe doctor --json --non-interactive --no-color
 ```
 
-`doctor` checks kernel and architecture information, BTF, effective BPF/perf
-privileges, kernel lockdown, perf and ptrace settings, NVIDIA runtime access,
-CUDA driver/toolkit visibility, CUPTI, containers, and the PID namespace.
+Reports Linux/kernel identity, BTF, BPF/perf permissions, lockdown, ptrace
+policy, NVIDIA driver, CUDA toolkit/driver, CUPTI, namespaces, and conservative
+capability booleans. `ok: true` means diagnosis completed, not that every
+capability is available.
 
-Check status values are `available`, `restricted`, `unavailable`, or `unknown`.
-The capability booleans are conservative summaries of those checks.
-
-## `inspect`
+## `discover`
 
 ```bash
-xprobe inspect --pid 1234 --json --non-interactive --no-color
-```
-
-`inspect` is read-only and does not attach probes. It reports:
-
-- PID and process start time;
-- executable and complete command line;
-- real, effective, saved, and filesystem UID/GID;
-- namespace PID chain and mount namespace;
-- cgroup membership;
-- mapped shared libraries;
-- `libcuda`, `libcudart`, and xprobe CUPTI agent presence;
-- target-specific collection capabilities.
-
-The external presence of `libcuda` does not prove that a CUDA context exists.
-That field remains `unknown` until an in-process signal can establish it.
-
-Process command lines may contain sensitive arguments. Callers must treat the
-inspection result accordingly; xprobe does not read environment variables or
-process memory.
-
-## `dev uprobe`
-
-```bash
-xprobe dev uprobe \
-  --pid 1234 \
-  --binary /srv/app/server \
-  --symbol handle_request \
-  [--return] \
-  --probe-id 7 \
-  --samples 100 \
-  --timeout-ms 5000 \
+xprobe discover --pid 4242 [--query launch] [--limit 200] \
   --json --non-interactive --no-color
 ```
 
-The command captures function-entry events by default. `--return` attaches a
-uretprobe and captures function-return events instead. `--binary` must resolve
-to the target executable or a shared library visible in `/proc/<pid>/maps`;
-otherwise the command returns `BINARY_NOT_MAPPED`. `--samples` and
-`--timeout-ms` must both be greater than zero.
+Reads target procfs and mapped ELF files without attaching. Results conform to
+`schemas/discover.schema.json` and contain selectors, source, event type,
+origin, binary/symbol evidence, and `requires_observation`. `limit` must be
+positive. `total_matches` and `truncated` describe bounded output. Inaccessible
+mapped files produce explicit warnings.
 
-The result conforms to `schemas/host-capture.schema.json`. Reaching the deadline
-before the requested sample count is a successful bounded capture with
-`timed_out: true`; attachment, map, malformed-record, permission, and target
-identity failures use the standard error envelope. Events contain host
-monotonic nanoseconds, a sequence number, namespace-local PID/TID, CPU, probe
-id, binary path, symbol, and probe kind. Argument capture is not implemented;
-return events currently report `return_value: null`.
-
-Use `--jsonl` instead of `--json` to emit only the normalized `Event` values,
-one compact JSON object per line. This is the same event stream format produced
-by the CUPTI decoder.
-
-## `resolve`
-
-```bash
-xprobe resolve \
-  --pid 1234 \
-  --selector 'uprobe:/srv/app/libserver.so:handle_request:entry' \
-  --json --non-interactive --no-color
-```
-
-`--event` is accepted as an alias for `--selector`. Supported selector forms
-are:
+Host selector forms are:
 
 ```text
 uprobe:<binary>:<symbol>:entry
@@ -141,195 +56,100 @@ uprobe:<binary>:+0x<file-offset>:entry
 uprobe:<binary>:+0x<file-offset>:return
 ```
 
-Resolution is read-only and does not attach a probe. The command verifies the
-PID plus process start time, requires the binary to be present in
-`/proc/<pid>/maps`, parses ELF load segments and symbol tables, reads the GNU
-Build ID when present, and returns the file offset, matching process mapping,
-and computed runtime address. PIE executables and `ET_DYN` shared libraries are
-reported separately. Hexadecimal `+0x...` values always mean ELF file offsets,
-not virtual addresses.
-
-The result conforms to `schemas/resolve.schema.json`. Malformed selectors,
-missing symbols, unmapped binaries, and offsets outside loadable or mapped
-regions use the standard error envelope. An absent Build ID is represented by
-`null`; invalid ELF metadata is an error.
+CUDA forms include Runtime/Driver API entry/exit and kernel, memcpy, or memset
+activity start/end. Kernel selectors accept `name~REGEX`; memcpy selectors
+accept `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`.
 
 ## `validate`
 
 ```bash
-xprobe validate \
-  --pid 1234 \
-  --from 'uprobe:/srv/app/libserver.so:handle_request:entry' \
+xprobe validate --pid 4242 \
+  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
-  --match first-after \
-  --json --non-interactive --no-color
+  --match exact --json --non-interactive --no-color
 ```
 
-`validate` reads process and ELF metadata but does not attach probes, initialize
-CUPTI, or modify the target. It resolves host selectors, validates CUDA filters
-and regular expressions, checks the correlation policy against available keys,
-and reports required eBPF, CUPTI, and clock-alignment capabilities.
+Validation is read-only. It verifies target identity, resolves host selectors,
+parses CUDA filters, and checks collection and correlation requirements.
+Results conform to `schemas/validate.schema.json`.
 
-The current selector grammar and collector support CUDA Runtime and Driver API
-callbacks, kernel, memcpy, and memset activity, and host entry/return probes.
-API selectors filter both callback domain and exact CUPTI function name.
+Supported policies are `exact`, `first-after`, `nearest`, `stack-nested`, and
+`stream-order`. Exact requires deterministic CUPTI correlation IDs. Nested
+requires entry/return of the same host function. Stream order requires GPU
+activity endpoints. Temporal policies always warn that they are heuristic.
 
-Supported match policy spellings are `exact`, `first-after`, `nearest`,
-`stack-nested`, and `stream-order`. `exact` is valid only when both endpoints
-share a deterministic CUPTI correlation key and their clocks are the same or
-already aligned. `stack-nested` requires entry and return selectors for the
-same host function. `stream-order` requires two GPU activity endpoints.
-Temporal policies emit `HEURISTIC_CORRELATION`; broad kernel selectors emit
-`BROAD_EVENT_SELECTOR`.
-
-Malformed input, invalid regex syntax, unresolved symbols, and unknown policies
-use the error envelope and a nonzero exit code. A well-formed request that
-cannot run in the current target returns exit code zero with `ok: true`,
-`valid: false`, and explicit issues. A missing CUPTI agent also reports whether
-a target restart is required. Results conform to
-`schemas/validate.schema.json`.
+`requirements.agent_activation` is `not_required`, `already_loaded`, or
+`injection_required`. The last value sets `target_mutation: true` and emits
+`TARGET_PROCESS_WILL_BE_MODIFIED`; it does not make an otherwise collectable
+request invalid. Callers must still stop on `valid: false`.
 
 ## `measure`
 
+Live target:
+
 ```bash
-xprobe measure \
-  --input /tmp/xprobe-host.json \
-  --input /tmp/xprobe-cupti.bin \
-  --from 'uprobe:/srv/app/libserver.so:handle_request:entry' \
+xprobe measure --pid 4242 \
+  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
-  --match first-after \
-  --samples 100 \
+  --match exact --samples 100 --timeout-ms 30000 \
+  --events-out /tmp/xprobe-events.jsonl \
   --json --non-interactive --no-color
 ```
 
-For same-source exact correlation:
+Completed captures:
 
 ```bash
-xprobe measure \
-  --input /tmp/xprobe-cupti.bin \
-  --from 'cuda:kernel_start:name~flash.*' \
-  --to 'cuda:kernel_end:name~flash.*' \
-  --match exact \
-  --samples 100 \
-  --json --non-interactive --no-color
-```
-
-For foreground collection from a running target:
-
-```bash
-xprobe measure \
-  --pid 4242 \
-  --cupti-socket /run/user/1000/xprobe-4242.sock \
-  --from 'uprobe:/srv/app/libserver.so:handle_request:entry' \
+xprobe measure --input host.json --input cupti.bin \
+  --from 'uprobe:/srv/app/server:request:entry' \
   --to 'cuda:kernel_start:name~flash.*' \
-  --match first-after \
-  --samples 100 \
-  --timeout-ms 30000 \
+  --match first-after --samples 100 \
   --json --non-interactive --no-color
 ```
 
-The completed mode consumes one or more `--input` values. Supported formats are
-CUPTI binary, a host capture result emitted by `dev uprobe --json`, and Event
-JSONL. Repeat `--input` to merge sources. Inputs must contain events from one
-PID; events are sorted and assigned a new measurement session identity. Drop
-counters from capture envelopes are accumulated. Event JSONL has no envelope,
-so it cannot carry a source-level drop count.
-
-The live mode uses `--pid` instead of `--input`. It resolves and attaches each
-unique host selector, waits for every BPF link to report readiness, and polls
-the read-only CUPTI snapshot socket when either endpoint is CUDA. The agent must
-have been loaded at target startup with `XPROBE_CUPTI_SOCKET` set. A baseline
-snapshot excludes CUDA events recorded before the measurement. `--timeout-ms`
-bounds collection and cleanup; reaching the sample limit returns `completed`,
-while a timeout with partial matches returns `timed_out`. No matched pairs use
-the standard `NO_MATCHED_SAMPLES` error envelope.
-
-Host function entry/return, `cudaLaunchKernel` runtime API, kernel start/end,
-memcpy start/end, and memset start/end selectors are supported. Memcpy
-selectors accept the optional `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>` filter. `exact`
-joins CUDA endpoints on CUPTI correlation ID; host endpoints do not have that
-key and reject `exact`. `first-after` performs a chronological one-to-one greedy
-match and is always labeled `HEURISTIC_CORRELATION`.
-`nearest` consumes the nearest unused event by absolute timestamp distance and
-is also heuristic. `stack-nested` pairs host entry/return events with a LIFO
-stack per PID/TID. `stream-order` pairs GPU activity only within the same CUDA
-device, context, and stream; both structural policies report `high` confidence.
-
-At least one of `--samples` or `--duration-ms` is required. `--max-events`
-defaults to 100,000 and rejects larger captures before correlation. Source
-drops are included in the result and produce an `EVENTS_DROPPED` warning.
-Unknown source records fail instead of being ignored.
-
-Latency is calculated only when both endpoints use the same clock domain or
-have already been normalized. Captures with the
-`HOST_MONOTONIC_TIMESTAMPS` feature normalize GPU activity to host monotonic
-time, so API-to-GPU measurement is supported. Captures without that feature
-keep GPU activity in the CUPTI clock and API-to-GPU subtraction returns
-`CLOCK_ALIGNMENT_FAILED`.
-
-The result conforms to `schemas/measurement-result.schema.json`. No matched
-pairs return `NO_MATCHED_SAMPLES`; unsupported policies and unbounded requests
-use the standard error envelope.
-
-## `trace`
+Versioned live spec:
 
 ```bash
-xprobe trace \
-  --spec /srv/xprobe/request-to-kernel.json \
-  --cupti-socket /run/user/1000/xprobe-4242.sock \
+xprobe measure --spec measurement.json \
   --json --non-interactive --no-color
 ```
 
-`trace` reads a strict `MeasurementSpec` v1 JSON document conforming to
-`schemas/measurement-spec.schema.json`. The spec contains the full target
-identity, selectors, policy, sample/duration limits, timeout, and event bound.
-The command verifies both PID and process start time before attaching, then
-uses the same foreground orchestration and cleanup path as `measure --pid`.
+Exactly one source mode is used: `--pid`, one or more `--input`, or `--spec`.
+At least one positive `--samples` or `--duration-ms` bound is required in direct
+mode. `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000.
 
-## `export`
+Live host endpoints attach PID-scoped eBPF probes. CUDA endpoints automatically
+activate the CUPTI agent. If it is absent, `--agent` or
+`XPROBE_CUPTI_AGENT_PATH` selects the shared object; otherwise xprobe searches
+its installed `../lib/xprobe` path and development build path. Injection
+requires Linux x86_64, a shared mount namespace, and ptrace permission. It emits
+a stderr warning and `CUPTI_AGENT_INJECTED`. Final stop disables CUPTI and
+removes the socket while leaving the `.so` mapped.
 
-```bash
-xprobe export \
-  --input /tmp/xprobe-host.json \
-  --input /tmp/xprobe-cupti.bin \
-  --format chrome \
-  --output /tmp/xprobe-trace.json \
-  --json --non-interactive --no-color
-```
+Completed inputs may be CUPTI ABI binary, bounded host-capture JSON, or Event
+JSONL. Repeated inputs are merged after target-PID checks. Unknown records,
+mixed targets, malformed captures, and excessive event counts fail explicitly.
 
-`export` accepts the same completed capture inputs as `measure` and supports
-`jsonl` and `chrome`. Chrome output follows Trace Event Format using instant
-events, integer microsecond timestamps, and original nanoseconds, clock domain,
-event identity, attributes, and CUDA correlation fields in `args`. Artifacts
-are written with mode `0600`; the JSON result conforms to
-`schemas/trace-export.schema.json`.
+Results conform to `schemas/measurement-result.schema.json` and contain:
 
-## `capture cupti`
+- status and latency statistics;
+- matched, unmatched, ambiguous, and dropped counts;
+- method, confidence, and score;
+- clock alignment and optional estimated error;
+- host/CUDA collection totals;
+- full start/end events plus latency for each evidence pair;
+- structured warnings.
 
-```bash
-xprobe capture cupti \
-  --input /tmp/xprobe-cupti.bin \
-  --session-id xp_cuda_1 \
-  --json --non-interactive --no-color
-```
+`--events-out PATH` writes the deduplicated events used by matched pairs with
+mode `0600`. The default format is JSONL; `--format chrome` writes Chrome Trace
+Event Format. This folds evidence export into `measure` rather than requiring a
+separate public command.
 
-The command strictly validates the xprobe CUPTI binary ABI and emits one
-versioned `Event` per line. CUDA API names are stored in
-`attributes.cuda_api_name`, with `attributes.cuda_api_domain` distinguishing
-Runtime and Driver callbacks. GPU records preserve the name supplied by CUPTI in
-`cuda.kernel_name`. Transfer records expose byte count, memcpy kind, and memset
-value; the latter is stored in `attributes.memset_value`. API and GPU records
-expose the exact CUPTI correlation ID. The `HOST_MONOTONIC_TIMESTAMPS` feature
-marks GPU records as CUPTI-normalized host monotonic timestamps, while
-`TRANSFER_RECORDS` declares memcpy/memset record support. The serialized
-activity value is preserved in `timestamp_raw`; CUPTI does not expose an
-interpolation error bound, so `timestamp_error_ns` is null and measurement
-emits `CLOCK_ERROR_UNAVAILABLE`.
+No matched pairs return `NO_MATCHED_SAMPLES`. Cross-clock subtraction without
+declared alignment returns `CLOCK_ALIGNMENT_FAILED`. Drops and unknown clock
+error are never silently converted to high-quality results.
 
-Malformed headers, unsupported ABI versions or feature flags, invalid lengths,
-unknown record kinds, and invalid names return `TRACE_EXPORT_FAILED`. Nonzero
-dropped or unknown record counts are reported on stderr and are never silently
-discarded.
+## Compatibility
 
-`capture uprobe` is the corresponding formal bounded host collector. The
-existing `dev uprobe` and `dev cupti` spellings remain compatibility aliases.
+Earlier low-level command spellings remain hidden during the 0.1 transition so
+existing integration fixtures can decode captures. They are not public API and
+must not be used by Skills or new automation.

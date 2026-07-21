@@ -1,27 +1,24 @@
 # Agent integration
 
-xprobe exposes the same shell, JSON, JSON Schema, and Markdown Skill contract to
-every coding agent. Core behavior does not depend on a model API or editor API.
+xprobe exposes shell commands, versioned JSON, JSON Schema, and one canonical
+Skill. It does not call model APIs or provide an agent daemon.
 
-The canonical latency workflow is
+The canonical workflow is
 `skills/xprobe-measure-latency/SKILL.md`. `AGENTS.md`, `CLAUDE.md`, and
-`.cursor/rules/xprobe.mdc` are thin discovery points; they must not contain
-separate command sequences or correlation rules.
+`.cursor/rules/xprobe.mdc` are discovery points and must not duplicate command
+sequences or correlation rules.
 
-## Deterministic contract test
-
-Run:
+## Contract test
 
 ```bash
 just test-agent-contract
 ```
 
-The test invokes `doctor`, `inspect`, and `validate` in JSON, non-interactive,
-no-color mode. It also verifies the stable command set, checked-in schemas,
-required Skill workflow stages, safety constraints, and references from each
-platform entry point.
+The test requires the visible command set to be exactly `doctor`, `discover`,
+`validate`, and `measure`. It invokes the first three in strict JSON mode,
+checks injection requirements, verifies schemas, and checks that the Skill uses
+only the four-command bounded workflow and inspects result quality/evidence.
 
-This is an interface conformance test, not a model evaluation. Evaluation of a
-specific coding agent should run the fixed tasks described in `PLAN.md` from an
-external harness and record success rate, command count, cleanup, unsafe actions,
-and interpretation quality without adding model calls to xprobe.
+This is interface conformance, not model evaluation. External harnesses may
+evaluate task success, command count, cleanup, mutation disclosure, and result
+interpretation without adding model-specific behavior to xprobe.
