@@ -19,7 +19,7 @@ use xprobe_collector::{
     completed, cupti,
     uprobe::{self, UprobeRequest},
 };
-use xprobe_core::{discover, doctor, inject, inspect, resolve, validate};
+use xprobe_core::{cupti_compat, discover, doctor, inject, inspect, resolve, validate};
 use xprobe_correlator::{MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
@@ -1035,6 +1035,9 @@ struct LiveCollection {
     latest_cuda: Option<cupti::CuptiCapture>,
     managed_agent: bool,
     agent_injected: bool,
+    agent_major: Option<u32>,
+    agent_path: Option<PathBuf>,
+    cupti_path: Option<PathBuf>,
 }
 
 fn collect_live_measurement(
@@ -1081,10 +1084,26 @@ fn collect_live_measurement(
         }
     };
     if collection.agent_injected {
+        let mut details = BTreeMap::new();
+        if let Some(major) = collection.agent_major {
+            details.insert("cuda_major".to_owned(), serde_json::Value::from(major));
+        }
+        if let Some(path) = collection.agent_path.as_deref() {
+            details.insert(
+                "agent_path".to_owned(),
+                serde_json::Value::from(path.display().to_string()),
+            );
+        }
+        if let Some(path) = collection.cupti_path.as_deref() {
+            details.insert(
+                "cupti_path".to_owned(),
+                serde_json::Value::from(path.display().to_string()),
+            );
+        }
         result.warnings.push(Warning {
             code: "CUPTI_AGENT_INJECTED".to_owned(),
             message: "xprobe injected the CUPTI agent and left the shared object mapped".to_owned(),
-            details: BTreeMap::new(),
+            details,
         });
     }
     Ok(result)
@@ -1189,6 +1208,9 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
         latest_cuda: None,
         managed_agent: activation.managed,
         agent_injected: activation.injected,
+        agent_major: activation.major,
+        agent_path: activation.agent_path,
+        cupti_path: activation.cupti_path,
     })
 }
 
@@ -1196,6 +1218,15 @@ struct CuptiActivation {
     socket: Option<PathBuf>,
     managed: bool,
     injected: bool,
+    major: Option<u32>,
+    agent_path: Option<PathBuf>,
+    cupti_path: Option<PathBuf>,
+}
+
+struct AgentSelection {
+    path: PathBuf,
+    major: Option<u32>,
+    cupti_path: Option<PathBuf>,
 }
 
 fn prepare_cupti_activation(
@@ -1215,6 +1246,9 @@ fn prepare_cupti_activation(
             socket: None,
             managed: false,
             injected: false,
+            major: None,
+            agent_path: None,
+            cupti_path: None,
         });
     }
     if let Some(socket) = request.cupti_socket.clone() {
@@ -1222,6 +1256,9 @@ fn prepare_cupti_activation(
             socket: Some(socket),
             managed: false,
             injected: false,
+            major: None,
+            agent_path: None,
+            cupti_path: None,
         });
     }
 
@@ -1230,29 +1267,63 @@ fn prepare_cupti_activation(
         request.pid,
         std::process::id()
     ));
-    let agent = resolve_agent_path(request.agent_path.as_deref())?;
+    let selection = if report.cuda.xprobe_cupti_loaded {
+        AgentSelection {
+            path: PathBuf::new(),
+            major: cupti_compat::target_major(report)
+                .map_err(|error| CommandFailure::new(error.code(), error.to_string(), true))?,
+            cupti_path: None,
+        }
+    } else {
+        resolve_agent_path(report, request.agent_path.as_deref())?
+    };
     eprintln!(
-        "xprobe: warning: activating the CUPTI agent modifies target PID {}",
-        request.pid
+        "xprobe: warning: activating the CUPTI agent modifies target PID {}{}{}",
+        request.pid,
+        selection
+            .major
+            .map_or_else(String::new, |major| format!(" with CUDA {major} Agent")),
+        selection
+            .cupti_path
+            .as_deref()
+            .map_or_else(String::new, |path| format!(" using {}", path.display()))
     );
     let activation =
-        inject::activate(report, &agent, &socket, request.timeout).map_err(|error| {
+        inject::activate(report, &selection.path, &socket, request.timeout).map_err(|error| {
             CommandFailure::new(error.code(), error.to_string(), error.recoverable())
         })?;
     Ok(CuptiActivation {
         socket: Some(activation.socket_path),
         managed: true,
         injected: activation.injected,
+        major: selection.major,
+        agent_path: activation.injected.then_some(selection.path),
+        cupti_path: selection.cupti_path,
     })
 }
 
-fn resolve_agent_path(configured: Option<&Path>) -> Result<PathBuf, CommandFailure> {
+fn resolve_agent_path(
+    report: &ProcessReport,
+    configured: Option<&Path>,
+) -> Result<AgentSelection, CommandFailure> {
     if let Some(path) = configured {
-        return Ok(path.to_owned());
+        return Ok(AgentSelection {
+            path: path.to_owned(),
+            major: cupti_compat::target_major(report)
+                .map_err(|error| CommandFailure::new(error.code(), error.to_string(), true))?,
+            cupti_path: None,
+        });
     }
     if let Some(path) = std::env::var_os("XPROBE_CUPTI_AGENT_PATH") {
-        return Ok(PathBuf::from(path));
+        return Ok(AgentSelection {
+            path: PathBuf::from(path),
+            major: cupti_compat::target_major(report)
+                .map_err(|error| CommandFailure::new(error.code(), error.to_string(), true))?,
+            cupti_path: None,
+        });
     }
+    let cupti = cupti_compat::resolve_library(report)
+        .map_err(|error| CommandFailure::new(error.code(), error.to_string(), true))?;
     let executable = std::env::current_exe().map_err(|error| {
         CommandFailure::new(
             ErrorCode::CuptiNotAvailable,
@@ -1264,20 +1335,34 @@ fn resolve_agent_path(configured: Option<&Path>) -> Result<PathBuf, CommandFailu
         .parent()
         .expect("executable has a parent directory");
     let candidates = [
-        parent.join("../lib/xprobe/libxprobe-cupti.so"),
-        parent.join("libxprobe-cupti.so"),
-        PathBuf::from("build/cupti/libxprobe-cupti.so"),
+        parent.join(format!(
+            "../lib/xprobe/cuda{}/libxprobe-cupti.so",
+            cupti.major
+        )),
+        parent.join(format!("cuda{}/libxprobe-cupti.so", cupti.major)),
+        PathBuf::from(format!(
+            "build/cupti/cuda{}/libxprobe-cupti.so",
+            cupti.major
+        )),
     ];
-    candidates
+    let path = candidates
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| {
             CommandFailure::new(
                 ErrorCode::CuptiNotAvailable,
-                "CUPTI agent was not found; pass --agent or set XPROBE_CUPTI_AGENT_PATH",
+                format!(
+                    "CUDA {} CUPTI agent was not found; pass --agent or set XPROBE_CUPTI_AGENT_PATH",
+                    cupti.major
+                ),
                 true,
             )
-        })
+        })?;
+    Ok(AgentSelection {
+        path,
+        major: Some(cupti.major),
+        cupti_path: Some(cupti.path),
+    })
 }
 
 fn stop_managed_agent(

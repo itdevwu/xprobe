@@ -8,6 +8,7 @@ use xprobe_protocol::{
 };
 
 use crate::{
+    cupti_compat,
     inspect::{self, InspectError},
     resolve::{self, ResolveError},
 };
@@ -165,6 +166,7 @@ pub fn run(
         &mut issues,
         &mut warnings,
     );
+    check_cupti_compatibility(report, &requirements, &mut issues);
     check_policy(&start, &end, match_policy, &mut issues, &mut warnings);
     check_selector_breadth(&start, "start", &mut warnings);
     check_selector_breadth(&end, "end", &mut warnings);
@@ -182,6 +184,19 @@ pub fn run(
         issues,
         warnings,
     })
+}
+
+fn check_cupti_compatibility(
+    report: &ProcessReport,
+    requirements: &ValidationRequirements,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if !requirements.needs_cupti {
+        return;
+    }
+    if let Err(error) = cupti_compat::target_major(report) {
+        issues.push(issue(error.code(), error.to_string()));
+    }
 }
 
 fn resolve_endpoint(
