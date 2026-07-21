@@ -14,6 +14,10 @@ build:
 test: build
     cargo test --workspace
     ctest --test-dir build --output-on-failure
+    python3 tests/agent-contract/test_contract.py target/debug/xprobe
+
+test-agent-contract: build
+    python3 tests/agent-contract/test_contract.py target/debug/xprobe
 
 test-bpf:
     cmake -S . -B build -G Ninja -DXPROBE_BUILD_BPF=ON
@@ -32,6 +36,9 @@ test-cupti-live: build
 
 test-multisource-live: build
     python3 tests/integration/test_multisource.py "{{cuda_devel_image}}" target/debug/xprobe
+
+benchmark-gpu:
+    python3 benchmarks/cuda-callback/run.py "{{cuda_devel_image}}"
 
 fmt:
     cargo fmt --all

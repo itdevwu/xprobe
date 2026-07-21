@@ -18,3 +18,4 @@ dependencies:
   - ninja>=1.12
   - pkg-config>=0.29
   - python>=3.12,<3.14
+  - pyyaml>=6.0

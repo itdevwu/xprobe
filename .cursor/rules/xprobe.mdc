@@ -1,0 +1,8 @@
+---
+description: Shared xprobe engineering and measurement workflow
+alwaysApply: true
+---
+
+Follow `AGENTS.md` for repository engineering rules. For latency measurement
+tasks, follow `skills/xprobe-measure-latency/SKILL.md`. Do not create a
+Cursor-specific measurement workflow or reinterpret the checked-in JSON schemas.

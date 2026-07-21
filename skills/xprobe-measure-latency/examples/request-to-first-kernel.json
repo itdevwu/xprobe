@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "name": "request_to_first_kernel",
+  "target": {
+    "pid": 1234,
+    "process_start_time": 987654
+  },
+  "start_selector": "uprobe:/srv/app/server:request_begin:entry",
+  "end_selector": "cuda:kernel_start:name~vector_add.*",
+  "match_policy": "first_after",
+  "samples": 100,
+  "duration_ms": null,
+  "timeout_ms": 30000,
+  "max_events": 100000
+}

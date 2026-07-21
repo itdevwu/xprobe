@@ -77,6 +77,23 @@ access:
 just test-multisource-live
 ```
 
+Run the deterministic Agent-facing CLI contract test after changing commands,
+schemas, Skills, or platform entry files:
+
+```bash
+just test-agent-contract
+```
+
+Run the CUDA Event precision and callback overhead benchmark after changing the
+CUPTI timing or callback hot path:
+
+```bash
+just benchmark-gpu
+```
+
+See `docs/agent-integration.md` and `docs/benchmarks.md` for the tested contract
+and benchmark interpretation.
+
 The test mounts the workspace read-only, compiles the agent and a CUDA fixture
 inside the container, injects the agent at CUDA startup, and verifies three API
 entries, API exits, kernel starts, and kernel ends, three memcpy intervals, and

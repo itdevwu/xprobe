@@ -37,6 +37,14 @@
 - Do not implement runtime process injection without a separately reviewed
   design and explicit user approval.
 
+## Measurement workflow
+
+- Use `skills/xprobe-measure-latency/SKILL.md` for latency measurement tasks.
+- Platform-specific Agent files may point to that Skill but must not duplicate
+  measurement logic or redefine the CLI contract.
+- Run `doctor`, inspect the target identity, and run `validate` before attaching.
+- Keep collection bounded and base conclusions on reported quality fields.
+
 ## Verification
 
 - Run `just test` after changing Rust code.
@@ -47,4 +55,7 @@
 - Run `just test-cupti` after changing files under `cupti/`.
 - Run `just test-cupti-live` after changing CUPTI callbacks, activity records,
   capture output, or agent lifecycle. This test requires Docker and a GPU.
+- Run `just test-agent-contract` after changing CLI commands, JSON output,
+  schemas, Agent entry files, or repository Skills.
+- Run `just benchmark-gpu` after changing CUPTI timing or callback hot paths.
 - Use emoji conventional commits, for example `🐛 fix: reject reused pid`.

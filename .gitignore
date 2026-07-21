@@ -2,4 +2,5 @@
 /target/
 *.jsonl
 *.trace.json
-
+__pycache__/
+*.pyc
