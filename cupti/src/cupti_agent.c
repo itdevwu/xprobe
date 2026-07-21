@@ -12,6 +12,12 @@ int xprobe_cupti_agent_initialize(void)
     return XPROBE_CUPTI_AGENT_UNAVAILABLE;
 }
 
+int xprobe_cupti_agent_start(const char *socket_path)
+{
+    (void)socket_path;
+    return XPROBE_CUPTI_AGENT_UNAVAILABLE;
+}
+
 int InitializeInjection(void)
 {
     return 0;
@@ -63,6 +69,8 @@ _Static_assert(sizeof(struct xprobe_cupti_output_header) == 48U,
                "unexpected CUPTI output header layout");
 _Static_assert(sizeof(struct xprobe_cupti_record) == 200U,
                "unexpected CUPTI record layout");
+_Static_assert(sizeof(struct xprobe_cupti_control_request) == 16U,
+               "unexpected CUPTI control request layout");
 
 static struct xprobe_cupti_record records[XPROBE_CUPTI_MAX_RECORDS];
 static _Atomic unsigned char record_ready[XPROBE_CUPTI_MAX_RECORDS];
@@ -91,6 +99,25 @@ static const CUpti_ActivityKind enabled_activity_kinds[] = {
     CUPTI_ACTIVITY_KIND_MEMCPY,
     CUPTI_ACTIVITY_KIND_MEMSET,
 };
+
+static void shutdown_agent(void);
+
+static void reset_capture(void)
+{
+    size_t index;
+
+    for (index = 0U; index < XPROBE_CUPTI_MAX_RECORDS; ++index) {
+        atomic_store_explicit(&record_ready[index], 0U, memory_order_relaxed);
+    }
+    atomic_store_explicit(&record_count, 0U, memory_order_relaxed);
+    atomic_store_explicit(&committed_record_count, 0U, memory_order_relaxed);
+    atomic_store_explicit(&dropped_records, 0U, memory_order_relaxed);
+    atomic_store_explicit(&unknown_records, 0U, memory_order_relaxed);
+    atomic_store_explicit(&requested_buffers, 0U, memory_order_relaxed);
+    atomic_store_explicit(&completed_buffers, 0U, memory_order_relaxed);
+    atomic_store_explicit(&last_cupti_result, 0U, memory_order_relaxed);
+    atomic_store_explicit(&output_written, 0, memory_order_relaxed);
+}
 
 static void remember_cupti_error(CUptiResult result)
 {
@@ -460,6 +487,24 @@ static int send_all(int descriptor, const void *data, size_t size)
     return 0;
 }
 
+static int receive_all(int descriptor, void *data, size_t size)
+{
+    uint8_t *cursor = data;
+
+    while (size > 0U) {
+        ssize_t received = recv(descriptor, cursor, size, 0);
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+        if (received <= 0) {
+            return -1;
+        }
+        cursor += (size_t)received;
+        size -= (size_t)received;
+    }
+    return 0;
+}
+
 static void initialize_output_header(struct xprobe_cupti_output_header *header,
                                      uint64_t available)
 {
@@ -553,6 +598,8 @@ static void *serve_snapshots(void *unused)
         };
         int poll_result = poll(&poll_descriptor, 1U, 100);
         int client;
+        struct xprobe_cupti_control_request request;
+        int stop_requested = 0;
 
         if (poll_result < 0 && errno == EINTR) {
             continue;
@@ -579,7 +626,14 @@ static void *serve_snapshots(void *unused)
             continue;
         }
 
-        if (pthread_mutex_lock(&flush_mutex) != 0) {
+        if (receive_all(client, &request, sizeof(request)) != 0 ||
+            memcmp(request.magic, XPROBE_CUPTI_CONTROL_MAGIC,
+                   sizeof(request.magic)) != 0 ||
+            request.version != XPROBE_CUPTI_CONTROL_VERSION ||
+            (request.command != XPROBE_CUPTI_CONTROL_SNAPSHOT &&
+             request.command != XPROBE_CUPTI_CONTROL_STOP)) {
+            fprintf(stderr, "xprobe CUPTI: invalid snapshot control request\n");
+        } else if (pthread_mutex_lock(&flush_mutex) != 0) {
             fprintf(stderr, "xprobe CUPTI: failed to lock snapshot flush mutex\n");
         } else {
             if (flush_activity_buffers(1) == XPROBE_CUPTI_AGENT_READY &&
@@ -590,11 +644,29 @@ static void *serve_snapshots(void *unused)
             if (pthread_mutex_unlock(&flush_mutex) != 0) {
                 fprintf(stderr, "xprobe CUPTI: failed to unlock snapshot flush mutex\n");
             }
+            stop_requested = request.command == XPROBE_CUPTI_CONTROL_STOP;
         }
         if (close(client) != 0) {
             fprintf(stderr, "xprobe CUPTI: failed to close snapshot client: %s\n",
                     strerror(errno));
         }
+        if (stop_requested != 0) {
+            shutdown_agent();
+            atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_UNAVAILABLE,
+                                  memory_order_release);
+            atomic_store_explicit(&snapshot_thread_stop, 1, memory_order_release);
+        }
+    }
+    {
+        int descriptor = atomic_exchange_explicit(&snapshot_listener, -1,
+                                                  memory_order_acq_rel);
+        if (descriptor >= 0) {
+            (void)shutdown(descriptor, SHUT_RDWR);
+            (void)close(descriptor);
+        }
+    }
+    if (snapshot_socket_path[0] != '\0') {
+        (void)unlink(snapshot_socket_path);
     }
     return NULL;
 }
@@ -765,45 +837,39 @@ static void finalize_agent(void)
         (void)xprobe_cupti_agent_flush();
     } else {
         stop_snapshot_server();
+        shutdown_agent();
     }
 }
 
-int xprobe_cupti_agent_initialize(void)
+int xprobe_cupti_agent_start(const char *configured_socket)
 {
-    const char *configured_path = getenv("XPROBE_CUPTI_OUTPUT");
-    const char *configured_socket = getenv("XPROBE_CUPTI_SOCKET");
     size_t length;
 
-    if (agent_initialized != 0) {
+    if (xprobe_cupti_agent_status() == XPROBE_CUPTI_AGENT_READY) {
         return xprobe_cupti_agent_status();
     }
-    if (configured_path != NULL) {
-        length = strlen(configured_path);
-        if (length >= sizeof(output_path)) {
-            fprintf(stderr, "xprobe CUPTI: XPROBE_CUPTI_OUTPUT is too long\n");
-            atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
-                                  memory_order_relaxed);
-            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
-        }
-        memcpy(output_path, configured_path, length + 1U);
-    }
+    stop_snapshot_server();
+    snapshot_socket_path[0] = '\0';
     if (configured_socket != NULL) {
         length = strlen(configured_socket);
         if (length >= sizeof(snapshot_socket_path)) {
-            fprintf(stderr, "xprobe CUPTI: XPROBE_CUPTI_SOCKET is too long\n");
+            fprintf(stderr, "xprobe CUPTI: snapshot socket path is too long\n");
             atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
                                   memory_order_relaxed);
             return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
         }
         memcpy(snapshot_socket_path, configured_socket, length + 1U);
     }
-    agent_initialized = 1;
-    if (atexit(finalize_agent) != 0) {
-        fprintf(stderr, "xprobe CUPTI: failed to register exit handler\n");
-        atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
-                              memory_order_relaxed);
-        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    if (agent_initialized == 0) {
+        agent_initialized = 1;
+        if (atexit(finalize_agent) != 0) {
+            fprintf(stderr, "xprobe CUPTI: failed to register exit handler\n");
+            atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
+                                  memory_order_relaxed);
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
     }
+    reset_capture();
     if (initialize_agent() != XPROBE_CUPTI_AGENT_READY) {
         return xprobe_cupti_agent_status();
     }
@@ -814,6 +880,26 @@ int xprobe_cupti_agent_initialize(void)
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
     return XPROBE_CUPTI_AGENT_READY;
+}
+
+int xprobe_cupti_agent_initialize(void)
+{
+    const char *configured_path = getenv("XPROBE_CUPTI_OUTPUT");
+    const char *configured_socket = getenv("XPROBE_CUPTI_SOCKET");
+    size_t length;
+
+    output_path[0] = '\0';
+    if (configured_path != NULL) {
+        length = strlen(configured_path);
+        if (length >= sizeof(output_path)) {
+            fprintf(stderr, "xprobe CUPTI: XPROBE_CUPTI_OUTPUT is too long\n");
+            atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_OUTPUT_ERROR,
+                                  memory_order_relaxed);
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+        memcpy(output_path, configured_path, length + 1U);
+    }
+    return xprobe_cupti_agent_start(configured_socket);
 }
 
 int InitializeInjection(void)
@@ -883,6 +969,11 @@ int xprobe_cupti_agent_flush(void)
     }
     atomic_fetch_add_explicit(&dropped_records, dropped, memory_order_relaxed);
     status = write_output();
+    if (status == XPROBE_CUPTI_AGENT_READY) {
+        shutdown_agent();
+        atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_UNAVAILABLE,
+                              memory_order_release);
+    }
 
 unlock:
     if (pthread_mutex_unlock(&flush_mutex) != 0) {

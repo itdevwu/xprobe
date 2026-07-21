@@ -20,6 +20,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
 libbpf-rs = { version = "0.26.2", features = ["vendored"] }
+nix = { version = "0.31.3", features = ["process", "ptrace", "signal", "uio"] }
 object = { version = "0.36", default-features = false, features = ["read", "std"] }
 regex = "1.11"
 schemars = "1.0"

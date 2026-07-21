@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 object.workspace = true
+nix.workspace = true
 regex.workspace = true
 xprobe-protocol.workspace = true
 

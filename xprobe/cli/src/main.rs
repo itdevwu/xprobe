@@ -19,14 +19,14 @@ use xprobe_collector::{
     completed, cupti,
     uprobe::{self, UprobeRequest},
 };
-use xprobe_core::{discover, doctor, inspect, resolve, validate};
+use xprobe_core::{discover, doctor, inject, inspect, resolve, validate};
 use xprobe_correlator::{MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
     CapabilityReport, CheckResult, DiscoveryResult, ErrorCode, ErrorResponse, ExportFormat,
     HostCaptureResult, MatchPolicy, MeasurementResult, MeasurementSpec, ProcessReport,
     ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity, TraceExportResult,
-    ValidationResult, XprobeError,
+    ValidationResult, Warning, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -265,6 +265,10 @@ struct MeasureArgs {
     #[arg(long)]
     cupti_socket: Option<PathBuf>,
 
+    /// CUPTI agent shared object used for automatic online injection.
+    #[arg(long)]
+    agent: Option<PathBuf>,
+
     /// Bound foreground collection and cleanup to this many milliseconds.
     #[arg(long, default_value_t = 30_000)]
     timeout_ms: u64,
@@ -472,6 +476,7 @@ fn run_trace(args: TraceArgs) -> ExitCode {
         pid: spec.target.pid,
         expected_target: Some(spec.target),
         cupti_socket,
+        agent_path: None,
         timeout: Duration::from_millis(spec.timeout_ms),
         match_policy_text: match_policy_name(spec.match_policy),
         options: MeasureOptions {
@@ -606,6 +611,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         input,
         pid,
         cupti_socket,
+        agent,
         timeout_ms,
         from,
         to,
@@ -659,6 +665,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             pid,
             expected_target: None,
             cupti_socket,
+            agent_path: agent,
             timeout: Duration::from_millis(timeout_ms),
             match_policy_text: match_policy_name(match_policy),
             options,
@@ -755,6 +762,7 @@ struct LiveMeasureRequest {
     pid: u32,
     expected_target: Option<TargetIdentity>,
     cupti_socket: Option<PathBuf>,
+    agent_path: Option<PathBuf>,
     timeout: Duration,
     match_policy_text: &'static str,
     options: MeasureOptions,
@@ -813,6 +821,8 @@ struct LiveCollection {
     collectors: HostCollectors,
     host_captures: Option<Vec<HostCaptureResult>>,
     latest_cuda: Option<cupti::CuptiCapture>,
+    managed_agent: bool,
+    agent_injected: bool,
 }
 
 fn collect_live_measurement(
@@ -821,19 +831,51 @@ fn collect_live_measurement(
     validate_live_limits(request)?;
     let mut collection = prepare_live_collection(request)?;
 
-    loop {
+    let outcome = loop {
         refresh_live_sources(&mut collection, request)?;
         let now = Instant::now();
         if let Some(result) = evaluate_live_result(&collection, request, now)? {
-            return Ok(result);
+            break Ok(result);
         }
         if now >= collection.deadline {
-            return finish_live_timeout(&mut collection, request);
+            break finish_live_timeout(&mut collection, request);
         }
         if collection.socket.is_none() {
             thread::sleep(Duration::from_millis(10));
         }
+    };
+    let managed_capture = collection.managed_agent;
+    let stop_result = stop_managed_agent(&mut collection, request);
+    let mut result = match (outcome, stop_result) {
+        (Ok(mut result), Ok(())) => {
+            if managed_capture {
+                let status = result.status;
+                result = measure_live_capture(
+                    collection.host_captures.as_deref().unwrap_or(&[]),
+                    &collection,
+                    &request.options,
+                )?;
+                result.status = status;
+            }
+            result
+        }
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Err(cleanup)) => {
+            eprintln!(
+                "xprobe: cleanup failed after measurement error: {}",
+                cleanup.message
+            );
+            return Err(error);
+        }
+    };
+    if collection.agent_injected {
+        result.warnings.push(Warning {
+            code: "CUPTI_AGENT_INJECTED".to_owned(),
+            message: "xprobe injected the CUPTI agent and left the shared object mapped".to_owned(),
+            details: BTreeMap::new(),
+        });
     }
+    Ok(result)
 }
 
 fn validate_live_limits(request: &LiveMeasureRequest) -> Result<(), CommandFailure> {
@@ -887,24 +929,8 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
         return Err(CommandFailure::new(issue.code, issue.message.clone(), true));
     }
 
-    let socket = if validation.requirements.needs_cupti {
-        Some(request.cupti_socket.clone().ok_or_else(|| {
-            CommandFailure::new(
-                ErrorCode::CuptiAgentNotLoaded,
-                "live CUDA measurement requires --cupti-socket",
-                true,
-            )
-        })?)
-    } else {
-        if request.cupti_socket.is_some() {
-            return Err(CommandFailure::new(
-                ErrorCode::InvalidEventSelector,
-                "--cupti-socket is only valid when a CUDA endpoint is selected",
-                true,
-            ));
-        }
-        None
-    };
+    let activation = prepare_cupti_activation(&report, &validation, request)?;
+    let socket = activation.socket;
     let baseline = match socket.as_deref() {
         Some(path) => Some(
             cupti::snapshot(path, request.timeout, &request.options.session_id).map_err(
@@ -949,7 +975,127 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
         collectors,
         host_captures,
         latest_cuda: None,
+        managed_agent: activation.managed,
+        agent_injected: activation.injected,
     })
+}
+
+struct CuptiActivation {
+    socket: Option<PathBuf>,
+    managed: bool,
+    injected: bool,
+}
+
+fn prepare_cupti_activation(
+    report: &ProcessReport,
+    validation: &ValidationResult,
+    request: &LiveMeasureRequest,
+) -> Result<CuptiActivation, CommandFailure> {
+    if !validation.requirements.needs_cupti {
+        if request.cupti_socket.is_some() {
+            return Err(CommandFailure::new(
+                ErrorCode::InvalidEventSelector,
+                "--cupti-socket is only valid when a CUDA endpoint is selected",
+                true,
+            ));
+        }
+        return Ok(CuptiActivation {
+            socket: None,
+            managed: false,
+            injected: false,
+        });
+    }
+    if let Some(socket) = request.cupti_socket.clone() {
+        return Ok(CuptiActivation {
+            socket: Some(socket),
+            managed: false,
+            injected: false,
+        });
+    }
+
+    let socket = std::env::temp_dir().join(format!(
+        "xprobe-{}-{}.sock",
+        request.pid,
+        std::process::id()
+    ));
+    let agent = resolve_agent_path(request.agent_path.as_deref())?;
+    eprintln!(
+        "xprobe: warning: activating the CUPTI agent modifies target PID {}",
+        request.pid
+    );
+    let activation =
+        inject::activate(report, &agent, &socket, request.timeout).map_err(|error| {
+            CommandFailure::new(error.code(), error.to_string(), error.recoverable())
+        })?;
+    Ok(CuptiActivation {
+        socket: Some(activation.socket_path),
+        managed: true,
+        injected: activation.injected,
+    })
+}
+
+fn resolve_agent_path(configured: Option<&Path>) -> Result<PathBuf, CommandFailure> {
+    if let Some(path) = configured {
+        return Ok(path.to_owned());
+    }
+    if let Some(path) = std::env::var_os("XPROBE_CUPTI_AGENT_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+    let executable = std::env::current_exe().map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::CuptiNotAvailable,
+            format!("failed to locate xprobe executable: {error}"),
+            true,
+        )
+    })?;
+    let parent = executable
+        .parent()
+        .expect("executable has a parent directory");
+    let candidates = [
+        parent.join("../lib/xprobe/libxprobe-cupti.so"),
+        parent.join("libxprobe-cupti.so"),
+        PathBuf::from("build/cupti/libxprobe-cupti.so"),
+    ];
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            CommandFailure::new(
+                ErrorCode::CuptiNotAvailable,
+                "CUPTI agent was not found; pass --agent or set XPROBE_CUPTI_AGENT_PATH",
+                true,
+            )
+        })
+}
+
+fn stop_managed_agent(
+    collection: &mut LiveCollection,
+    request: &LiveMeasureRequest,
+) -> Result<(), CommandFailure> {
+    if !collection.managed_agent {
+        return Ok(());
+    }
+    let socket = collection
+        .socket
+        .as_deref()
+        .expect("managed CUPTI agent has a socket");
+    let capture = cupti::stop(socket, request.timeout, &request.options.session_id)
+        .map_err(|error| CommandFailure::new(ErrorCode::CleanupFailed, error.to_string(), true))?;
+    collection.latest_cuda = Some(capture);
+    collection.managed_agent = false;
+    Ok(())
+}
+
+impl Drop for LiveCollection {
+    fn drop(&mut self) {
+        if self.managed_agent {
+            if let Some(socket) = self.socket.as_deref() {
+                if let Err(error) = cupti::stop(socket, Duration::from_secs(2), "xp_cleanup") {
+                    eprintln!("xprobe: failed to stop CUPTI agent during cleanup: {error}");
+                }
+            }
+        }
+    }
 }
 
 fn start_host_collectors(

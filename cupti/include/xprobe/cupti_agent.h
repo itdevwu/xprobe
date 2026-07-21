@@ -9,6 +9,8 @@ extern "C" {
 
 #define XPROBE_CUPTI_AGENT_ABI_VERSION 1U
 #define XPROBE_CUPTI_OUTPUT_MAGIC "XPCUPTI"
+#define XPROBE_CUPTI_CONTROL_MAGIC "XPCTRL\0"
+#define XPROBE_CUPTI_CONTROL_VERSION 1U
 #define XPROBE_CUPTI_NAME_LENGTH 128U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
 
@@ -22,6 +24,17 @@ enum xprobe_cupti_agent_status {
     XPROBE_CUPTI_AGENT_UNAVAILABLE = 1,
     XPROBE_CUPTI_AGENT_CUPTI_ERROR = 2,
     XPROBE_CUPTI_AGENT_OUTPUT_ERROR = 3
+};
+
+enum xprobe_cupti_control_command {
+    XPROBE_CUPTI_CONTROL_SNAPSHOT = 1,
+    XPROBE_CUPTI_CONTROL_STOP = 2
+};
+
+struct xprobe_cupti_control_request {
+    char magic[8];
+    uint32_t version;
+    uint32_t command;
 };
 
 enum xprobe_cupti_record_kind {
@@ -75,6 +88,7 @@ struct xprobe_cupti_record {
 
 unsigned int xprobe_cupti_agent_abi_version(void);
 int xprobe_cupti_agent_initialize(void);
+int xprobe_cupti_agent_start(const char *socket_path);
 int xprobe_cupti_agent_status(void);
 unsigned int xprobe_cupti_agent_last_cupti_result(void);
 int xprobe_cupti_agent_flush(void);

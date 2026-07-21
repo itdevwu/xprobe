@@ -157,7 +157,7 @@ pub fn run(pid: u32) -> Result<ProcessReport, InspectError> {
         capabilities: Capabilities {
             cuda_callback: xprobe_cupti_loaded,
             cuda_activity: xprobe_cupti_loaded,
-            runtime_injection: false,
+            runtime_injection: local_capabilities.runtime_injection,
             ..local_capabilities
         },
     })

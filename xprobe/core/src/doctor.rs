@@ -12,6 +12,7 @@ use xprobe_protocol::{
 };
 
 const CAP_SYS_ADMIN: u32 = 21;
+const CAP_SYS_PTRACE: u32 = 19;
 const CAP_PERFMON: u32 = 38;
 const CAP_BPF: u32 = 39;
 
@@ -77,6 +78,10 @@ pub fn run() -> Result<CapabilityReport, DoctorError> {
     let cuda_available = nvidia_driver.status == CheckStatus::Available
         && cuda_driver.status == CheckStatus::Available
         && cupti.status == CheckStatus::Available;
+    let runtime_injection = cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        && (effective_uid == 0
+            || has_capability(effective_capabilities, CAP_SYS_PTRACE)
+            || ptrace_scope.status == CheckStatus::Available);
 
     let checks = SystemChecks {
         btf,
@@ -99,7 +104,7 @@ pub fn run() -> Result<CapabilityReport, DoctorError> {
             tracepoint: host_probe_available,
             cuda_callback: cuda_available,
             cuda_activity: cuda_available,
-            runtime_injection: false,
+            runtime_injection,
         },
         environment: Environment {
             operating_system: std::env::consts::OS.to_owned(),

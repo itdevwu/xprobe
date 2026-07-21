@@ -34,6 +34,9 @@ test-cupti:
 test-cupti-live: build
     python3 tests/integration/test_cupti.py "{{cuda_devel_image}}" target/debug/xprobe
 
+test-injection-live: build
+    python3 tests/integration/test_inject.py "{{cuda_devel_image}}"
+
 test-multisource-live: build
     python3 tests/integration/test_multisource.py "{{cuda_devel_image}}" target/debug/xprobe
 

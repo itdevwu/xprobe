@@ -2,7 +2,8 @@ use std::{
     collections::BTreeMap,
     error::Error,
     fmt,
-    io::{self, Read},
+    io::{self, Read, Write},
+    net::Shutdown,
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     str,
@@ -15,6 +16,8 @@ use xprobe_protocol::{
 };
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
+const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
+const CONTROL_VERSION: u32 = 1;
 const ABI_VERSION: u32 = 1;
 const HEADER_SIZE: usize = 48;
 const HEADER_SIZE_U32: u32 = 48;
@@ -116,6 +119,7 @@ impl Error for CuptiDecodeError {}
 pub enum CuptiSnapshotError {
     Connect { path: PathBuf, source: io::Error },
     Configure(io::Error),
+    Write(io::Error),
     Read(io::Error),
     Decode(CuptiDecodeError),
 }
@@ -136,6 +140,7 @@ impl fmt::Display for CuptiSnapshotError {
                     "failed to configure CUPTI snapshot socket: {source}"
                 )
             }
+            Self::Write(source) => write!(formatter, "failed to request CUPTI snapshot: {source}"),
             Self::Read(source) => write!(formatter, "failed to read CUPTI snapshot: {source}"),
             Self::Decode(source) => write!(formatter, "failed to decode CUPTI snapshot: {source}"),
         }
@@ -145,9 +150,10 @@ impl fmt::Display for CuptiSnapshotError {
 impl Error for CuptiSnapshotError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Connect { source, .. } | Self::Configure(source) | Self::Read(source) => {
-                Some(source)
-            }
+            Self::Connect { source, .. }
+            | Self::Configure(source)
+            | Self::Write(source)
+            | Self::Read(source) => Some(source),
             Self::Decode(source) => Some(source),
         }
     }
@@ -155,8 +161,8 @@ impl Error for CuptiSnapshotError {
 
 /// Request one immutable capture snapshot from a running CUPTI agent.
 ///
-/// Connecting is the request. The agent flushes pending activity records and
-/// sends one ABI capture before closing the socket.
+/// The agent flushes pending activity records and sends one ABI capture before
+/// closing the socket.
 ///
 /// # Errors
 ///
@@ -167,6 +173,30 @@ pub fn snapshot(
     timeout: Duration,
     session_id: &str,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
+    request(socket_path, timeout, session_id, 1)
+}
+
+/// Request a final snapshot and logically disable a running CUPTI agent.
+///
+/// The shared object remains mapped so a later measurement can reactivate it.
+///
+/// # Errors
+///
+/// Returns [`CuptiSnapshotError`] when the request cannot be sent or decoded.
+pub fn stop(
+    socket_path: &Path,
+    timeout: Duration,
+    session_id: &str,
+) -> Result<CuptiCapture, CuptiSnapshotError> {
+    request(socket_path, timeout, session_id, 2)
+}
+
+fn request(
+    socket_path: &Path,
+    timeout: Duration,
+    session_id: &str,
+    command: u32,
+) -> Result<CuptiCapture, CuptiSnapshotError> {
     let mut stream =
         UnixStream::connect(socket_path).map_err(|source| CuptiSnapshotError::Connect {
             path: socket_path.to_owned(),
@@ -175,6 +205,19 @@ pub fn snapshot(
     stream
         .set_read_timeout(Some(timeout))
         .map_err(CuptiSnapshotError::Configure)?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(CuptiSnapshotError::Configure)?;
+    let mut control = [0_u8; 16];
+    control[..8].copy_from_slice(CONTROL_MAGIC);
+    control[8..12].copy_from_slice(&CONTROL_VERSION.to_ne_bytes());
+    control[12..].copy_from_slice(&command.to_ne_bytes());
+    stream
+        .write_all(&control)
+        .map_err(CuptiSnapshotError::Write)?;
+    stream
+        .shutdown(Shutdown::Write)
+        .map_err(CuptiSnapshotError::Write)?;
     let mut bytes = Vec::new();
     read_snapshot(&mut stream, &mut bytes)?;
     decode_capture(&bytes, session_id).map_err(CuptiSnapshotError::Decode)
