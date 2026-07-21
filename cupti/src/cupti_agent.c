@@ -83,6 +83,7 @@ static _Atomic uint64_t completed_buffers;
 static _Atomic int agent_status = XPROBE_CUPTI_AGENT_UNAVAILABLE;
 static _Atomic unsigned int last_cupti_result;
 static _Atomic int output_written;
+static uint32_t runtime_cupti_version;
 static CUpti_SubscriberHandle subscriber;
 static int subscriber_active;
 static int agent_initialized;
@@ -265,13 +266,11 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
 }
 
 static void CUPTIAPI activity_buffer_requested(uint8_t **buffer, size_t *size,
-                                               size_t *maximum_records,
-                                               CUpti_BufferCallbackRequestInfo *request_info)
+                                               size_t *maximum_records)
 {
     void *memory = NULL;
     int result = posix_memalign(&memory, 8U, XPROBE_CUPTI_ACTIVITY_BUFFER_SIZE);
 
-    (void)request_info;
     if (result != 0) {
         *buffer = NULL;
         *size = 0U;
@@ -285,25 +284,71 @@ static void CUPTIAPI activity_buffer_requested(uint8_t **buffer, size_t *size,
     atomic_fetch_add_explicit(&requested_buffers, 1U, memory_order_relaxed);
 }
 
-static void enqueue_kernel_record(const CUpti_ActivityKernel12 *kernel, uint32_t kind,
+static void enqueue_kernel_record(uint32_t device_id, uint32_t context_id,
+                                  uint32_t stream_id, uint32_t correlation_id,
+                                  int32_t grid_x, int32_t grid_y, int32_t grid_z,
+                                  int32_t block_x, int32_t block_y, int32_t block_z,
+                                  const char *name, uint32_t kind,
                                   uint64_t timestamp_ns)
 {
     struct xprobe_cupti_record record;
 
     initialize_record(&record, kind, timestamp_ns);
-    record.device_id = kernel->deviceId;
-    record.context_id = kernel->contextId;
-    record.stream_id = kernel->streamId;
-    record.correlation_id = kernel->correlationId;
-    record.grid_x = (uint32_t)kernel->gridX;
-    record.grid_y = (uint32_t)kernel->gridY;
-    record.grid_z = (uint32_t)kernel->gridZ;
-    record.block_x = (uint32_t)kernel->blockX;
-    record.block_y = (uint32_t)kernel->blockY;
-    record.block_z = (uint32_t)kernel->blockZ;
-    copy_name(record.name, kernel->name);
+    record.device_id = device_id;
+    record.context_id = context_id;
+    record.stream_id = stream_id;
+    record.correlation_id = correlation_id;
+    record.grid_x = (uint32_t)grid_x;
+    record.grid_y = (uint32_t)grid_y;
+    record.grid_z = (uint32_t)grid_z;
+    record.block_x = (uint32_t)block_x;
+    record.block_y = (uint32_t)block_y;
+    record.block_z = (uint32_t)block_z;
+    copy_name(record.name, name);
     enqueue_record(&record);
 }
+
+#define ENQUEUE_KERNEL_RECORDS(kernel)                                             \
+    do {                                                                           \
+        enqueue_kernel_record(                                                     \
+            (kernel)->deviceId, (kernel)->contextId, (kernel)->streamId,           \
+            (kernel)->correlationId, (kernel)->gridX, (kernel)->gridY,             \
+            (kernel)->gridZ, (kernel)->blockX, (kernel)->blockY,                   \
+            (kernel)->blockZ, (kernel)->name, XPROBE_CUPTI_GPU_KERNEL_START,       \
+            (kernel)->start);                                                       \
+        enqueue_kernel_record(                                                     \
+            (kernel)->deviceId, (kernel)->contextId, (kernel)->streamId,           \
+            (kernel)->correlationId, (kernel)->gridX, (kernel)->gridY,             \
+            (kernel)->gridZ, (kernel)->blockX, (kernel)->blockY,                   \
+            (kernel)->blockZ, (kernel)->name, XPROBE_CUPTI_GPU_KERNEL_END,         \
+            (kernel)->end);                                                         \
+    } while (0)
+
+static void enqueue_kernel_activity(const CUpti_Activity *activity)
+{
+#if CUPTI_API_VERSION < 130000
+    const CUpti_ActivityKernel9 *kernel =
+        (const CUpti_ActivityKernel9 *)activity;
+
+    ENQUEUE_KERNEL_RECORDS(kernel);
+#else
+    if (runtime_cupti_version >= 130300U) {
+        const CUpti_ActivityKernel12 *kernel =
+            (const CUpti_ActivityKernel12 *)activity;
+        ENQUEUE_KERNEL_RECORDS(kernel);
+    } else if (runtime_cupti_version >= 130200U) {
+        const CUpti_ActivityKernel11 *kernel =
+            (const CUpti_ActivityKernel11 *)activity;
+        ENQUEUE_KERNEL_RECORDS(kernel);
+    } else {
+        const CUpti_ActivityKernel10 *kernel =
+            (const CUpti_ActivityKernel10 *)activity;
+        ENQUEUE_KERNEL_RECORDS(kernel);
+    }
+#endif
+}
+
+#undef ENQUEUE_KERNEL_RECORDS
 
 static void set_transfer_bytes(struct xprobe_cupti_record *record, uint64_t bytes)
 {
@@ -342,17 +387,18 @@ static void enqueue_memset_record(const CUpti_ActivityMemset4 *memset_record,
     enqueue_record(&record);
 }
 
-static void CUPTIAPI activity_buffer_completed(
-    uint8_t *buffer, size_t size, size_t valid_size,
-    CUpti_BufferCallbackCompleteInfo *complete_info)
+static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t stream_id,
+                                               uint8_t *buffer, size_t size,
+                                               size_t valid_size)
 {
     CUpti_Activity *activity = NULL;
     CUptiResult result;
 
+    (void)context;
+    (void)stream_id;
     (void)size;
-    (void)complete_info;
     for (;;) {
-        result = cuptiActivityGetNextRecord_v2(subscriber, buffer, valid_size, &activity);
+        result = cuptiActivityGetNextRecord(buffer, valid_size, &activity);
         if (result == CUPTI_ERROR_MAX_LIMIT_REACHED) {
             break;
         }
@@ -361,10 +407,7 @@ static void CUPTIAPI activity_buffer_completed(
             break;
         }
         if (activity->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
-            const CUpti_ActivityKernel12 *kernel =
-                (const CUpti_ActivityKernel12 *)activity;
-            enqueue_kernel_record(kernel, XPROBE_CUPTI_GPU_KERNEL_START, kernel->start);
-            enqueue_kernel_record(kernel, XPROBE_CUPTI_GPU_KERNEL_END, kernel->end);
+            enqueue_kernel_activity(activity);
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
             const CUpti_ActivityMemcpy6 *memcpy_record =
                 (const CUpti_ActivityMemcpy6 *)activity;
@@ -744,9 +787,9 @@ static int disable_activities(void)
 
     while (enabled_activity_count > 0U) {
         CUpti_ActivityKind kind = enabled_activity_kinds[enabled_activity_count - 1U];
-        result = cuptiActivityDisable_v2(subscriber, kind, NULL);
+        result = cuptiActivityDisable(kind);
         if (result != CUPTI_SUCCESS) {
-            report_cupti_error("cuptiActivityDisable_v2", result);
+            report_cupti_error("cuptiActivityDisable", result);
             return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
         }
         --enabled_activity_count;
@@ -770,45 +813,39 @@ static void shutdown_agent(void)
 
 static int initialize_agent(void)
 {
-    CUpti_SubscriberParams subscriber_params = {0};
     CUpti_TimestampCallbackFunc timestamp_callback = activity_timestamp;
     CUptiResult result;
-    size_t timestamp_callback_size = sizeof(timestamp_callback);
-    uint32_t cupti_version;
 
-    result = cuptiGetVersion(&cupti_version);
+    result = cuptiGetVersion(&runtime_cupti_version);
     if (result != CUPTI_SUCCESS) {
         report_cupti_error("cuptiGetVersion", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
-    subscriber_params.structSize = sizeof(subscriber_params);
-    result = cuptiSubscribe_v2(&subscriber, api_callback, NULL, &subscriber_params);
+    result = cuptiSubscribe(&subscriber, api_callback, NULL);
     if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiSubscribe_v2", result);
+        report_cupti_error("cuptiSubscribe", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
     subscriber_active = 1;
-    result = cuptiActivitySetAttribute_v2(
-        subscriber, CUPTI_ACTIVITY_ATTR_TIMESTAMP_CALLBACK,
-        &timestamp_callback_size, &timestamp_callback);
+    result = cuptiActivityRegisterTimestampCallback(timestamp_callback);
     if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiActivitySetAttribute_v2(timestamp callback)", result);
+        report_cupti_error("cuptiActivityRegisterTimestampCallback", result);
         shutdown_agent();
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
-    result = cuptiActivityRegisterCallbacks_v2(
-        subscriber, activity_buffer_requested, activity_buffer_completed);
+    result = cuptiActivityRegisterCallbacks(activity_buffer_requested,
+                                            activity_buffer_completed);
     if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiActivityRegisterCallbacks_v2", result);
+        report_cupti_error("cuptiActivityRegisterCallbacks", result);
         shutdown_agent();
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
     for (size_t index = 0U;
          index < sizeof(enabled_activity_kinds) / sizeof(enabled_activity_kinds[0]);
          ++index) {
-        result = cuptiActivityEnable_v2(subscriber, enabled_activity_kinds[index], NULL);
+        result = cuptiActivityEnable(enabled_activity_kinds[index]);
         if (result != CUPTI_SUCCESS) {
-            report_cupti_error("cuptiActivityEnable_v2", result);
+            report_cupti_error("cuptiActivityEnable", result);
             shutdown_agent();
             return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
         }
@@ -961,9 +998,9 @@ int xprobe_cupti_agent_flush(void)
         status = xprobe_cupti_agent_status();
         goto unlock;
     }
-    result = cuptiActivityGetNumDroppedRecords_v2(subscriber, NULL, 0U, &dropped);
+    result = cuptiActivityGetNumDroppedRecords(NULL, 0U, &dropped);
     if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiActivityGetNumDroppedRecords_v2", result);
+        report_cupti_error("cuptiActivityGetNumDroppedRecords", result);
         status = XPROBE_CUPTI_AGENT_CUPTI_ERROR;
         goto unlock;
     }
