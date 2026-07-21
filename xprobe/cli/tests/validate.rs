@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use xprobe_protocol::{ErrorCode, ErrorResponse, MatchPolicy, ValidationResult};
+use xprobe_protocol::{AgentActivation, ErrorCode, ErrorResponse, MatchPolicy, ValidationResult};
 
 #[test]
 fn validate_reports_environment_requirements_without_attaching() {
@@ -35,15 +35,19 @@ fn validate_reports_environment_requirements_without_attaching() {
     assert!(result.requirements.needs_cupti_callback);
     assert!(result.requirements.needs_cupti_activity);
     assert!(result.requirements.needs_clock_alignment);
-    assert!(!result.requirements.target_mutation);
-    assert!(!result.valid);
+    assert_eq!(
+        result.requirements.agent_activation,
+        AgentActivation::InjectionRequired
+    );
+    assert!(result.requirements.target_mutation);
+    assert!(result.valid);
+    assert!(result.issues.is_empty());
     assert!(
         result
-            .issues
+            .warnings
             .iter()
-            .any(|issue| issue.code == ErrorCode::CuptiAgentNotLoaded)
+            .any(|warning| warning.code == "TARGET_PROCESS_WILL_BE_MODIFIED")
     );
-    assert_eq!(result.issues.len(), 1);
 }
 
 #[test]

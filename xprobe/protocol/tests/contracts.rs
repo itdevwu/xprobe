@@ -3,8 +3,9 @@ use std::{fs, path::PathBuf};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
-    CapabilityReport, ErrorResponse, Event, HostCaptureResult, MeasurementResult, MeasurementSpec,
-    ProcessReport, ResolvedProbe, TraceExportResult, ValidationResult, schema::generated_schemas,
+    CapabilityReport, DiscoveryResult, ErrorResponse, Event, HostCaptureResult, MeasurementResult,
+    MeasurementSpec, ProcessReport, ResolvedProbe, TraceExportResult, ValidationResult,
+    schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -85,6 +86,29 @@ fn host_capture_contract_round_trips() {
             "cuda": null,
             "attributes": {}
         }]
+    }));
+}
+
+#[test]
+fn discovery_contract_round_trips() {
+    assert_round_trip::<DiscoveryResult>(&json!({
+        "schema_version": "1.0",
+        "ok": true,
+        "target": {"pid": 1234, "process_start_time": 42},
+        "query": "request",
+        "limit": 10,
+        "total_matches": 1,
+        "truncated": false,
+        "events": [{
+            "selector": "uprobe:/srv/app:request:entry",
+            "source": "host",
+            "event_type": "host_function_entry",
+            "origin": "elf_symbol",
+            "binary_path": "/srv/app",
+            "symbol": "request",
+            "requires_observation": false
+        }],
+        "warnings": []
     }));
 }
 
@@ -322,17 +346,18 @@ fn validation_result_contract_round_trips() {
             "needs_cupti_callback": true,
             "needs_cupti_activity": true,
             "needs_clock_alignment": true,
-            "target_restart_required": true,
-            "target_mutation": false
+            "agent_activation": "injection_required",
+            "target_mutation": true
         },
         "issues": [{
-            "code": "CUPTI_AGENT_NOT_LOADED",
-            "message": "xprobe CUPTI agent is not loaded in the target process"
-        }, {
             "code": "CLOCK_ALIGNMENT_FAILED",
             "message": "the capture does not declare host-monotonic CUPTI activity timestamps"
         }],
-        "warnings": []
+        "warnings": [{
+            "code": "TARGET_PROCESS_WILL_BE_MODIFIED",
+            "message": "measure must inject the xprobe CUPTI agent into the target process",
+            "details": {}
+        }]
     }));
 }
 

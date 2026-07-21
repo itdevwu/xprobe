@@ -54,6 +54,14 @@
     "requirements"
   ],
   "$defs": {
+    "AgentActivation": {
+      "type": "string",
+      "enum": [
+        "not_required",
+        "already_loaded",
+        "injection_required"
+      ]
+    },
     "ElfObjectKind": {
       "type": "string",
       "enum": [
@@ -385,6 +393,9 @@
     "ValidationRequirements": {
       "type": "object",
       "properties": {
+        "agent_activation": {
+          "$ref": "#/$defs/AgentActivation"
+        },
         "needs_clock_alignment": {
           "type": "boolean"
         },
@@ -402,9 +413,6 @@
         },
         "target_mutation": {
           "type": "boolean"
-        },
-        "target_restart_required": {
-          "type": "boolean"
         }
       },
       "additionalProperties": false,
@@ -414,7 +422,7 @@
         "needs_cupti_callback",
         "needs_cupti_activity",
         "needs_clock_alignment",
-        "target_restart_required",
+        "agent_activation",
         "target_mutation"
       ]
     },

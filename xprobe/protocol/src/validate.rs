@@ -13,6 +13,14 @@ pub enum EndpointSource {
     Cuda,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivation {
+    NotRequired,
+    AlreadyLoaded,
+    InjectionRequired,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedCudaSelector {
@@ -43,7 +51,7 @@ pub struct ValidationRequirements {
     pub needs_cupti_callback: bool,
     pub needs_cupti_activity: bool,
     pub needs_clock_alignment: bool,
-    pub target_restart_required: bool,
+    pub agent_activation: AgentActivation,
     pub target_mutation: bool,
 }
 

@@ -19,13 +19,14 @@ use xprobe_collector::{
     completed, cupti,
     uprobe::{self, UprobeRequest},
 };
-use xprobe_core::{doctor, inspect, resolve, validate};
+use xprobe_core::{discover, doctor, inspect, resolve, validate};
 use xprobe_correlator::{MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
-    CapabilityReport, CheckResult, ErrorCode, ErrorResponse, ExportFormat, HostCaptureResult,
-    MatchPolicy, MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SchemaVersion,
-    SessionStatus, TargetIdentity, TraceExportResult, ValidationResult, XprobeError,
+    CapabilityReport, CheckResult, DiscoveryResult, ErrorCode, ErrorResponse, ExportFormat,
+    HostCaptureResult, MatchPolicy, MeasurementResult, MeasurementSpec, ProcessReport,
+    ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity, TraceExportResult,
+    ValidationResult, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -39,21 +40,29 @@ struct Cli {
 enum Command {
     /// Inspect local tracing and GPU capabilities.
     Doctor(DoctorArgs),
+    /// Discover event selectors available in a target process.
+    Discover(DiscoverArgs),
     /// Inspect a target process without attaching probes.
+    #[command(hide = true)]
     Inspect(InspectArgs),
     /// Resolve a userspace event selector against a target process.
+    #[command(hide = true)]
     Resolve(ResolveArgs),
     /// Validate two event selectors and their correlation policy.
     Validate(ValidateArgs),
     /// Measure latency from a completed bounded capture.
     Measure(MeasureArgs),
     /// Run a live measurement from a versioned specification.
+    #[command(hide = true)]
     Trace(TraceArgs),
     /// Export completed captures to a stable trace format.
+    #[command(hide = true)]
     Export(ExportArgs),
     /// Run bounded event collectors.
+    #[command(hide = true)]
     Capture(DevArgs),
     /// Run low-level development probes.
+    #[command(hide = true)]
     Dev(DevArgs),
 }
 
@@ -129,6 +138,33 @@ enum DevCommand {
 
 #[derive(Debug, Clone, Copy, Args)]
 struct DoctorArgs {
+    /// Emit only the versioned JSON result on stdout.
+    #[arg(long)]
+    json: bool,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+
+    /// Never wait for user input.
+    #[arg(long)]
+    non_interactive: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct DiscoverArgs {
+    /// Target process ID.
+    #[arg(long)]
+    pid: u32,
+
+    /// Keep selectors containing this text in their path, symbol, or selector.
+    #[arg(long)]
+    query: Option<String>,
+
+    /// Maximum number of selectors to return.
+    #[arg(long, default_value_t = 200)]
+    limit: usize,
+
     /// Emit only the versioned JSON result on stdout.
     #[arg(long)]
     json: bool,
@@ -362,6 +398,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor(args) => run_doctor(args),
+        Command::Discover(args) => run_discover(args),
         Command::Inspect(args) => run_inspect(args),
         Command::Resolve(args) => run_resolve(args),
         Command::Validate(args) => run_validate(args),
@@ -1285,6 +1322,37 @@ fn run_doctor(args: DoctorArgs) -> ExitCode {
     }
 }
 
+fn run_discover(args: DiscoverArgs) -> ExitCode {
+    let DiscoverArgs {
+        pid,
+        query,
+        limit,
+        json,
+        no_color: _,
+        non_interactive: _,
+    } = args;
+    let report = match inspect::run(pid) {
+        Ok(report) => report,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+    match discover::run(&report, query.as_deref(), limit) {
+        Ok(result) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).expect("discovery result must serialize")
+                );
+            } else {
+                print_discovery_result(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
+    }
+}
+
 fn run_inspect(args: InspectArgs) -> ExitCode {
     let InspectArgs {
         pid,
@@ -1593,6 +1661,22 @@ fn print_process_report(report: &ProcessReport) {
     println!("Loaded shared libraries: {}", report.loaded_libraries.len());
 }
 
+fn print_discovery_result(result: &DiscoveryResult) {
+    println!("Target: PID {}", result.target.pid);
+    println!(
+        "Selectors: {} of {}{}",
+        result.events.len(),
+        result.total_matches,
+        if result.truncated { " (truncated)" } else { "" }
+    );
+    for event in &result.events {
+        println!("  {}", event.selector);
+    }
+    for warning in &result.warnings {
+        eprintln!("{}: {}", warning.code, warning.message);
+    }
+}
+
 fn print_host_capture(result: &HostCaptureResult) {
     println!(
         "Captured {} event(s), dropped {}, timed out: {}",
@@ -1642,9 +1726,10 @@ fn print_validation_result(result: &ValidationResult) {
     println!("End: {}", result.end.selector);
     println!("Match: {:?}", result.match_policy);
     println!(
-        "Target restart required: {}",
-        result.requirements.target_restart_required
+        "Agent activation: {:?}",
+        result.requirements.agent_activation
     );
+    println!("Target mutation: {}", result.requirements.target_mutation);
     for issue in &result.issues {
         println!("Issue: {}: {}", issue.code, issue.message);
     }

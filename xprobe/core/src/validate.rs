@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, error::Error, fmt};
 
 use regex::Regex;
 use xprobe_protocol::{
-    EndpointSource, ErrorCode, EventType, HostProbeKind, MatchPolicy, MemcpyKind, ProcessReport,
-    ResolvedCudaSelector, SchemaVersion, ValidatedEndpoint, ValidationIssue,
+    AgentActivation, EndpointSource, ErrorCode, EventType, HostProbeKind, MatchPolicy, MemcpyKind,
+    ProcessReport, ResolvedCudaSelector, SchemaVersion, ValidatedEndpoint, ValidationIssue,
     ValidationRequirements, ValidationResult, Warning,
 };
 
@@ -136,22 +136,35 @@ pub fn run(
     let needs_cupti_activity = start.kind.needs_activity() || end.kind.needs_activity();
     let needs_cupti = needs_cupti_callback || needs_cupti_activity;
     let needs_clock_alignment = start.kind.uses_host_clock() != end.kind.uses_host_clock();
-    let target_restart_required = needs_cupti && !report.cuda.xprobe_cupti_loaded;
+    let agent_activation = if !needs_cupti {
+        AgentActivation::NotRequired
+    } else if report.cuda.xprobe_cupti_loaded {
+        AgentActivation::AlreadyLoaded
+    } else {
+        AgentActivation::InjectionRequired
+    };
     let requirements = ValidationRequirements {
         needs_ebpf,
         needs_cupti,
         needs_cupti_callback,
         needs_cupti_activity,
         needs_clock_alignment,
-        target_restart_required,
-        target_mutation: false,
+        agent_activation,
+        target_mutation: agent_activation == AgentActivation::InjectionRequired,
     };
 
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
     check_collectability(&start, "start", &mut issues);
     check_collectability(&end, "end", &mut issues);
-    check_capabilities(report, &start, &end, &requirements, &mut issues);
+    check_capabilities(
+        report,
+        &start,
+        &end,
+        &requirements,
+        &mut issues,
+        &mut warnings,
+    );
     check_policy(&start, &end, match_policy, &mut issues, &mut warnings);
     check_selector_breadth(&start, "start", &mut warnings);
     check_selector_breadth(&end, "end", &mut warnings);
@@ -410,6 +423,7 @@ fn check_capabilities(
     end: &Endpoint,
     requirements: &ValidationRequirements,
     issues: &mut Vec<ValidationIssue>,
+    warnings: &mut Vec<Warning>,
 ) {
     if requirements.needs_ebpf {
         let needs_uprobe = matches!(start.kind, EndpointKind::HostEntry)
@@ -425,10 +439,10 @@ fn check_capabilities(
             ));
         }
     }
-    if requirements.needs_cupti && !report.cuda.xprobe_cupti_loaded {
-        issues.push(issue(
-            ErrorCode::CuptiAgentNotLoaded,
-            "xprobe CUPTI agent is not loaded in the target process".to_owned(),
+    if requirements.agent_activation == AgentActivation::InjectionRequired {
+        warnings.push(warning(
+            "TARGET_PROCESS_WILL_BE_MODIFIED",
+            "measure must inject the xprobe CUPTI agent into the target process",
         ));
     } else {
         if requirements.needs_cupti_callback && !report.capabilities.cuda_callback {
@@ -558,7 +572,7 @@ fn warning(code: &str, message: &str) -> Warning {
 
 #[cfg(test)]
 mod tests {
-    use xprobe_protocol::{ErrorCode, EventType, MatchPolicy, MemcpyKind};
+    use xprobe_protocol::{AgentActivation, EventType, MatchPolicy, MemcpyKind};
 
     use super::{parse_cuda_selector, parse_match_policy, run};
     use crate::inspect;
@@ -608,13 +622,18 @@ mod tests {
             "exact",
         )
         .unwrap();
-        assert!(!result.valid);
-        assert!(result.requirements.target_restart_required);
+        assert!(result.valid);
+        assert_eq!(
+            result.requirements.agent_activation,
+            AgentActivation::InjectionRequired
+        );
+        assert!(result.requirements.target_mutation);
+        assert!(result.issues.is_empty());
         assert!(
             result
-                .issues
+                .warnings
                 .iter()
-                .any(|issue| issue.code == ErrorCode::CuptiAgentNotLoaded)
+                .any(|warning| warning.code == "TARGET_PROCESS_WILL_BE_MODIFIED")
         );
     }
 
@@ -632,7 +651,11 @@ mod tests {
         )
         .unwrap();
         assert!(result.valid);
-        assert!(!result.requirements.target_restart_required);
+        assert_eq!(
+            result.requirements.agent_activation,
+            AgentActivation::AlreadyLoaded
+        );
+        assert!(!result.requirements.target_mutation);
         assert!(!result.requirements.needs_clock_alignment);
         assert!(result.issues.is_empty());
     }

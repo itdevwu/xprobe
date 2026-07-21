@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DiscoveryResult",
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DiscoveredEvent"
+      }
+    },
+    "limit": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "query": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "total_matches": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "target",
+    "limit",
+    "total_matches",
+    "truncated",
+    "events"
+  ],
+  "$defs": {
+    "DiscoveredEvent": {
+      "type": "object",
+      "properties": {
+        "binary_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "origin": {
+          "$ref": "#/$defs/DiscoveryOrigin"
+        },
+        "requires_observation": {
+          "type": "boolean"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/EndpointSource"
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selector",
+        "source",
+        "event_type",
+        "origin",
+        "requires_observation"
+      ]
+    },
+    "DiscoveryOrigin": {
+      "type": "string",
+      "enum": [
+        "elf_symbol",
+        "cuda_api_symbol",
+        "cupti_activity"
+      ]
+    },
+    "EndpointSource": {
+      "type": "string",
+      "enum": [
+        "host",
+        "cuda"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "host_function_entry",
+        "host_function_exit",
+        "kernel_function_entry",
+        "kernel_function_exit",
+        "tracepoint",
+        "syscall_entry",
+        "syscall_exit",
+        "cuda_api_entry",
+        "cuda_api_exit",
+        "gpu_kernel_start",
+        "gpu_kernel_end",
+        "gpu_memcpy_start",
+        "gpu_memcpy_end",
+        "gpu_memset_start",
+        "gpu_memset_end",
+        "marker"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}
