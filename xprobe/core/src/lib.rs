@@ -1,5 +1,6 @@
 //! Measurement orchestration and domain logic for xprobe.
 
+pub mod cupti_compat;
 pub mod discover;
 pub mod doctor;
 pub mod inject;
