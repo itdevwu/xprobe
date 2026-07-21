@@ -15,9 +15,10 @@ just test
 The environment contains Clang, CMake, Ninja, pkg-config, Just, Python, and the
 autotools required to compile vendored libbpf, libelf, and zlib. A system C
 compiler and Linux UAPI/multiarch headers are also required. CUDA is not
-installed into the Mamba environment. CI compiles the CUPTI agent without a GPU
-in the pinned NVIDIA devel image and rejects ABI-only output. Live CUDA behavior
-remains a hardware test on an NVIDIA runner.
+installed into the Mamba environment. CI compiles CUDA 12 and CUDA 13 CUPTI
+Agents without a GPU in pinned NVIDIA devel images, checks their SONAMEs, and
+rejects ABI-only output or build-time RPATHs. Live CUDA behavior remains a
+hardware test on an NVIDIA runner.
 
 ## eBPF tests
 
@@ -64,17 +65,25 @@ The image reference includes the NGC digest in `justfile`. This check verifies
 container runtime and driver access only; it does not provide CUDA headers or
 CUPTI development files.
 
-The live CUPTI test uses a pinned NVIDIA CUDA 13.3 devel image containing CUDA
-headers, `nvcc`, and CUPTI:
+Live CUPTI tests use pinned NVIDIA CUDA 12.9 and CUDA 13.3 devel images
+containing CUDA headers, `nvcc`, and CUPTI:
 
 ```bash
+just test-cupti-live-cuda12
+just test-cupti-live-cuda12-min
 just test-cupti-live
 ```
+
+The minimum-version check builds the release-style Agent with CUDA 12.9 and
+runs it against CUDA 12.0. GPU-only durations remain available when the runtime
+cannot prove host-clock alignment; cross CPU/GPU measurement then fails with
+`CLOCK_ALIGNMENT_FAILED` instead of reporting a shifted latency.
 
 Run online ptrace injection, stop, and reactivation twice against a target that
 does not preload the agent:
 
 ```bash
+just test-injection-live-cuda12
 just test-injection-live
 ```
 
@@ -85,6 +94,7 @@ Run the combined host uprobe and CUPTI measurement test with both GPU and BPF
 access:
 
 ```bash
+just test-multisource-live-cuda12
 just test-multisource-live
 ```
 
@@ -111,8 +121,8 @@ entries, API exits, kernel starts, and kernel ends, three memcpy intervals, and
 one memset interval with matching correlation IDs. The resulting capture is
 decoded by the host CLI and checked as ordered Event JSONL, then measured for
 exact kernel, memcpy, memset, and API-to-kernel durations. The fixture queries
-the GPU compute capability and compiles matching SASS so an older compatible
-driver does not need to JIT CUDA 13.3 PTX.
+the GPU compute capability and compiles matching SASS so the driver does not
+need to JIT toolkit-version PTX.
 
 Container policy:
 

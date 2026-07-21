@@ -25,8 +25,16 @@ jobs:
 
   cuda-agent:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda_major: 12
+            image: nvidia/cuda:12.9.1-devel-ubuntu22.04@sha256:bd4e2680a261c212f1e2fea241606f71497dc67a417f73175d794ec8212b5ba8
+          - cuda_major: 13
+            image: nvidia/cuda:13.3.0-devel-ubuntu22.04@sha256:cbe2f44080865228de493c496427aa7b414866979fc3bb547e0197e9c31e77bb
     container:
-      image: nvidia/cuda:13.3.0-devel-ubuntu22.04@sha256:cbe2f44080865228de493c496427aa7b414866979fc3bb547e0197e9c31e77bb
+      image: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v4
       - name: Install native build tools
@@ -40,14 +48,20 @@ jobs:
           -DXPROBE_BUILD_BPF=OFF
           -DXPROBE_BUILD_CUPTI=ON
           -DXPROBE_REQUIRE_CUPTI=ON
+          -DXPROBE_CUDA_MAJOR=${{ matrix.cuda_major }}
       - run: cmake --build build/cuda --target xprobe-cupti xprobe-cupti-smoke
       - run: ctest --test-dir build/cuda --output-on-failure -R cupti-smoke
       - name: Verify CUPTI linkage
         run: >-
           readelf -d build/cuda/cupti/libxprobe-cupti.so |
-          grep -F 'Shared library: [libcupti.so.13]'
+          grep -F 'Shared library: [libcupti.so.${{ matrix.cuda_major }}]'
+      - name: Reject build-time library paths
+        run: |
+          if readelf -d build/cuda/cupti/libxprobe-cupti.so | grep -E '\((RPATH|RUNPATH)\)'; then
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: xprobe-cupti-linux-x86_64
+          name: xprobe-cupti-cuda${{ matrix.cuda_major }}-linux-x86_64
           path: build/cuda/cupti/libxprobe-cupti.so
           if-no-files-found: error

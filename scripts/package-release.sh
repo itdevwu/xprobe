@@ -7,30 +7,48 @@ cd "${root}"
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
 [[ -n "${version}" ]] || { echo "workspace version was not found" >&2; exit 1; }
 
-build_dir=${XPROBE_RELEASE_BUILD_DIR:-build/release}
 dist_dir=${XPROBE_DIST_DIR:-dist}
 package="xprobe-${version}-linux-x86_64"
 stage="${dist_dir}/${package}"
+agent_cuda12=${XPROBE_CUPTI_AGENT_CUDA12:-build/cuda12/cupti/libxprobe-cupti.so}
+agent_cuda13=${XPROBE_CUPTI_AGENT_CUDA13:-build/cuda13/cupti/libxprobe-cupti.so}
 
 cargo build --workspace --release --locked
-cmake -S . -B "${build_dir}" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DXPROBE_BUILD_BPF=OFF \
-  -DXPROBE_BUILD_CUPTI=ON \
-  -DXPROBE_REQUIRE_CUPTI=ON
-cmake --build "${build_dir}" --parallel
 
-agent="${build_dir}/cupti/libxprobe-cupti.so"
-if [[ ${XPROBE_ALLOW_ABI_ONLY:-0} != 1 ]] && \
-   ! readelf -d "${agent}" | grep -q 'libcupti\.so'; then
-  echo "release CUPTI agent is ABI-only; build with CUDA/CUPTI development files" >&2
-  exit 1
-fi
+verify_agent() {
+  local agent=$1
+  local major=$2
+  local dynamic
+
+  [[ -f "${agent}" ]] || {
+    echo "CUDA ${major} CUPTI agent was not found: ${agent}" >&2
+    exit 1
+  }
+  dynamic=$(readelf -d "${agent}")
+  grep -Fq "Shared library: [libcupti.so.${major}]" <<<"${dynamic}" || {
+    echo "${agent} is not linked to libcupti.so.${major}" >&2
+    exit 1
+  }
+  if grep -Eq '\((RPATH|RUNPATH)\)' <<<"${dynamic}"; then
+    echo "${agent} contains a build-time RPATH or RUNPATH" >&2
+    exit 1
+  fi
+}
+
+verify_agent "${agent_cuda12}" 12
+verify_agent "${agent_cuda13}" 13
 
 rm -rf "${stage}"
-install -d "${stage}/bin" "${stage}/lib/xprobe" "${stage}/include/xprobe"
+install -d \
+  "${stage}/bin" \
+  "${stage}/lib/xprobe/cuda12" \
+  "${stage}/lib/xprobe/cuda13" \
+  "${stage}/include/xprobe"
 install -m 0755 target/release/xprobe "${stage}/bin/xprobe"
-install -m 0755 "${agent}" "${stage}/lib/xprobe/libxprobe-cupti.so"
+install -m 0755 "${agent_cuda12}" \
+  "${stage}/lib/xprobe/cuda12/libxprobe-cupti.so"
+install -m 0755 "${agent_cuda13}" \
+  "${stage}/lib/xprobe/cuda13/libxprobe-cupti.so"
 install -m 0644 cupti/include/xprobe/cupti_agent.h "${stage}/include/xprobe/"
 install -m 0644 LICENSE README.md AGENTS.md "${stage}/"
 cp -a docs schemas skills "${stage}/"

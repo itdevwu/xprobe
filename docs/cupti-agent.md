@@ -1,14 +1,23 @@
 # CUPTI agent and online injection
 
-`libxprobe-cupti.so` collects CUDA Runtime/Driver callback boundaries and
+The versioned `libxprobe-cupti.so` Agents collect CUDA Runtime/Driver callback boundaries and
 concurrent kernel, memcpy, and memset activity. The public CLI normally manages
 it through `measure --pid`; applications do not need to preload it.
+
+Release packages provide `lib/xprobe/cuda12/libxprobe-cupti.so`, linked to
+`libcupti.so.12`, and `lib/xprobe/cuda13/libxprobe-cupti.so`, linked to
+`libcupti.so.13`. xprobe selects the major from target mappings or, when the
+target exposes no toolkit major, from a single unambiguous installed CUPTI.
+Conflicting, missing, and unsupported versions fail before ptrace attachment.
+The Agent independently validates host-clock alignment at capture time. A
+runtime that cannot establish alignment still produces CUPTI-domain GPU
+durations, but host/GPU measurements fail with `CLOCK_ALIGNMENT_FAILED`.
 
 ## Lifecycle
 
 1. `measure` validates the selectors and inspects mapped libraries.
-2. If the agent is absent, xprobe warns and remotely calls target `dlopen` and
-   `dlsym` through ptrace.
+2. If the Agent is absent, xprobe selects the CUDA 12 or 13 build, warns, and
+   remotely calls target `dlopen` and `dlsym` through ptrace.
 3. `xprobe_cupti_agent_start(socket_path)` resets bounded state, subscribes
    callbacks/activity, and starts a mode-0600 Unix socket.
 4. Snapshot requests force-flush CUPTI and return one immutable ABI capture.
@@ -72,6 +81,10 @@ CUPTI's activity callbacks. Snapshot/stop flushing runs on the socket thread.
 
 ```bash
 just test-cupti
+just test-cupti-live-cuda12
+just test-cupti-live-cuda12-min
+just test-injection-live-cuda12
+just test-multisource-live-cuda12
 just test-cupti-live
 just test-injection-live
 just test-multisource-live

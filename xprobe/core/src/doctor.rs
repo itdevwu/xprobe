@@ -11,6 +11,8 @@ use xprobe_protocol::{
     SystemChecks, Warning,
 };
 
+use crate::cupti_compat::{self, CuptiCompatibilityError};
+
 const CAP_SYS_ADMIN: u32 = 21;
 const CAP_SYS_PTRACE: u32 = 19;
 const CAP_PERFMON: u32 = 38;
@@ -21,6 +23,7 @@ pub enum DoctorError {
     Io { path: PathBuf, source: io::Error },
     InvalidValue { path: PathBuf, value: String },
     Command { program: String, detail: String },
+    Cupti(CuptiCompatibilityError),
 }
 
 impl fmt::Display for DoctorError {
@@ -33,6 +36,7 @@ impl fmt::Display for DoctorError {
                 write!(formatter, "invalid value in {}: {value:?}", path.display())
             }
             Self::Command { program, detail } => write!(formatter, "{program} failed: {detail}"),
+            Self::Cupti(error) => error.fmt(formatter),
         }
     }
 }
@@ -41,6 +45,7 @@ impl Error for DoctorError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::Cupti(error) => Some(error),
             Self::InvalidValue { .. } | Self::Command { .. } => None,
         }
     }
@@ -330,20 +335,19 @@ fn cuda_toolkit_check() -> Result<CheckResult, DoctorError> {
 }
 
 fn cupti_check() -> Result<CheckResult, DoctorError> {
-    let paths = [
-        "/usr/local/cuda/extras/CUPTI/lib64/libcupti.so",
-        "/usr/local/cuda/targets/x86_64-linux/lib/libcupti.so",
-    ];
-    for path in paths {
-        if path_exists(path)? {
-            return Ok(check(CheckStatus::Available, path));
-        }
+    let libraries = cupti_compat::installed_libraries().map_err(DoctorError::Cupti)?;
+    if libraries.is_empty() {
+        return Ok(check(
+            CheckStatus::Unavailable,
+            "libcupti.so.12 and libcupti.so.13 not found",
+        ));
     }
-    if linker_cache_contains("libcupti.so")? {
-        Ok(check(CheckStatus::Available, "libcupti.so found"))
-    } else {
-        Ok(check(CheckStatus::Unavailable, "libcupti.so not found"))
-    }
+    let detail = libraries
+        .iter()
+        .map(|(major, path)| format!("CUDA {major}: {}", path.display()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Ok(check(CheckStatus::Available, &detail))
 }
 
 fn linker_cache_contains(library: &str) -> Result<bool, DoctorError> {

@@ -21,9 +21,11 @@ server lifecycle.
 | `measure` | Collect or import bounded events, correlate pairs, emit statistics and full event evidence |
 
 `measure --pid` automatically loads the CUPTI agent when a CUDA endpoint needs
-it. The command writes a warning to stderr and adds `CUPTI_AGENT_INJECTED` to
-the JSON result. After collection it disables CUPTI and removes its socket, but
-keeps `libxprobe-cupti.so` mapped so later measurements can reactivate it.
+it. CUDA 12 and CUDA 13 use separate shared objects selected from the target's
+mapped CUDART/CUPTI major. The command writes a warning to stderr and adds
+`CUPTI_AGENT_INJECTED` with the selected paths to the JSON result. After
+collection it disables CUPTI and removes its socket, but keeps the Agent mapped
+so later measurements can reactivate it.
 
 ## Requirements
 
@@ -31,7 +33,7 @@ keeps `libxprobe-cupti.so` mapped so later measurements can reactivate it.
 - Mamba/Conda for the native development toolchain
 - eBPF privileges for host selectors
 - ptrace permission for online CUPTI injection
-- NVIDIA driver, CUDA, and CUPTI for GPU selectors
+- NVIDIA driver plus CUDA/CUPTI 12.x or 13.x for GPU selectors
 
 ```bash
 mamba env create --file environment.yml
@@ -68,27 +70,42 @@ ambiguous counts, drops, clock quality, correlation confidence, and warnings.
 
 ## Install
 
-Release archives contain `bin/xprobe`, `lib/xprobe/libxprobe-cupti.so`, the C
-header, schemas, docs, and the repository Skill. To build the archive from a
-CUDA devel environment:
+Release archives contain `bin/xprobe`, CUDA 12 and CUDA 13 Agents under
+`lib/xprobe/cuda12` and `lib/xprobe/cuda13`, the C header, schemas, docs, and
+the repository Skill. Source packages require one Agent built with each major
+toolkit before assembling the archive:
 
 ```bash
-just package
+CUDA_PATH=/opt/cuda-12 cmake -S . -B build/cuda12 -G Ninja \
+  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=12
+cmake --build build/cuda12 --target xprobe-cupti
+
+CUDA_PATH=/opt/cuda-13 cmake -S . -B build/cuda13 -G Ninja \
+  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=13
+cmake --build build/cuda13 --target xprobe-cupti
+
+scripts/package-release.sh
 ```
 
-The packaging script rejects an ABI-only agent that is not linked to CUPTI.
+The packaging script checks both CUPTI SONAMEs and rejects build-time RPATHs.
 
 ## Support
 
-| Surface | 0.1.0 support |
+| Surface | 0.2.0 support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.35 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |
 | CUDA callbacks | Runtime and Driver API entry/exit |
 | GPU activity | Kernel, memcpy, and memset start/end |
+| CUDA/CUPTI | 12.x and 13.x with automatic major selection |
 | Correlation | exact, first-after, nearest, stack-nested, stream-order |
 | Online injection | same mount namespace; ptrace permission required |
 | Tested GPU | NVIDIA GeForce RTX 3060 Laptop GPU, driver 592.00, compute capability 8.6 |
+
+GPU-to-GPU durations remain available across the supported majors. Cross
+CPU/GPU subtraction requires the Agent's runtime alignment check to pass;
+otherwise `measure` returns `CLOCK_ALIGNMENT_FAILED` rather than treating an
+offset CUPTI clock as host monotonic.
 
 ## Documentation
 

@@ -194,7 +194,13 @@ fn library_major(path: &Path, prefix: &str) -> Option<u32> {
     suffix.split('.').next()?.parse().ok()
 }
 
-fn installed_libraries() -> Result<BTreeMap<u32, PathBuf>, CuptiCompatibilityError> {
+/// Return supported CUPTI majors visible to the local dynamic loader.
+///
+/// # Errors
+///
+/// Returns an error when the linker cache or known CUDA installation roots
+/// cannot be inspected.
+pub fn installed_libraries() -> Result<BTreeMap<u32, PathBuf>, CuptiCompatibilityError> {
     let mut libraries = linker_cache_libraries()?;
     for major in SUPPORTED_MAJORS {
         for path in known_cuda_paths(major)? {
