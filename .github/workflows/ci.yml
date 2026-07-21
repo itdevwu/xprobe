@@ -22,3 +22,30 @@ jobs:
       - run: just fmt-check
       - run: just lint
       - run: just test
+
+  cuda-agent:
+    runs-on: ubuntu-24.04
+    container:
+      image: nvidia/cuda:13.3.0-devel-ubuntu24.04@sha256:69e9e39eb8fe2cda271654a0f5eac2f1bb946b2fb9c460eb19c7c3c155f4e64e
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native build tools
+        run: >-
+          apt-get update && apt-get install -y --no-install-recommends
+          binutils build-essential cmake ninja-build
+      - name: Configure CUPTI agent
+        run: >-
+          cmake -S . -B build/cuda -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DXPROBE_BUILD_BPF=OFF
+          -DXPROBE_BUILD_CUPTI=ON
+          -DXPROBE_REQUIRE_CUPTI=ON
+      - run: cmake --build build/cuda --target xprobe-cupti xprobe-cupti-smoke
+      - run: ctest --test-dir build/cuda --output-on-failure -R cupti-smoke
+      - name: Verify CUPTI linkage
+        run: readelf -d build/cuda/cupti/libxprobe-cupti.so | grep -F 'Shared library: [libcupti.so.13]'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xprobe-cupti-linux-x86_64
+          path: build/cuda/cupti/libxprobe-cupti.so
+          if-no-files-found: error

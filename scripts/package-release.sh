@@ -16,7 +16,8 @@ cargo build --workspace --release --locked
 cmake -S . -B "${build_dir}" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DXPROBE_BUILD_BPF=OFF \
-  -DXPROBE_BUILD_CUPTI=ON
+  -DXPROBE_BUILD_CUPTI=ON \
+  -DXPROBE_REQUIRE_CUPTI=ON
 cmake --build "${build_dir}" --parallel
 
 agent="${build_dir}/cupti/libxprobe-cupti.so"

@@ -15,8 +15,9 @@ just test
 The environment contains Clang, CMake, Ninja, pkg-config, Just, Python, and the
 autotools required to compile vendored libbpf, libelf, and zlib. A system C
 compiler and Linux UAPI/multiarch headers are also required. CUDA is not
-installed into the Mamba environment; reproducible CUPTI compilation and live
-GPU tests use the pinned NVIDIA devel container instead.
+installed into the Mamba environment. CI compiles the CUPTI agent without a GPU
+in the pinned NVIDIA devel image and rejects ABI-only output. Live CUDA behavior
+remains a hardware test on an NVIDIA runner.
 
 ## eBPF tests
 

@@ -1,5 +1,11 @@
 add_library(xprobe-cupti SHARED src/cupti_agent.c)
 
+option(
+  XPROBE_REQUIRE_CUPTI
+  "Fail configuration when CUPTI development files are unavailable"
+  OFF
+)
+
 find_path(
   XPROBE_CUPTI_INCLUDE_DIR
   NAMES cupti.h
@@ -44,6 +50,9 @@ if(XPROBE_CUPTI_INCLUDE_DIR AND XPROBE_CUPTI_LIBRARY)
   )
   message(STATUS "Building xprobe CUPTI Agent with ${XPROBE_CUPTI_LIBRARY}")
 else()
+  if(XPROBE_REQUIRE_CUPTI)
+    message(FATAL_ERROR "CUPTI development files are required but were not found")
+  endif()
   message(STATUS "CUPTI development files not found; building ABI-only agent")
 endif()
 
