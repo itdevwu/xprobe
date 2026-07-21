@@ -26,7 +26,7 @@ jobs:
   cuda-agent:
     runs-on: ubuntu-24.04
     container:
-      image: nvidia/cuda:13.3.0-devel-ubuntu24.04@sha256:69e9e39eb8fe2cda271654a0f5eac2f1bb946b2fb9c460eb19c7c3c155f4e64e
+      image: nvidia/cuda:13.3.0-devel-ubuntu22.04@sha256:cbe2f44080865228de493c496427aa7b414866979fc3bb547e0197e9c31e77bb
     steps:
       - uses: actions/checkout@v4
       - name: Install native build tools

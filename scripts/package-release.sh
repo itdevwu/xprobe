@@ -36,5 +36,8 @@ install -m 0644 LICENSE README.md AGENTS.md "${stage}/"
 cp -a docs schemas skills "${stage}/"
 
 tar -C "${dist_dir}" -czf "${dist_dir}/${package}.tar.gz" "${package}"
-sha256sum "${dist_dir}/${package}.tar.gz" >"${dist_dir}/${package}.tar.gz.sha256"
+(
+  cd "${dist_dir}"
+  sha256sum "${package}.tar.gz" >"${package}.tar.gz.sha256"
+)
 printf '%s\n' "${dist_dir}/${package}.tar.gz"

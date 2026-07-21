@@ -27,7 +27,7 @@ keeps `libxprobe-cupti.so` mapped so later measurements can reactivate it.
 
 ## Requirements
 
-- Linux x86_64 and Rust 1.85 or newer
+- Linux x86_64 with glibc 2.35 or newer; Rust 1.85 or newer for source builds
 - Mamba/Conda for the native development toolchain
 - eBPF privileges for host selectors
 - ptrace permission for online CUPTI injection
@@ -82,7 +82,7 @@ The packaging script rejects an ABI-only agent that is not linked to CUPTI.
 
 | Surface | 0.1.0 support |
 | --- | --- |
-| OS/architecture | Linux x86_64 |
+| OS/architecture | Linux x86_64, glibc 2.35 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |
 | CUDA callbacks | Runtime and Driver API entry/exit |
 | GPU activity | Kernel, memcpy, and memset start/end |
