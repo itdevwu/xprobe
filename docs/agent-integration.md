@@ -17,15 +17,19 @@ installer's responsibility:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.0/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.1/skills/xprobe-measure-latency \
   --global
 ```
 
 For automation, add `--agent codex|claude-code|cursor --copy --yes`. Omit
 `--global` for repository-scoped installation. The Skill is self-contained;
-install its whole directory so its references and example remain available.
+install its whole directory so its references, examples, and analysis script
+remain available.
 
-The xprobe repository tests installation with `skills` CLI 1.5.20 in isolated
+The Skill moves from a short survey artifact to evidence-based selector
+narrowing and includes `scripts/analyze_trace.py` for deterministic kernel,
+copy, overlap, stream, and gap summaries. The xprobe repository tests
+installation with `skills` CLI 1.5.20 in isolated
 home directories. This pinned test protects released behavior while the
 documented `skills@1` selector receives compatible path updates.
 
@@ -38,8 +42,9 @@ just test-skill-install
 
 The test requires the visible command set to be exactly `doctor`, `discover`,
 `validate`, and `measure`. It invokes the first three in strict JSON mode,
-checks injection requirements, verifies schemas, and checks that the Skill uses
-only the four-command bounded workflow and inspects result quality/evidence.
+checks injection requirements, verifies schemas, exercises the bundled trace
+analyzer, and checks that the Skill uses only the four-command bounded workflow
+and inspects result quality/evidence.
 The installation test uses the real third-party CLI with telemetry disabled and
 verifies byte-for-byte copies for Codex, Claude Code, and Cursor.
 

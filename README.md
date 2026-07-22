@@ -18,7 +18,7 @@ contracts, explicit correlation quality, and no daemon or server lifecycle.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.0/install.sh | sh
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.1/install.sh | sh
 ```
 
 This installs the released CLI and CUDA 12/13 Agents under `~/.local`. xprobe
@@ -32,13 +32,15 @@ Install the version-matched Skill with the open Agent Skills CLI:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.0/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.1/skills/xprobe-measure-latency \
   --global
 ```
 
 The installer detects Codex, Claude Code, Cursor, and other compatible agents.
 Node.js is only needed for this Skill installation, not for xprobe itself. Set
 `DISABLE_TELEMETRY=1` when anonymous `skills` CLI telemetry is not wanted.
+The Skill guides a short survey, derives selectors from trace evidence, and
+includes a deterministic multi-stream JSONL analyzer.
 
 ## Measure
 
@@ -91,7 +93,7 @@ for safe reactivation.
 
 ## Support
 
-| Surface | 0.3.0 support |
+| Surface | 0.3.1 support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.34 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |

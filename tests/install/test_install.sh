@@ -24,8 +24,7 @@ elif [ "$#" -eq 0 ]; then
     "$source_dir/lib/xprobe/cuda13" \
     "$source_dir/include/xprobe" \
     "$source_dir/docs" \
-    "$source_dir/schemas" \
-    "$source_dir/skills"
+    "$source_dir/schemas"
   cp "$root/install.sh" "$source_dir/install.sh"
   printf '#!/bin/sh\nprintf "xprobe %s\\n"\n' "$installer_version" >"$source_dir/bin/xprobe"
   chmod 0755 "$source_dir/bin/xprobe" "$source_dir/install.sh"
@@ -35,6 +34,7 @@ elif [ "$#" -eq 0 ]; then
   printf 'license\n' >"$source_dir/LICENSE"
   printf 'readme\n' >"$source_dir/README.md"
   printf 'agents\n' >"$source_dir/AGENTS.md"
+  cp -R "$root/skills" "$source_dir/skills"
 else
   printf 'usage: test_install.sh [release-archive]\n' >&2
   exit 2
@@ -70,6 +70,8 @@ test -f "$prefix/share/xprobe/LICENSE"
 test -d "$prefix/share/xprobe/docs"
 test -d "$prefix/share/xprobe/schemas"
 test -d "$prefix/share/xprobe/skills"
+test -x \
+  "$prefix/share/xprobe/skills/xprobe-measure-latency/scripts/analyze_trace.py"
 "$prefix/bin/xprobe" --version
 
 HOME=$temporary_dir/home FAKE_GLIBC_VERSION=2.34 \
