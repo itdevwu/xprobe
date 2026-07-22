@@ -1046,19 +1046,21 @@ fn collect_live_measurement(
     validate_live_limits(request)?;
     let mut collection = prepare_live_collection(request)?;
 
-    let outcome = loop {
-        refresh_live_sources(&mut collection, request)?;
-        let now = Instant::now();
-        if let Some(result) = evaluate_live_result(&collection, request, now)? {
-            break Ok(result);
+    let outcome = (|| {
+        loop {
+            refresh_live_sources(&mut collection, request)?;
+            let now = Instant::now();
+            if let Some(result) = evaluate_live_result(&collection, request, now)? {
+                break Ok(result);
+            }
+            if now >= collection.deadline {
+                break finish_live_timeout(&mut collection, request);
+            }
+            if collection.socket.is_none() {
+                thread::sleep(Duration::from_millis(10));
+            }
         }
-        if now >= collection.deadline {
-            break finish_live_timeout(&mut collection, request);
-        }
-        if collection.socket.is_none() {
-            thread::sleep(Duration::from_millis(10));
-        }
-    };
+    })();
     let managed_capture = collection.managed_agent;
     let stop_result = stop_managed_agent(&mut collection, request);
     let mut result = match (outcome, stop_result) {
@@ -1076,11 +1078,14 @@ fn collect_live_measurement(
         }
         (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
         (Err(error), Err(cleanup)) => {
-            eprintln!(
-                "xprobe: cleanup failed after measurement error: {}",
-                cleanup.message
-            );
-            return Err(error);
+            return Err(CommandFailure::new(
+                ErrorCode::CleanupFailed,
+                format!(
+                    "{}; original measurement error: {}",
+                    cleanup.message, error.message
+                ),
+                cleanup.recoverable,
+            ));
         }
     };
     if collection.agent_injected {
@@ -1163,11 +1168,28 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
     let activation = prepare_cupti_activation(&report, &validation, request)?;
     let socket = activation.socket;
     let baseline = match socket.as_deref() {
-        Some(path) => Some(
-            cupti::snapshot(path, request.timeout, &request.options.session_id).map_err(
-                |error| CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true),
-            )?,
-        ),
+        Some(path) => match cupti::snapshot(path, request.timeout, &request.options.session_id) {
+            Ok(capture) => Some(capture),
+            Err(error) => {
+                let failure =
+                    CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true);
+                if activation.managed {
+                    return match cupti::stop(path, request.timeout, &request.options.session_id) {
+                        Ok(_) => Err(failure),
+                        Err(cleanup) => Err(CommandFailure::new(
+                            ErrorCode::CleanupFailed,
+                            format!(
+                                "failed to stop CUPTI agent after baseline snapshot error: \
+                                 {cleanup}; original error: {}",
+                                failure.message
+                            ),
+                            true,
+                        )),
+                    };
+                }
+                return Err(failure);
+            }
+        },
         None => None,
     };
     let baseline_timestamp = baseline

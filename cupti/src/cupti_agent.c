@@ -1013,10 +1013,10 @@ int xprobe_cupti_agent_start(const char *configured_socket)
 {
     size_t length;
 
-    if (xprobe_cupti_agent_status() == XPROBE_CUPTI_AGENT_READY) {
-        return xprobe_cupti_agent_status();
-    }
     stop_snapshot_server();
+    shutdown_agent();
+    atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_UNAVAILABLE,
+                          memory_order_release);
     snapshot_socket_path[0] = '\0';
     if (configured_socket != NULL) {
         length = strlen(configured_socket);
