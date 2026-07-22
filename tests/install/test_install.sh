@@ -5,6 +5,10 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 temporary_dir=$(mktemp -d)
 trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
 
+workspace_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$root/Cargo.toml" | head -n 1)
+installer_version=$(sed -n 's/^version=${XPROBE_VERSION:-\([^}]*\)}$/\1/p' "$root/install.sh")
+test "$installer_version" = "$workspace_version"
+
 if [ "$#" -eq 1 ]; then
   archive=$(realpath "$1")
   package=$(basename "$archive" .tar.gz)

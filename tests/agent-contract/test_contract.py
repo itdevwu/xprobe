@@ -94,6 +94,25 @@ def check_schemas(workspace: pathlib.Path) -> None:
         assert schema["additionalProperties"] is False
 
 
+def check_installation_docs(workspace: pathlib.Path) -> None:
+    cargo = (workspace / "Cargo.toml").read_text()
+    version_match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
+    assert version_match is not None
+    version = version_match.group(1)
+
+    installer = (workspace / "install.sh").read_text()
+    assert f"version=${{XPROBE_VERSION:-{version}}}" in installer
+
+    for relative_path in (
+        "README.md",
+        "docs/installation.md",
+        "docs/agent-integration.md",
+    ):
+        document = (workspace / relative_path).read_text()
+        assert "npx skills@1 add" in document, relative_path
+        assert f"/v{version}/" in document, relative_path
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: test_contract.py <xprobe-binary>")
@@ -147,6 +166,7 @@ def main() -> None:
 
     check_skill(workspace)
     check_schemas(workspace)
+    check_installation_docs(workspace)
     print(
         json.dumps(
             {

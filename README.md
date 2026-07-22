@@ -14,38 +14,36 @@ in a process, on the CPU, NVIDIA GPU, or across both. Its bounded native profile
 combines eBPF uprobes and NVIDIA CUPTI with an agent-friendly CLI, strict JSON
 contracts, explicit correlation quality, and no daemon or server lifecycle.
 
-## Public CLI
-
-| Command | Purpose |
-| --- | --- |
-| `doctor` | Report local eBPF, ptrace, NVIDIA, CUDA, and CUPTI capabilities |
-| `discover` | List host symbols, CUDA API selectors, and observable GPU activities for a PID |
-| `validate` | Resolve two selectors and report collection, mutation, clock, and policy requirements without attaching |
-| `measure` | Collect or import bounded events, correlate pairs, emit statistics and full event evidence |
-
-`measure --pid` automatically loads the CUPTI agent when a CUDA endpoint needs
-it. CUDA 12 and CUDA 13 use separate shared objects selected from the target's
-mapped CUDART/CUPTI major. The command writes a warning to stderr and adds
-`CUPTI_AGENT_INJECTED` with the selected paths to the JSON result. After
-collection it disables CUPTI and removes its socket, but keeps the Agent mapped
-so later measurements can reactivate it.
-
-## Requirements
-
-- Linux x86_64 with glibc 2.35 or newer; Rust 1.85 or newer for source builds
-- Mamba/Conda for the native development toolchain
-- eBPF privileges for host selectors
-- ptrace permission for online CUPTI injection
-- NVIDIA driver plus CUDA/CUPTI 12.x or 13.x for GPU selectors
+## Install xprobe
 
 ```bash
-mamba env create --file environment.yml
-mamba activate xprobe-dev
-just build
-just test
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.2.1/install.sh | sh
 ```
 
-## Example
+This installs the released CLI and CUDA 12/13 Agents under `~/.local`. xprobe
+supports Linux x86_64 with glibc 2.35 or newer. NVIDIA CUDA is optional unless
+GPU events are selected. See [Installation](docs/installation.md) for checksum
+verification, custom prefixes, upgrades, and removal.
+
+## Install the Agent Skill
+
+Install the version-matched Skill with the open Agent Skills CLI:
+
+```bash
+npx skills@1 add \
+  https://github.com/itdevwu/xprobe/tree/v0.2.1/skills/xprobe-measure-latency \
+  --global
+```
+
+The installer detects Codex, Claude Code, Cursor, and other compatible agents.
+Node.js is only needed for this Skill installation, not for xprobe itself. Set
+`DISABLE_TELEMETRY=1` when anonymous `skills` CLI telemetry is not wanted.
+
+## Measure
+
+Confirm the local capabilities first. `ok: true` means diagnosis completed;
+read the individual checks before selecting events.
 
 ```bash
 xprobe doctor --json --non-interactive --no-color
@@ -66,39 +64,32 @@ xprobe measure --pid 4242 \
   --json --non-interactive --no-color
 ```
 
-Kernel launch latency is only one possible event pair. The same workflow can
-measure host function spans, GPU operation durations, transfers, and other
-selector pairs exposed by the available collectors.
+Kernel launch latency is only one event pair. The same workflow measures host
+function spans, CUDA API calls, GPU operation durations, transfers, and paths
+across CPU and GPU events exposed by `discover`.
 
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
 contain every matched start/end event, latency statistics, unmatched and
 ambiguous counts, drops, clock quality, correlation confidence, and warnings.
 
-## Install
+## Public CLI
 
-Release archives contain `bin/xprobe`, CUDA 12 and CUDA 13 Agents under
-`lib/xprobe/cuda12` and `lib/xprobe/cuda13`, the C header, schemas, docs, and
-the repository Skill. Source packages require one Agent built with each major
-toolkit before assembling the archive:
+| Command | Purpose |
+| --- | --- |
+| `doctor` | Report local eBPF, ptrace, NVIDIA, CUDA, and CUPTI capabilities |
+| `discover` | List host symbols, CUDA API selectors, and observable GPU activities for a PID |
+| `validate` | Resolve two selectors and report collection, mutation, clock, and policy requirements without attaching |
+| `measure` | Collect or import bounded events, correlate pairs, emit statistics and full event evidence |
 
-```bash
-CUDA_PATH=/opt/cuda-12 cmake -S . -B build/cuda12 -G Ninja \
-  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=12
-cmake --build build/cuda12 --target xprobe-cupti
-
-CUDA_PATH=/opt/cuda-13 cmake -S . -B build/cuda13 -G Ninja \
-  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=13
-cmake --build build/cuda13 --target xprobe-cupti
-
-scripts/package-release.sh
-```
-
-The packaging script checks both CUPTI SONAMEs and rejects build-time RPATHs.
+`measure --pid` automatically loads the matching CUDA 12 or CUDA 13 CUPTI Agent
+when a selected endpoint requires it. It reports the target mutation on stderr
+and in JSON, disables collection afterward, and leaves the shared object mapped
+for safe reactivation.
 
 ## Support
 
-| Surface | 0.2.0 support |
+| Surface | 0.2.1 support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.35 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |
@@ -115,6 +106,7 @@ offset CUPTI clock as host monotonic.
 
 ## Documentation
 
+- [Installation](docs/installation.md)
 - [Architecture](docs/architecture.md)
 - [CLI contract](docs/cli-contract.md)
 - [CUPTI agent and injection](docs/cupti-agent.md)
@@ -122,5 +114,6 @@ offset CUPTI clock as host monotonic.
 - [Agent integration](docs/agent-integration.md)
 - [Public JSON schemas](schemas/)
 
-Implemented behavior is defined by code, tests, and schemas. Licensed under
-Apache-2.0.
+Source builds and hardware tests are documented under
+[Development](docs/development.md). Implemented behavior is defined by code,
+tests, and schemas. Licensed under Apache-2.0.

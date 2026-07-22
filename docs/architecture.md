@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the implemented xprobe 0.2.0 architecture.
+This document describes the implemented xprobe 0.2.1 architecture.
 
 ## Boundary
 

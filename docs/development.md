@@ -20,6 +20,27 @@ Agents without a GPU in pinned NVIDIA devel images, checks their SONAMEs, and
 rejects ABI-only output or build-time RPATHs. Live CUDA behavior remains a
 hardware test on an NVIDIA runner.
 
+## Release packaging
+
+A release archive requires one Agent built against each supported CUPTI major:
+
+```bash
+CUDA_PATH=/opt/cuda-12 cmake -S . -B build/cuda12 -G Ninja \
+  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=12
+cmake --build build/cuda12 --target xprobe-cupti
+
+CUDA_PATH=/opt/cuda-13 cmake -S . -B build/cuda13 -G Ninja \
+  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=13
+cmake --build build/cuda13 --target xprobe-cupti
+
+scripts/package-release.sh
+tests/install/test_install.sh dist/xprobe-*-linux-x86_64.tar.gz
+```
+
+Packaging checks both CUPTI SONAMEs, rejects build-time RPATHs, and includes the
+versioned installer. The archive test installs into a temporary prefix, runs the
+packaged binary, verifies both Agents and shared resources, and uninstalls it.
+
 ## eBPF tests
 
 Compile the BPF object without attaching it:
