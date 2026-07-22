@@ -98,10 +98,16 @@ def check_installation_docs(workspace: pathlib.Path) -> None:
     cargo = (workspace / "Cargo.toml").read_text()
     version_match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
     assert version_match is not None
-    version = version_match.group(1)
+    development_version = version_match.group(1)
 
     installer = (workspace / "install.sh").read_text()
-    assert f"version=${{XPROBE_VERSION:-{version}}}" in installer
+    release_match = re.search(r"^version=\$\{XPROBE_VERSION:-([^}]+)\}$", installer, re.MULTILINE)
+    assert release_match is not None
+    release_version = release_match.group(1)
+    assert tuple(map(int, development_version.split("."))) >= tuple(
+        map(int, release_version.split("."))
+    )
+    assert f"default: {release_version}" in installer
 
     for relative_path in (
         "README.md",
@@ -110,7 +116,7 @@ def check_installation_docs(workspace: pathlib.Path) -> None:
     ):
         document = (workspace / relative_path).read_text()
         assert "npx skills@1 add" in document, relative_path
-        assert f"/v{version}/" in document, relative_path
+        assert f"/v{release_version}/" in document, relative_path
 
 
 def main() -> None:

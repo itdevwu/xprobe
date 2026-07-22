@@ -1,9 +1,9 @@
 set shell := ["bash", "-cu"]
 
 cuda_smoke_image := "nvcr.io/nvidia/cuda:13.3.0-base-ubuntu24.04@sha256:bcf7d05f0b13b9bbb86d9a4cd039d331894b8f1145ad009d1af75023bcd1dc5c"
-cuda12_devel_image := "nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c"
+cuda12_devel_image := "nvidia/cuda:12.9.1-devel-ubuntu22.04@sha256:bd4e2680a261c212f1e2fea241606f71497dc67a417f73175d794ec8212b5ba8"
 cuda12_min_devel_image := "nvidia/cuda:12.0.1-devel-ubuntu22.04@sha256:0632323ec456b33654d489f3ddd336f3b3ea1c87e6421a91a37f6768e659f08c"
-cuda13_devel_image := "nvcr.io/nvidia/cuda:13.3.0-devel-ubuntu24.04@sha256:69e9e39eb8fe2cda271654a0f5eac2f1bb946b2fb9c460eb19c7c3c155f4e64e"
+cuda13_devel_image := "nvcr.io/nvidia/cuda:13.3.0-devel-ubuntu22.04@sha256:cbe2f44080865228de493c496427aa7b414866979fc3bb547e0197e9c31e77bb"
 
 default:
     @just --list
