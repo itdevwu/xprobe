@@ -18,9 +18,11 @@ test: build
     cargo test --workspace
     ctest --test-dir build --output-on-failure
     python3 tests/agent-contract/test_contract.py target/debug/xprobe
+    python3 tests/agent-contract/test_trace_analysis.py
 
 test-agent-contract: build
     python3 tests/agent-contract/test_contract.py target/debug/xprobe
+    python3 tests/agent-contract/test_trace_analysis.py
 
 test-skill-install:
     tests/agent-contract/test_skill_install.sh
