@@ -172,6 +172,7 @@ pub fn activate(
     report: &ProcessReport,
     agent_path: &Path,
     socket_path: &Path,
+    record_capacity: u64,
     timeout: Duration,
 ) -> Result<InjectionResult, InjectError> {
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -218,7 +219,7 @@ pub fn activate(
         (start, true)
     };
 
-    let status = remote.call(start_address, &[socket_address])?;
+    let status = remote.call(start_address, &[socket_address, record_capacity])?;
     for address in allocations {
         let _ = remote.call(free, &[address])?;
     }

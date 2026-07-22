@@ -6,7 +6,7 @@ use xprobe_protocol::{
     TargetIdentity,
 };
 
-const HEADER_SIZE: usize = 48;
+const HEADER_SIZE: usize = 80;
 const RECORD_SIZE: usize = 200;
 
 fn capture_path(name: &str) -> PathBuf {
@@ -33,14 +33,15 @@ fn record(kind: u32, timestamp: u64, correlation_id: u32, name: &str) -> [u8; RE
 fn write_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
     let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
     bytes[0..8].copy_from_slice(b"XPCUPTI\0");
-    bytes[8..12].copy_from_slice(&1_u32.to_le_bytes());
-    bytes[12..16].copy_from_slice(&48_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[12..16].copy_from_slice(&80_u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&200_u32.to_le_bytes());
-    bytes[24..32].copy_from_slice(
-        &u64::try_from(records.len())
-            .expect("record count must fit u64")
-            .to_le_bytes(),
-    );
+    bytes[24..28].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[28..32].copy_from_slice(&1_u32.to_le_bytes());
+    let record_count = u64::try_from(records.len()).expect("record count must fit u64");
+    bytes[32..40].copy_from_slice(&record_count.to_le_bytes());
+    bytes[40..48].copy_from_slice(&record_count.max(1).to_le_bytes());
+    bytes[48..56].copy_from_slice(&record_count.to_le_bytes());
     for (index, record) in records.iter().enumerate() {
         let offset = HEADER_SIZE + index * RECORD_SIZE;
         bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
@@ -51,15 +52,16 @@ fn write_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
 fn write_normalized_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
     let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
     bytes[0..8].copy_from_slice(b"XPCUPTI\0");
-    bytes[8..12].copy_from_slice(&1_u32.to_le_bytes());
-    bytes[12..16].copy_from_slice(&48_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[12..16].copy_from_slice(&80_u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&200_u32.to_le_bytes());
     bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
-    bytes[24..32].copy_from_slice(
-        &u64::try_from(records.len())
-            .expect("record count must fit u64")
-            .to_le_bytes(),
-    );
+    bytes[24..28].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[28..32].copy_from_slice(&1_u32.to_le_bytes());
+    let record_count = u64::try_from(records.len()).expect("record count must fit u64");
+    bytes[32..40].copy_from_slice(&record_count.to_le_bytes());
+    bytes[40..48].copy_from_slice(&record_count.max(1).to_le_bytes());
+    bytes[48..56].copy_from_slice(&record_count.to_le_bytes());
     for (index, record) in records.iter().enumerate() {
         let offset = HEADER_SIZE + index * RECORD_SIZE;
         bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
@@ -174,6 +176,52 @@ fn measures_exact_kernel_durations_from_a_completed_capture() {
     let evidence = fs::read_to_string(&evidence_path).expect("evidence must be written");
     fs::remove_file(evidence_path).expect("evidence fixture must be removed");
     assert_eq!(evidence.lines().count(), 4);
+}
+
+#[test]
+fn rejects_a_capture_that_reached_the_agent_record_limit() {
+    let path = capture_path("record-limit");
+    write_capture(
+        &path,
+        &[
+            record(3, 100, 11, "test_kernel"),
+            record(4, 150, 11, "test_kernel"),
+        ],
+    );
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[24..28].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[28..32].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[48..56].copy_from_slice(&3_u64.to_le_bytes());
+    fs::write(&path, bytes).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            path.to_str().expect("temporary path must be UTF-8"),
+            "--from",
+            "cuda:kernel_start:name~test.*",
+            "--to",
+            "cuda:kernel_end:name~test.*",
+            "--match",
+            "exact",
+            "--samples",
+            "1",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let response: ErrorResponse = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response.error.code, ErrorCode::EventRateTooHigh);
+    assert!(
+        response
+            .error
+            .message
+            .contains("configured limit of 2 records")
+    );
 }
 
 #[test]

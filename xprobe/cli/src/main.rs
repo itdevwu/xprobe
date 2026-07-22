@@ -935,6 +935,7 @@ fn measure_completed_inputs(
     let capture = completed::merge(captures, &options.session_id).map_err(|error| {
         CommandFailure::new(ErrorCode::TraceExportFailed, error.to_string(), false)
     })?;
+    reject_incomplete_capture(&capture, false)?;
     if capture.unknown_records != 0 {
         return Err(CommandFailure::new(
             ErrorCode::TraceExportFailed,
@@ -1310,10 +1311,21 @@ fn prepare_cupti_activation(
             .as_deref()
             .map_or_else(String::new, |path| format!(" using {}", path.display()))
     );
-    let activation =
-        inject::activate(report, &selection.path, &socket, request.timeout).map_err(|error| {
-            CommandFailure::new(error.code(), error.to_string(), error.recoverable())
-        })?;
+    let record_capacity = u64::try_from(request.options.max_events).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            format!("max-events exceeds the CUPTI Agent range: {error}"),
+            true,
+        )
+    })?;
+    let activation = inject::activate(
+        report,
+        &selection.path,
+        &socket,
+        record_capacity,
+        request.timeout,
+    )
+    .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()))?;
     Ok(CuptiActivation {
         socket: Some(activation.socket_path),
         managed: true,
@@ -1616,6 +1628,8 @@ fn measure_live_capture(
         .map(|capture| completed::CompletedCapture {
             dropped_records: capture.dropped,
             unknown_records: 0,
+            record_limit_reached: None,
+            capture_failed: false,
             events: capture.events.clone(),
         })
         .collect::<Vec<_>>();
@@ -1643,6 +1657,12 @@ fn measure_live_capture(
         captures.push(completed::CompletedCapture {
             dropped_records,
             unknown_records,
+            record_limit_reached: (cuda.state == cupti::CuptiCaptureState::LimitReached)
+                .then_some(cuda.record_capacity),
+            capture_failed: matches!(
+                cuda.state,
+                cupti::CuptiCaptureState::Idle | cupti::CuptiCaptureState::Failed
+            ),
             events: cuda
                 .events
                 .iter()
@@ -1658,6 +1678,7 @@ fn measure_live_capture(
     let capture = completed::merge(captures, &options.session_id).map_err(|error| {
         CommandFailure::new(ErrorCode::TraceExportFailed, error.to_string(), false)
     })?;
+    reject_incomplete_capture(&capture, true)?;
     if capture.unknown_records != 0 {
         return Err(CommandFailure::new(
             ErrorCode::TraceExportFailed,
@@ -1674,6 +1695,30 @@ fn measure_live_capture(
     };
     measure(&capture.events, &options)
         .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()))
+}
+
+fn reject_incomplete_capture(
+    capture: &completed::CompletedCapture,
+    live: bool,
+) -> Result<(), CommandFailure> {
+    if capture.capture_failed {
+        return Err(CommandFailure::new(
+            ErrorCode::CuptiNotAvailable,
+            format!(
+                "{}CUPTI capture entered a failed state",
+                if live { "live " } else { "" }
+            ),
+            true,
+        ));
+    }
+    if let Some(capacity) = capture.record_limit_reached {
+        return Err(CommandFailure::new(
+            ErrorCode::EventRateTooHigh,
+            format!("CUPTI capture reached its configured limit of {capacity} records"),
+            true,
+        ));
+    }
+    Ok(())
 }
 
 const fn match_policy_name(policy: MatchPolicy) -> &'static str {

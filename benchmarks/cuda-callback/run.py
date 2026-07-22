@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 
-HEADER = struct.Struct("<8sIIIIQQQ")
+HEADER = struct.Struct("<8s6I6Q")
 RECORD = struct.Struct("<Q16I128s")
 PRECISION_KERNEL = "xprobe_precision_kernel"
 TARGET_RATE_KERNEL = "xprobe_target_rate_kernel"
@@ -24,12 +24,17 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         "header_size": fields[2],
         "record_size": fields[3],
         "feature_flags": fields[4],
-        "record_count": fields[5],
-        "dropped_records": fields[6],
-        "unknown_records": fields[7],
+        "capture_state": fields[5],
+        "stop_reason": fields[6],
+        "record_count": fields[7],
+        "record_capacity": fields[8],
+        "observed_records": fields[9],
+        "agent_dropped_records": fields[10],
+        "cupti_dropped_records": fields[11],
+        "unknown_records": fields[12],
     }
     assert fields[0] == b"XPCUPTI\0", header
-    assert header["abi_version"] == 1, header
+    assert header["abi_version"] == 2, header
     assert header["header_size"] == HEADER.size, header
     assert header["record_size"] == RECORD.size, header
     assert len(data) == HEADER.size + header["record_count"] * RECORD.size, header
@@ -113,7 +118,9 @@ def main() -> None:
         assert len(instrumented[field]) == instrumented["rounds"]
         assert all(value > 0 for value in baseline[field])
         assert all(value > 0 for value in instrumented[field])
-    assert header["dropped_records"] == 0, header
+    assert header["capture_state"] == 3, header
+    assert header["agent_dropped_records"] == 0, header
+    assert header["cupti_dropped_records"] == 0, header
     assert header["unknown_records"] == 0, header
 
     cupti_ns = precision_duration(records)

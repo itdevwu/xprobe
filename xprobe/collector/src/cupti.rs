@@ -17,10 +17,10 @@ use xprobe_protocol::{
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
-const CONTROL_VERSION: u32 = 1;
-const ABI_VERSION: u32 = 1;
-const HEADER_SIZE: usize = 48;
-const HEADER_SIZE_U32: u32 = 48;
+const CONTROL_VERSION: u32 = 2;
+const ABI_VERSION: u32 = 2;
+const HEADER_SIZE: usize = 80;
+const HEADER_SIZE_U32: u32 = 80;
 const RECORD_SIZE: usize = 200;
 const RECORD_SIZE_U32: u32 = 200;
 const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
@@ -30,9 +30,33 @@ const UNKNOWN_U32: u32 = u32::MAX;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CuptiCapture {
+    pub state: CuptiCaptureState,
+    pub stop_reason: CuptiStopReason,
+    pub record_capacity: u64,
+    pub observed_records: u64,
+    pub agent_dropped_records: u64,
+    pub cupti_dropped_records: u64,
     pub dropped_records: u64,
     pub unknown_records: u64,
     pub events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CuptiCaptureState {
+    Idle,
+    Active,
+    LimitReached,
+    Stopped,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CuptiStopReason {
+    None,
+    Requested,
+    RecordLimit,
+    CuptiError,
+    OutputError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +88,14 @@ pub enum CuptiDecodeError {
     InvalidTimestamp {
         index: usize,
     },
+    InvalidCaptureState(u32),
+    InvalidStopReason(u32),
+    InvalidCounters {
+        records: u64,
+        capacity: u64,
+        observed: u64,
+    },
+    CounterOverflow,
 }
 
 impl fmt::Display for CuptiDecodeError {
@@ -114,6 +146,24 @@ impl fmt::Display for CuptiDecodeError {
             }
             Self::InvalidTimestamp { index } => {
                 write!(formatter, "CUPTI record {index} has a zero timestamp")
+            }
+            Self::InvalidCaptureState(state) => {
+                write!(formatter, "CUPTI capture state {state} is invalid")
+            }
+            Self::InvalidStopReason(reason) => {
+                write!(formatter, "CUPTI capture stop reason {reason} is invalid")
+            }
+            Self::InvalidCounters {
+                records,
+                capacity,
+                observed,
+            } => write!(
+                formatter,
+                "CUPTI capture counters are inconsistent: records={records}, \
+                 capacity={capacity}, observed={observed}"
+            ),
+            Self::CounterOverflow => {
+                formatter.write_str("CUPTI capture diagnostic counters overflowed")
             }
         }
     }
@@ -280,8 +330,20 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         ));
     }
 
-    let record_count = usize::try_from(read_u64(bytes, 24))
-        .map_err(|_| CuptiDecodeError::CaptureLengthOverflow)?;
+    let state = decode_capture_state(read_u32(bytes, 24))?;
+    let stop_reason = decode_stop_reason(read_u32(bytes, 28))?;
+    let record_count_raw = read_u64(bytes, 32);
+    let record_capacity = read_u64(bytes, 40);
+    let observed_records = read_u64(bytes, 48);
+    if record_count_raw > record_capacity || observed_records < record_count_raw {
+        return Err(CuptiDecodeError::InvalidCounters {
+            records: record_count_raw,
+            capacity: record_capacity,
+            observed: observed_records,
+        });
+    }
+    let record_count =
+        usize::try_from(record_count_raw).map_err(|_| CuptiDecodeError::CaptureLengthOverflow)?;
     let payload_size = record_count
         .checked_mul(RECORD_SIZE)
         .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
@@ -309,11 +371,44 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
             .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
     }
 
+    let agent_dropped_records = read_u64(bytes, 56);
+    let cupti_dropped_records = read_u64(bytes, 64);
+    let dropped_records = agent_dropped_records
+        .checked_add(cupti_dropped_records)
+        .ok_or(CuptiDecodeError::CounterOverflow)?;
     Ok(CuptiCapture {
-        dropped_records: read_u64(bytes, 32),
-        unknown_records: read_u64(bytes, 40),
+        state,
+        stop_reason,
+        record_capacity,
+        observed_records,
+        agent_dropped_records,
+        cupti_dropped_records,
+        dropped_records,
+        unknown_records: read_u64(bytes, 72),
         events,
     })
+}
+
+fn decode_capture_state(value: u32) -> Result<CuptiCaptureState, CuptiDecodeError> {
+    match value {
+        0 => Ok(CuptiCaptureState::Idle),
+        1 => Ok(CuptiCaptureState::Active),
+        2 => Ok(CuptiCaptureState::LimitReached),
+        3 => Ok(CuptiCaptureState::Stopped),
+        4 => Ok(CuptiCaptureState::Failed),
+        _ => Err(CuptiDecodeError::InvalidCaptureState(value)),
+    }
+}
+
+fn decode_stop_reason(value: u32) -> Result<CuptiStopReason, CuptiDecodeError> {
+    match value {
+        0 => Ok(CuptiStopReason::None),
+        1 => Ok(CuptiStopReason::Requested),
+        2 => Ok(CuptiStopReason::RecordLimit),
+        3 => Ok(CuptiStopReason::CuptiError),
+        4 => Ok(CuptiStopReason::OutputError),
+        _ => Err(CuptiDecodeError::InvalidStopReason(value)),
+    }
 }
 
 fn decode_record(
@@ -491,11 +586,12 @@ mod tests {
         bytes[8..12].copy_from_slice(&super::ABI_VERSION.to_le_bytes());
         bytes[12..16].copy_from_slice(&super::HEADER_SIZE_U32.to_le_bytes());
         bytes[16..20].copy_from_slice(&super::RECORD_SIZE_U32.to_le_bytes());
-        bytes[24..32].copy_from_slice(
-            &u64::try_from(records.len())
-                .expect("test record count must fit u64")
-                .to_le_bytes(),
-        );
+        bytes[24..28].copy_from_slice(&3_u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&1_u32.to_le_bytes());
+        let record_count = u64::try_from(records.len()).expect("test record count must fit u64");
+        bytes[32..40].copy_from_slice(&record_count.to_le_bytes());
+        bytes[40..48].copy_from_slice(&record_count.max(1).to_le_bytes());
+        bytes[48..56].copy_from_slice(&record_count.to_le_bytes());
         for (index, record) in records.iter().enumerate() {
             let offset = HEADER_SIZE + index * RECORD_SIZE;
             bytes[offset..offset + RECORD_SIZE].copy_from_slice(record);
@@ -684,6 +780,31 @@ mod tests {
             decode_capture(&bytes, "xp_test"),
             Err(CuptiDecodeError::InvalidCaptureLength { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_inconsistent_capture_counters() {
+        let mut bytes = capture(&[record(1, 100, 1, "cudaLaunchKernel")]);
+        bytes[40..48].copy_from_slice(&0_u64.to_le_bytes());
+        assert!(matches!(
+            decode_capture(&bytes, "xp_test"),
+            Err(CuptiDecodeError::InvalidCounters { .. })
+        ));
+    }
+
+    #[test]
+    fn decodes_record_limit_state_without_counting_it_as_a_drop() {
+        let mut bytes = capture(&[record(3, 100, 1, "test_kernel")]);
+        bytes[24..28].copy_from_slice(&2_u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&2_u32.to_le_bytes());
+        bytes[48..56].copy_from_slice(&2_u64.to_le_bytes());
+
+        let decoded = decode_capture(&bytes, "xp_test").unwrap();
+        assert_eq!(decoded.state, super::CuptiCaptureState::LimitReached);
+        assert_eq!(decoded.stop_reason, super::CuptiStopReason::RecordLimit);
+        assert_eq!(decoded.record_capacity, 1);
+        assert_eq!(decoded.observed_records, 2);
+        assert_eq!(decoded.dropped_records, 0);
     }
 
     #[test]
