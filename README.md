@@ -6,10 +6,10 @@ _AI harness native profiler._
 
 </div>
 
-`xprobe` is a bounded Linux profiler for measuring time between host and NVIDIA
-GPU events. It is designed for coding agents and performance engineers: four
-commands, strict JSON contracts, explicit correlation quality, and no daemon or
-server lifecycle.
+`xprobe` is a bounded Linux profiler for measuring time between two observable
+events in a process, on the CPU, NVIDIA GPU, or across both. It is designed for
+coding agents and performance engineers: four commands, strict JSON contracts,
+explicit correlation quality, and no daemon or server lifecycle.
 
 ## Public CLI
 
@@ -62,6 +62,10 @@ xprobe measure --pid 4242 \
   --events-out /tmp/xprobe-events.jsonl \
   --json --non-interactive --no-color
 ```
+
+Kernel launch latency is only one possible event pair. The same workflow can
+measure host function spans, GPU operation durations, transfers, and other
+selector pairs exposed by the available collectors.
 
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
