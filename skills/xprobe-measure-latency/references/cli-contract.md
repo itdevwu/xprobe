@@ -40,6 +40,13 @@ Direct `measure` calls require a positive `--samples` or `--duration-ms` bound.
 `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000. Use exactly
 one source mode: `--pid`, one or more `--input` files, or `--spec`.
 
+`--events-out PATH` atomically writes the bounded capture with mode `0600`, not
+only matched evidence. Collection completeness and CUPTI capacity, observed,
+retained, dropped, and buffer utilization fields describe capture integrity
+separately from correlation confidence. Correlation or clock failure after
+collection still writes the artifact and reports its metadata in error
+`details`; inspect it before retrying.
+
 Exit status `0` means the command emitted a result. Status `1` is validation,
 collection, decode, export, cleanup, or internal failure; `2` is invalid CLI
 syntax; `3` means the target disappeared or was reused; and `4` is a permission

@@ -122,10 +122,28 @@ pub struct ClockQuality {
     pub estimated_error_ns: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CollectionSummary {
+    pub completeness: CaptureCompleteness,
     pub host_events: u64,
     pub cuda_events: u64,
     pub dropped_events: u64,
+    pub cupti: Option<CuptiCollectionSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureCompleteness {
+    Complete,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CuptiCollectionSummary {
+    pub record_capacity: u64,
+    pub observed_records: u64,
+    pub retained_records: u64,
+    pub dropped_records: u64,
+    pub buffer_utilization: f64,
 }

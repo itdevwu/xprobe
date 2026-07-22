@@ -159,18 +159,23 @@ Results conform to `schemas/measurement-result.schema.json` and contain:
 - matched, unmatched, ambiguous, and dropped counts;
 - method, confidence, and score;
 - clock alignment and optional estimated error;
-- host/CUDA collection totals;
+- collection completeness, host/CUDA totals, and CUPTI capacity, observed,
+  retained, dropped, and utilization values when an ABI envelope provides them;
 - full start/end events plus latency for each evidence pair;
 - structured warnings.
 
-`--events-out PATH` writes the deduplicated events used by matched pairs with
-mode `0600`. The default format is JSONL; `--format chrome` writes Chrome Trace
-Event Format. This folds evidence export into `measure` rather than requiring a
-separate public command.
+`--events-out PATH` atomically writes the complete bounded capture with mode
+`0600`. The default format is JSONL; `--format chrome` writes Chrome Trace Event
+Format. Once collection has produced a capture, correlation, clock, drop, or
+capacity failures still write it and identify its path, format, and event count
+in the JSON error. Artifact failure returns `TRACE_EXPORT_FAILED` and preserves
+the original measurement error code in `details`.
 
 No matched pairs return `NO_MATCHED_SAMPLES`. Cross-clock subtraction without
 declared alignment returns `CLOCK_ALIGNMENT_FAILED`. Drops and unknown clock
-error are never silently converted to high-quality results.
+error are never silently converted to high-quality results. Error `details` and
+`hints` carry selectors, policies, counters, clock domains, and explicit next
+actions where applicable; callers must not infer these fields from messages.
 
 ## Compatibility
 

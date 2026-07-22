@@ -4,10 +4,10 @@ use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
 
 use regex::Regex;
 use xprobe_protocol::{
-    ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary,
-    ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics, MatchPolicy,
-    MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, SampleSummary, SchemaVersion,
-    SessionStatus, Warning,
+    CaptureCompleteness, ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence,
+    CorrelationSummary, ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics,
+    MatchPolicy, MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, SampleSummary,
+    SchemaVersion, SessionStatus, Warning,
 };
 
 #[derive(Debug, Clone)]
@@ -492,9 +492,11 @@ pub fn measure(
             estimated_error_ns: maximum_timestamp_error(&outcome.pairs),
         },
         collection: CollectionSummary {
+            completeness: CaptureCompleteness::Complete,
             host_events,
             cuda_events,
             dropped_events: options.dropped_events,
+            cupti: None,
         },
         evidence: outcome
             .pairs
