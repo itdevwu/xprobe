@@ -1,0 +1,15 @@
+{
+  "schema_version": "2.0",
+  "name": "host_function_span",
+  "target": {
+    "pid": 1234,
+    "process_start_time": 987654
+  },
+  "start_selector": "uprobe:/srv/app/server:handle_request:entry",
+  "end_selector": "uprobe:/srv/app/server:handle_request:return",
+  "match_policy": "stack_nested",
+  "samples": 100,
+  "duration_ms": null,
+  "timeout_ms": 30000,
+  "max_events": 1000
+}

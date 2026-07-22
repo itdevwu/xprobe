@@ -1,0 +1,15 @@
+{
+  "schema_version": "2.0",
+  "name": "cuda_stream_synchronize_duration",
+  "target": {
+    "pid": 1234,
+    "process_start_time": 987654
+  },
+  "start_selector": "cuda:runtime_api:cudaStreamSynchronize:entry",
+  "end_selector": "cuda:runtime_api:cudaStreamSynchronize:exit",
+  "match_policy": "exact",
+  "samples": 100,
+  "duration_ms": null,
+  "timeout_ms": 30000,
+  "max_events": 1000
+}
