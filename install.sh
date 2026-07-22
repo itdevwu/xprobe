@@ -86,9 +86,17 @@ if [ "$glibc_major" -lt 2 ] || { [ "$glibc_major" -eq 2 ] && [ "$glibc_minor" -l
   fail "glibc 2.35 or newer is required; found $2"
 fi
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-source_dir=$script_dir
+source_dir=
 temporary_dir=
+
+case $0 in
+  install.sh|*/install.sh)
+    script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    if [ -x "$script_dir/bin/xprobe" ]; then
+      source_dir=$script_dir
+    fi
+    ;;
+esac
 
 cleanup() {
   if [ -n "$temporary_dir" ]; then
@@ -97,7 +105,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if [ ! -x "$source_dir/bin/xprobe" ]; then
+if [ -z "$source_dir" ]; then
   command -v curl >/dev/null 2>&1 || fail "curl is required to download xprobe"
   command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required to verify xprobe"
   temporary_dir=$(mktemp -d)
