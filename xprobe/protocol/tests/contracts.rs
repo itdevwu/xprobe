@@ -92,7 +92,7 @@ fn host_capture_contract_round_trips() {
 #[test]
 fn discovery_contract_round_trips() {
     assert_round_trip::<DiscoveryResult>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "root": {"pid": 1234, "process_start_time": 42},
         "limit": 10,

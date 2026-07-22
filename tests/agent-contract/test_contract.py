@@ -18,7 +18,9 @@ STABLE_COMMANDS = {
 SKILL_PATH = "skills/xprobe-measure-latency/SKILL.md"
 
 
-def run_json(binary: pathlib.Path, arguments: list[str]) -> dict:
+def run_json(
+    binary: pathlib.Path, arguments: list[str], schema_version: str = "1.0"
+) -> dict:
     completed = subprocess.run(
         [binary, *arguments, *COMMON_FLAGS],
         check=False,
@@ -33,7 +35,7 @@ def run_json(binary: pathlib.Path, arguments: list[str]) -> dict:
         )
     assert completed.stderr == "", completed.stderr
     result = json.loads(completed.stdout)
-    assert result["schema_version"] == "1.0"
+    assert result["schema_version"] == schema_version
     assert result["ok"] is True
     return result
 
@@ -149,6 +151,7 @@ def main() -> None:
             discovered = run_json(
                 binary,
                 ["discover", "--pid", str(os.getpid()), "--limit", "10"],
+                schema_version="2.0",
             )
         finally:
             os.environ["PATH"] = old_path

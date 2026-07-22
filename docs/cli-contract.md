@@ -9,8 +9,9 @@ All commands support `--json --non-interactive --no-color`. JSON mode writes one
 versioned document to stdout. Diagnostics, including the online-injection
 warning, go to stderr. Commands never prompt.
 
-Success and error records carry `schema_version: "1.0"`. Unknown JSON fields
-and unsupported schema versions are rejected.
+Success and error records carry `schema_version: "1.0"`, except the redesigned
+CUDA process-candidate result from `discover`, which carries `"2.0"`. Unknown
+JSON fields and unsupported schema versions are rejected.
 
 | Exit | Meaning |
 | --- | --- |
@@ -48,6 +49,9 @@ including PID plus procfs start time, parent PID, executable, command line, and
 GPU UUIDs. `limit` must be positive. `total_candidates` and `truncated`
 describe bounded output. The caller chooses one candidate and passes its PID to
 `validate` and `measure`; xprobe does not guess among workers.
+
+This process-candidate response is discovery schema `2.0`. xprobe does not emit
+or maintain the pre-0.3 event-discovery shape.
 
 An unavailable or failed NVML query is an explicit command error, not an empty
 candidate list.
