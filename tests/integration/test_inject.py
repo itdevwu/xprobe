@@ -86,7 +86,7 @@ def main() -> None:
         print(
             json.dumps(
                 {
-                    "schema_version": "1.0",
+                    "schema_version": "2.0",
                     "ok": True,
                     "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
                     "measurements": 2,

@@ -9,9 +9,9 @@ All commands support `--json --non-interactive --no-color`. JSON mode writes one
 versioned document to stdout. Diagnostics, including the online-injection
 warning, go to stderr. Commands never prompt.
 
-Success and error records carry `schema_version: "1.0"`, except the redesigned
-CUDA process-candidate result from `discover`, which carries `"2.0"`. Unknown
-JSON fields and unsupported schema versions are rejected.
+All success and error records carry `schema_version: "2.0"`. Unknown JSON
+fields and unsupported schema versions are rejected. xprobe maintains only the
+current schema during the pre-1.0 protocol transition.
 
 | Exit | Meaning |
 | --- | --- |
@@ -89,6 +89,9 @@ Supported policies are `exact`, `first-after`, `nearest`, `stack-nested`, and
 `stream-order`. Exact requires deterministic CUPTI correlation IDs. Nested
 requires entry/return of the same host function. Stream order requires GPU
 activity endpoints. Temporal policies always warn that they are heuristic.
+`policy_recommendation` reports the strongest compatible policy, a stable
+machine-readable reason, and all compatible alternatives. The caller still
+chooses the policy; xprobe does not silently replace or retry it.
 
 `requirements.agent_activation` is `not_required`, `already_loaded`, or
 `injection_required`. The last value sets `target_mutation: true` and emits

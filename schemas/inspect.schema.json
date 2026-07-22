@@ -237,7 +237,7 @@
     "SchemaVersion": {
       "type": "string",
       "enum": [
-        "1.0"
+        "2.0"
       ]
     },
     "TargetIdentity": {

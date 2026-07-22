@@ -80,7 +80,7 @@ if ! wait "${measurement_pid}"; then
   exit 1
 fi
 process_start_time=$(awk '{print $22}' "/proc/${target_pid}/stat")
-printf '{"schema_version":"1.0","name":"spec_host_to_kernel","target":{"pid":%s,"process_start_time":%s},"start_selector":"uprobe:%s:xprobe_request_marker:entry","end_selector":"cuda:kernel_start:name~xprobe_multisource_kernel.*","match_policy":"first_after","samples":3,"duration_ms":null,"timeout_ms":10000,"max_events":100000}\n' \
+printf '{"schema_version":"2.0","name":"spec_host_to_kernel","target":{"pid":%s,"process_start_time":%s},"start_selector":"uprobe:%s:xprobe_request_marker:entry","end_selector":"cuda:kernel_start:name~xprobe_multisource_kernel.*","match_policy":"first_after","samples":3,"duration_ms":null,"timeout_ms":10000,"max_events":100000}\n' \
   "${target_pid}" "${process_start_time}" "${fixture}" >"${spec}"
 /workspace/target/debug/xprobe trace \
   --spec "${spec}" \

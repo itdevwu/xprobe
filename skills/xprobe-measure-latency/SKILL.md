@@ -21,7 +21,9 @@ before using temporal correlation or normalized clocks.
 3. Run `xprobe validate --pid WORKER_PID --from SELECTOR --to SELECTOR --match POLICY
    --json --non-interactive --no-color`. Stop when `valid` is false. If
    `agent_activation` is `injection_required`, disclose that `measure` will
-   ptrace the target and leave the CUPTI shared object mapped.
+   ptrace the target and leave the CUPTI shared object mapped. Read
+   `policy_recommendation`; when it differs from the requested policy, rerun
+   `validate` explicitly with the recommended or another compatible policy.
 4. Run one bounded `xprobe measure --pid PID --from SELECTOR --to SELECTOR
    --match POLICY --samples N --timeout-ms MS --json --non-interactive
    --no-color`. Use `--events-out PATH [--format jsonl|chrome]` when an artifact

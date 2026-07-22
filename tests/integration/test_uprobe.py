@@ -60,7 +60,7 @@ def main() -> None:
 
 
 def assert_capture(result: dict, probe_id: int, event_type: str, kind: str) -> None:
-    assert result["schema_version"] == "1.0"
+    assert result["schema_version"] == "2.0"
     assert result["ok"] is True
     assert result["probe_id"] == probe_id
     assert result["captured"] == 3

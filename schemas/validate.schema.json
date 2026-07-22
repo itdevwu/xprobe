@@ -19,6 +19,9 @@
     "ok": {
       "type": "boolean"
     },
+    "policy_recommendation": {
+      "$ref": "#/$defs/PolicyRecommendation"
+    },
     "requirements": {
       "$ref": "#/$defs/ValidationRequirements"
     },
@@ -51,6 +54,7 @@
     "start",
     "end",
     "match_policy",
+    "policy_recommendation",
     "requirements"
   ],
   "$defs": {
@@ -156,6 +160,38 @@
         "HtoH",
         "PtoP",
         "unknown"
+      ]
+    },
+    "PolicyRecommendation": {
+      "type": "object",
+      "properties": {
+        "compatible_policies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MatchPolicy"
+          }
+        },
+        "policy": {
+          "$ref": "#/$defs/MatchPolicy"
+        },
+        "reason": {
+          "$ref": "#/$defs/PolicyRecommendationReason"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "reason",
+        "compatible_policies"
+      ]
+    },
+    "PolicyRecommendationReason": {
+      "type": "string",
+      "enum": [
+        "deterministic_correlation_key",
+        "host_call_frame",
+        "cuda_stream_order",
+        "temporal_order_only"
       ]
     },
     "ProcessMapping": {
@@ -307,7 +343,7 @@
     "SchemaVersion": {
       "type": "string",
       "enum": [
-        "1.0"
+        "2.0"
       ]
     },
     "TargetIdentity": {

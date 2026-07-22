@@ -17,7 +17,7 @@ pub use capability::{
     Capabilities, CapabilityReport, CheckResult, CheckStatus, Environment, SystemChecks, Warning,
 };
 pub use capture::HostCaptureResult;
-pub use discover::{CudaProcessCandidate, DiscoveryResult, DiscoverySchemaVersion};
+pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{
     ArgumentValue, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, HostEvent,
@@ -32,9 +32,10 @@ pub use measurement::{
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};
 pub use validate::{
-    AgentActivation, EndpointSource, ResolvedCudaSelector, ValidatedEndpoint, ValidationIssue,
-    ValidationRequirements, ValidationResult,
+    AgentActivation, EndpointSource, PolicyRecommendation, PolicyRecommendationReason,
+    ResolvedCudaSelector, ValidatedEndpoint, ValidationIssue, ValidationRequirements,
+    ValidationResult,
 };
 pub use version::SchemaVersion;
 
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "2.0";
