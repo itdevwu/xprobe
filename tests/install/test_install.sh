@@ -7,7 +7,8 @@ trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
 
 workspace_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$root/Cargo.toml" | head -n 1)
 installer_version=$(sed -n 's/^version=${XPROBE_VERSION:-\([^}]*\)}$/\1/p' "$root/install.sh")
-test "$installer_version" = "$workspace_version"
+lowest_version=$(printf '%s\n%s\n' "$installer_version" "$workspace_version" | sort -V | head -n 1)
+test "$lowest_version" = "$installer_version"
 
 if [ "$#" -eq 1 ]; then
   archive=$(realpath "$1")
@@ -16,7 +17,7 @@ if [ "$#" -eq 1 ]; then
   tar -xzf "$archive" -C "$temporary_dir/archive"
   source_dir=$temporary_dir/archive/$package
 elif [ "$#" -eq 0 ]; then
-  source_dir=$temporary_dir/xprobe-0.2.1-linux-x86_64
+  source_dir=$temporary_dir/xprobe-$installer_version-linux-x86_64
   mkdir -p \
     "$source_dir/bin" \
     "$source_dir/lib/xprobe/cuda12" \
@@ -26,7 +27,7 @@ elif [ "$#" -eq 0 ]; then
     "$source_dir/schemas" \
     "$source_dir/skills"
   cp "$root/install.sh" "$source_dir/install.sh"
-  printf '#!/bin/sh\nprintf "xprobe 0.2.1\\n"\n' >"$source_dir/bin/xprobe"
+  printf '#!/bin/sh\nprintf "xprobe %s\\n"\n' "$installer_version" >"$source_dir/bin/xprobe"
   chmod 0755 "$source_dir/bin/xprobe" "$source_dir/install.sh"
   printf 'cuda12\n' >"$source_dir/lib/xprobe/cuda12/libxprobe-cupti.so"
   printf 'cuda13\n' >"$source_dir/lib/xprobe/cuda13/libxprobe-cupti.so"
