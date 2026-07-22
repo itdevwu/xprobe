@@ -17,7 +17,7 @@ pub use capability::{
     Capabilities, CapabilityReport, CheckResult, CheckStatus, Environment, SystemChecks, Warning,
 };
 pub use capture::HostCaptureResult;
-pub use discover::{DiscoveredEvent, DiscoveryOrigin, DiscoveryResult};
+pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{
     ArgumentValue, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, HostEvent,

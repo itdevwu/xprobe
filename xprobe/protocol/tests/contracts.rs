@@ -94,19 +94,16 @@ fn discovery_contract_round_trips() {
     assert_round_trip::<DiscoveryResult>(&json!({
         "schema_version": "1.0",
         "ok": true,
-        "target": {"pid": 1234, "process_start_time": 42},
-        "query": "request",
+        "root": {"pid": 1234, "process_start_time": 42},
         "limit": 10,
-        "total_matches": 1,
+        "total_candidates": 1,
         "truncated": false,
-        "events": [{
-            "selector": "uprobe:/srv/app:request:entry",
-            "source": "host",
-            "event_type": "host_function_entry",
-            "origin": "elf_symbol",
-            "binary_path": "/srv/app",
-            "symbol": "request",
-            "requires_observation": false
+        "candidates": [{
+            "target": {"pid": 1240, "process_start_time": 44},
+            "parent_pid": 1234,
+            "executable": "/srv/worker",
+            "command_line": ["/srv/worker", "--rank", "0"],
+            "gpu_uuids": ["GPU-test"]
         }],
         "warnings": []
     }));

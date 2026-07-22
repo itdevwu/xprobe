@@ -5,9 +5,13 @@ xprobe exposes four public commands: `doctor`, `discover`, `validate`, and
 responses carry `schema_version: "1.0"`; diagnostics and the injection warning
 go to stderr.
 
-## Selectors
+## Discovery and selectors
 
-Choose selectors returned by `discover`. Host function selectors use:
+`discover --pid ROOT_PID` lists only NVML-confirmed CUDA context holders in the
+root's process tree. Choose a worker from its PID, start time, command line, and
+GPU UUID evidence before validation. The CLI does not choose one automatically.
+
+Host function selectors use:
 
 ```text
 uprobe:<binary>:<symbol>:entry
@@ -18,8 +22,8 @@ uprobe:<binary>:+0x<file-offset>:return
 
 CUDA selectors cover Runtime and Driver API entry/exit plus kernel, memcpy, and
 memset activity start/end. Kernel activity accepts `name~REGEX`; memcpy accepts
-`kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`. Do not invent selectors that were not
-returned by `discover`.
+`kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`. `validate` must accept the complete selector
+and policy before measurement.
 
 ## Correlation
 

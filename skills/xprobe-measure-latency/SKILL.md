@@ -14,11 +14,11 @@ before using temporal correlation or normalized clocks.
 
 1. Run `xprobe doctor --json --non-interactive --no-color`. Check individual
    capabilities; `ok: true` only means diagnosis completed.
-2. Run `xprobe discover --pid PID --query TEXT --limit 200 --json
-   --non-interactive --no-color`. Select the narrowest returned host or CUDA
-   selectors. Activity templates marked `requires_observation` are valid event
-   classes, not proof that the target will emit them.
-3. Run `xprobe validate --pid PID --from SELECTOR --to SELECTOR --match POLICY
+2. Run `xprobe discover --pid ROOT_PID --limit 200 --json --non-interactive
+   --no-color`. It returns only NVML-confirmed CUDA context holders under that
+   process-tree root. Choose a candidate from workload context; do not make the
+   CLI guess among workers.
+3. Run `xprobe validate --pid WORKER_PID --from SELECTOR --to SELECTOR --match POLICY
    --json --non-interactive --no-color`. Stop when `valid` is false. If
    `agent_activation` is `injection_required`, disclose that `measure` will
    ptrace the target and leave the CUPTI shared object mapped.
@@ -32,7 +32,7 @@ before using temporal correlation or normalized clocks.
 
 For completed captures, replace `--pid` with one or more `--input` arguments.
 Use `examples/request-to-first-kernel.json` as a `MeasurementSpec` shape after
-replacing the target identity and selectors with values from `discover`.
+replacing the target identity and selectors with values for the selected worker.
 
 ## Guardrails
 

@@ -5,6 +5,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 
 COMMON_FLAGS = ["--json", "--non-interactive", "--no-color"]
@@ -138,15 +139,21 @@ def main() -> None:
 
     doctor = run_json(binary, ["doctor"])
     assert "capabilities" in doctor and "checks" in doctor
-    discovered = run_json(
-        binary,
-        ["discover", "--pid", str(os.getpid()), "--query", "cuda:kernel_start", "--limit", "10"],
-    )
-    assert discovered["target"]["pid"] == os.getpid()
-    assert any(
-        event["selector"] == "cuda:kernel_start:name~.*"
-        for event in discovered["events"]
-    )
+    with tempfile.TemporaryDirectory(prefix="xprobe-contract-") as directory:
+        nvidia_smi = pathlib.Path(directory) / "nvidia-smi"
+        nvidia_smi.write_text(f"#!/bin/sh\nprintf '%s\\n' '{os.getpid()}, GPU-test'\n")
+        nvidia_smi.chmod(0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{directory}:{old_path}"
+        try:
+            discovered = run_json(
+                binary,
+                ["discover", "--pid", str(os.getpid()), "--limit", "10"],
+            )
+        finally:
+            os.environ["PATH"] = old_path
+    assert discovered["root"]["pid"] == os.getpid()
+    assert discovered["candidates"][0]["target"]["pid"] == os.getpid()
     validated = run_json(
         binary,
         [

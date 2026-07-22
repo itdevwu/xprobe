@@ -38,17 +38,24 @@ and its resolved library path.
 ## `discover`
 
 ```bash
-xprobe discover --pid 4242 [--query launch] [--limit 200] \
+xprobe discover --pid 4242 [--limit 200] \
   --json --non-interactive --no-color
 ```
 
-Reads target procfs and mapped ELF files without attaching. Results conform to
-`schemas/discover.schema.json` and contain selectors, source, event type,
-origin, binary/symbol evidence, and `requires_observation`. `limit` must be
-positive. `total_matches` and `truncated` describe bounded output. Inaccessible
-mapped files produce explicit warnings.
+Treats the PID as a process-tree root and queries NVML for active CUDA compute
+processes without attaching. It returns only root/descendant context holders,
+including PID plus procfs start time, parent PID, executable, command line, and
+GPU UUIDs. `limit` must be positive. `total_candidates` and `truncated`
+describe bounded output. The caller chooses one candidate and passes its PID to
+`validate` and `measure`; xprobe does not guess among workers.
 
-Host selector forms are:
+An unavailable or failed NVML query is an explicit command error, not an empty
+candidate list.
+
+## Selectors
+
+Selectors are supplied by the caller and checked by `validate` before any
+attachment. Host selector forms are:
 
 ```text
 uprobe:<binary>:<symbol>:entry

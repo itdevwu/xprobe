@@ -1,14 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt, fs, io,
-    path::{Path, PathBuf},
+    fmt, io,
+    process::Command,
 };
 
-use object::{Object, ObjectSymbol, SymbolKind};
 use xprobe_protocol::{
-    DiscoveredEvent, DiscoveryOrigin, DiscoveryResult, EndpointSource, ErrorCode, EventType,
-    ProcessReport, SchemaVersion, Warning,
+    CudaProcessCandidate, DiscoveryResult, ErrorCode, ProcessReport, SchemaVersion,
 };
 
 use crate::inspect::{self, InspectError};
@@ -17,8 +15,9 @@ use crate::inspect::{self, InspectError};
 pub enum DiscoverError {
     Inspect(InspectError),
     InvalidLimit,
-    Io { path: PathBuf, source: io::Error },
-    InvalidElf { path: PathBuf, reason: String },
+    NvmlCommand(io::Error),
+    NvmlFailed { status: Option<i32>, stderr: String },
+    InvalidNvmlOutput(String),
 }
 
 impl DiscoverError {
@@ -27,7 +26,8 @@ impl DiscoverError {
         match self {
             Self::Inspect(error) => error.code(),
             Self::InvalidLimit => ErrorCode::SessionLimitExceeded,
-            Self::Io { .. } | Self::InvalidElf { .. } => ErrorCode::Internal,
+            Self::NvmlCommand(_) | Self::NvmlFailed { .. } => ErrorCode::CuptiNotAvailable,
+            Self::InvalidNvmlOutput(_) => ErrorCode::Internal,
         }
     }
 
@@ -35,8 +35,8 @@ impl DiscoverError {
     pub const fn recoverable(&self) -> bool {
         match self {
             Self::Inspect(error) => error.recoverable(),
-            Self::InvalidLimit => true,
-            Self::Io { .. } | Self::InvalidElf { .. } => false,
+            Self::InvalidLimit | Self::NvmlCommand(_) | Self::NvmlFailed { .. } => true,
+            Self::InvalidNvmlOutput(_) => false,
         }
     }
 }
@@ -45,15 +45,16 @@ impl fmt::Display for DiscoverError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Inspect(error) => error.fmt(formatter),
-            Self::InvalidLimit => write!(formatter, "discover limit must be greater than zero"),
-            Self::Io { path, source } => {
-                write!(formatter, "failed to read {}: {source}", path.display())
-            }
-            Self::InvalidElf { path, reason } => {
+            Self::InvalidLimit => formatter.write_str("discover limit must be greater than zero"),
+            Self::NvmlCommand(error) => write!(formatter, "failed to execute nvidia-smi: {error}"),
+            Self::NvmlFailed { status, stderr } => write!(
+                formatter,
+                "nvidia-smi compute-process query failed with status {status:?}: {stderr}"
+            ),
+            Self::InvalidNvmlOutput(line) => {
                 write!(
                     formatter,
-                    "failed to parse ELF {}: {reason}",
-                    path.display()
+                    "nvidia-smi returned an invalid compute-process row: {line:?}"
                 )
             }
         }
@@ -64,8 +65,8 @@ impl Error for DiscoverError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Inspect(error) => Some(error),
-            Self::Io { source, .. } => Some(source),
-            Self::InvalidLimit | Self::InvalidElf { .. } => None,
+            Self::NvmlCommand(error) => Some(error),
+            Self::InvalidLimit | Self::NvmlFailed { .. } | Self::InvalidNvmlOutput(_) => None,
         }
     }
 }
@@ -76,235 +77,117 @@ impl From<InspectError> for DiscoverError {
     }
 }
 
-/// Discover selectors supported by xprobe for one target process.
+/// List CUDA compute-context holders at or below one process-tree root.
 ///
 /// # Errors
 ///
-/// Returns [`DiscoverError`] when process identity changes, a mapped ELF cannot
-/// be read, or the requested result limit is zero.
-pub fn run(
-    report: &ProcessReport,
-    query: Option<&str>,
-    limit: usize,
-) -> Result<DiscoveryResult, DiscoverError> {
+/// Returns [`DiscoverError`] when NVML cannot enumerate compute processes,
+/// procfs identity changes, or the requested result limit is zero.
+pub fn run(report: &ProcessReport, limit: usize) -> Result<DiscoveryResult, DiscoverError> {
     if limit == 0 {
         return Err(DiscoverError::InvalidLimit);
     }
     inspect::verify_target(&report.target)?;
-
-    let mut paths = BTreeSet::from([PathBuf::from(&report.executable)]);
-    paths.extend(report.loaded_libraries.iter().map(PathBuf::from));
-    let mut events = BTreeMap::new();
-    let mut warnings = Vec::new();
-    for path in paths {
-        if !path.exists() {
-            warnings.push(warning(
-                "MAPPED_FILE_UNAVAILABLE",
-                format!("mapped file {} is not visible from xprobe", path.display()),
-            ));
+    let output = Command::new("nvidia-smi")
+        .args([
+            "--query-compute-apps=pid,gpu_uuid",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .map_err(DiscoverError::NvmlCommand)?;
+    if !output.status.success() {
+        return Err(DiscoverError::NvmlFailed {
+            status: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let rows = String::from_utf8(output.stdout)
+        .map_err(|error| DiscoverError::InvalidNvmlOutput(error.to_string()))?;
+    let processes = parse_compute_processes(&rows)?;
+    let mut candidates = Vec::new();
+    for (pid, gpu_uuids) in processes {
+        if !is_descendant(pid, report.target.pid)? {
             continue;
         }
-        discover_elf(&path, &mut events)?;
+        let candidate_report = inspect::run(pid)?;
+        candidates.push(CudaProcessCandidate {
+            target: candidate_report.target,
+            parent_pid: inspect::read_parent_pid(pid)?,
+            executable: candidate_report.executable,
+            command_line: candidate_report.command_line,
+            gpu_uuids: gpu_uuids.into_iter().collect(),
+        });
     }
-    add_activity_templates(&mut events);
-
-    let query = query.filter(|value| !value.is_empty());
-    let mut matches = events
-        .into_values()
-        .filter(|event| query.is_none_or(|query| event_matches(event, query)))
-        .collect::<Vec<_>>();
-    matches.sort_by(|left, right| left.selector.cmp(&right.selector));
-    let total_matches = matches.len();
-    matches.truncate(limit);
-
+    candidates.sort_by_key(|candidate| candidate.target.pid);
+    let total_candidates = candidates.len();
+    candidates.truncate(limit);
     inspect::verify_target(&report.target)?;
     Ok(DiscoveryResult {
         schema_version: SchemaVersion::current(),
         ok: true,
-        target: report.target.clone(),
-        query: query.map(str::to_owned),
+        root: report.target.clone(),
         limit: limit as u64,
-        total_matches: total_matches as u64,
-        truncated: total_matches > matches.len(),
-        events: matches,
-        warnings,
+        total_candidates: total_candidates as u64,
+        truncated: total_candidates > candidates.len(),
+        candidates,
+        warnings: Vec::new(),
     })
 }
 
-fn discover_elf(
-    path: &Path,
-    events: &mut BTreeMap<String, DiscoveredEvent>,
-) -> Result<(), DiscoverError> {
-    let bytes = fs::read(path).map_err(|source| DiscoverError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-    let file =
-        object::File::parse(bytes.as_slice()).map_err(|error| DiscoverError::InvalidElf {
-            path: path.to_owned(),
-            reason: error.to_string(),
-        })?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    let cuda_domain = if file_name.starts_with("libcudart.so") {
-        Some("runtime_api")
-    } else if file_name.starts_with("libcuda.so") {
-        Some("driver_api")
-    } else {
-        None
-    };
-
-    let mut symbols = BTreeSet::new();
-    for symbol in file.symbols().chain(file.dynamic_symbols()) {
-        if symbol.is_definition() && symbol.kind() == SymbolKind::Text {
-            if let Ok(name) = symbol.name() {
-                if !name.is_empty() {
-                    symbols.insert(name.to_owned());
-                }
-            }
+fn parse_compute_processes(output: &str) -> Result<BTreeMap<u32, BTreeSet<String>>, DiscoverError> {
+    let mut processes = BTreeMap::<u32, BTreeSet<String>>::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let (pid, uuid) = line
+            .split_once(',')
+            .ok_or_else(|| DiscoverError::InvalidNvmlOutput(line.to_owned()))?;
+        let pid = pid
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| DiscoverError::InvalidNvmlOutput(line.to_owned()))?;
+        let uuid = uuid.trim();
+        if uuid.is_empty() {
+            return Err(DiscoverError::InvalidNvmlOutput(line.to_owned()));
         }
+        processes.entry(pid).or_default().insert(uuid.to_owned());
     }
-    for symbol in symbols {
-        add_host_events(path, &symbol, events);
-        if let Some(domain) = cuda_domain {
-            if is_cuda_api(domain, &symbol) {
-                add_cuda_api_events(domain, &symbol, path, events);
-            }
+    Ok(processes)
+}
+
+fn is_descendant(mut pid: u32, root: u32) -> Result<bool, DiscoverError> {
+    let mut visited = BTreeSet::new();
+    loop {
+        if pid == root {
+            return Ok(true);
         }
-    }
-    Ok(())
-}
-
-fn add_host_events(path: &Path, symbol: &str, events: &mut BTreeMap<String, DiscoveredEvent>) {
-    for (boundary, event_type) in [
-        ("entry", EventType::HostFunctionEntry),
-        ("return", EventType::HostFunctionExit),
-    ] {
-        let selector = format!("uprobe:{}:{symbol}:{boundary}", path.display());
-        events.entry(selector.clone()).or_insert(DiscoveredEvent {
-            selector,
-            source: EndpointSource::Host,
-            event_type,
-            origin: DiscoveryOrigin::ElfSymbol,
-            binary_path: Some(path.to_string_lossy().into_owned()),
-            symbol: Some(symbol.to_owned()),
-            requires_observation: false,
-        });
-    }
-}
-
-fn is_cuda_api(domain: &str, symbol: &str) -> bool {
-    match domain {
-        "runtime_api" => symbol.starts_with("cuda"),
-        "driver_api" => {
-            symbol.starts_with("cu") && symbol.as_bytes().get(2).is_some_and(u8::is_ascii_uppercase)
+        if pid == 0 || !visited.insert(pid) {
+            return Ok(false);
         }
-        _ => false,
-    }
-}
-
-fn add_cuda_api_events(
-    domain: &str,
-    symbol: &str,
-    path: &Path,
-    events: &mut BTreeMap<String, DiscoveredEvent>,
-) {
-    for (boundary, event_type) in [
-        ("entry", EventType::CudaApiEntry),
-        ("exit", EventType::CudaApiExit),
-    ] {
-        let selector = format!("cuda:{domain}:{symbol}:{boundary}");
-        events.entry(selector.clone()).or_insert(DiscoveredEvent {
-            selector,
-            source: EndpointSource::Cuda,
-            event_type,
-            origin: DiscoveryOrigin::CudaApiSymbol,
-            binary_path: Some(path.to_string_lossy().into_owned()),
-            symbol: Some(symbol.to_owned()),
-            requires_observation: false,
-        });
-    }
-}
-
-fn add_activity_templates(events: &mut BTreeMap<String, DiscoveredEvent>) {
-    for (selector, event_type) in [
-        ("cuda:kernel_start:name~.*", EventType::GpuKernelStart),
-        ("cuda:kernel_end:name~.*", EventType::GpuKernelEnd),
-        ("cuda:memcpy_start", EventType::GpuMemcpyStart),
-        ("cuda:memcpy_end", EventType::GpuMemcpyEnd),
-        ("cuda:memset_start", EventType::GpuMemsetStart),
-        ("cuda:memset_end", EventType::GpuMemsetEnd),
-    ] {
-        events.insert(
-            selector.to_owned(),
-            DiscoveredEvent {
-                selector: selector.to_owned(),
-                source: EndpointSource::Cuda,
-                event_type,
-                origin: DiscoveryOrigin::CuptiActivity,
-                binary_path: None,
-                symbol: None,
-                requires_observation: true,
-            },
-        );
-    }
-}
-
-fn event_matches(event: &DiscoveredEvent, query: &str) -> bool {
-    event.selector.contains(query)
-        || event
-            .symbol
-            .as_deref()
-            .is_some_and(|symbol| symbol.contains(query))
-        || event
-            .binary_path
-            .as_deref()
-            .is_some_and(|path| path.contains(query))
-}
-
-fn warning(code: &str, message: String) -> Warning {
-    Warning {
-        code: code.to_owned(),
-        message,
-        details: BTreeMap::new(),
+        pid = inspect::read_parent_pid(pid)?;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use xprobe_protocol::{DiscoveredEvent, DiscoveryOrigin, EndpointSource, EventType};
-
-    use super::{add_activity_templates, event_matches, is_cuda_api};
+    use super::{DiscoverError, parse_compute_processes};
 
     #[test]
-    fn classifies_cuda_api_symbols() {
-        assert!(is_cuda_api("runtime_api", "cudaLaunchKernel"));
-        assert!(is_cuda_api("driver_api", "cuLaunchKernel"));
-        assert!(!is_cuda_api("driver_api", "cudaLaunchKernel"));
-        assert!(is_cuda_api("runtime_api", "cudaGetErrorString"));
+    fn groups_compute_processes_across_devices() {
+        let processes =
+            parse_compute_processes("42, GPU-b\n7, GPU-a\n42, GPU-a\n42, GPU-a\n").unwrap();
+        assert_eq!(
+            processes[&42]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["GPU-a", "GPU-b"]
+        );
     }
 
     #[test]
-    fn activity_templates_are_searchable() {
-        let mut events = BTreeMap::new();
-        add_activity_templates(&mut events);
-        let kernel = events.get("cuda:kernel_start:name~.*").unwrap();
-        assert!(kernel.requires_observation);
-        assert!(event_matches(kernel, "kernel_start"));
-
-        let host = DiscoveredEvent {
-            selector: "uprobe:/srv/app:request:entry".to_owned(),
-            source: EndpointSource::Host,
-            event_type: EventType::HostFunctionEntry,
-            origin: DiscoveryOrigin::ElfSymbol,
-            binary_path: Some("/srv/app".to_owned()),
-            symbol: Some("request".to_owned()),
-            requires_observation: false,
-        };
-        assert!(event_matches(&host, "request"));
+    fn rejects_malformed_nvml_rows() {
+        assert!(matches!(
+            parse_compute_processes("not-a-pid, GPU-a"),
+            Err(DiscoverError::InvalidNvmlOutput(_))
+        ));
     }
 }
