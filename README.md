@@ -1,6 +1,6 @@
 <div align="center">
   <h1>xprobe</h1>
-  <p><strong>AI-native heterogeneous profiling tool for CPU and GPU</strong></p>
+  <p><strong><i>AI-native heterogeneous profiling tool for CPU and GPU.</i></strong></p>
   <p>
     <a href="https://github.com/itdevwu/xprobe/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/itdevwu/xprobe/ci.yml?branch=master&amp;style=for-the-badge&amp;label=CI"></a>
     <a href="https://github.com/itdevwu/xprobe/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/itdevwu/xprobe?style=for-the-badge&amp;sort=semver"></a>
