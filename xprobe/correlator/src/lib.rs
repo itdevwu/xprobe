@@ -32,6 +32,9 @@ pub enum MeasureError {
         actual: usize,
         maximum: usize,
     },
+    EventsDropped {
+        count: u64,
+    },
     ClockDomainsDiffer {
         start: ClockDomain,
         end: ClockDomain,
@@ -47,6 +50,7 @@ impl MeasureError {
             Self::InvalidPolicy(_) => ErrorCode::InvalidCorrelationPolicy,
             Self::InvalidLimit(_) => ErrorCode::SessionLimitExceeded,
             Self::EventLimitExceeded { .. } => ErrorCode::EventRateTooHigh,
+            Self::EventsDropped { .. } => ErrorCode::EventsDropped,
             Self::ClockDomainsDiffer { .. } => ErrorCode::ClockAlignmentFailed,
             Self::NoMatchedSamples => ErrorCode::NoMatchedSamples,
         }
@@ -69,6 +73,10 @@ impl fmt::Display for MeasureError {
             Self::EventLimitExceeded { actual, maximum } => write!(
                 formatter,
                 "capture contains {actual} events, exceeding the maximum of {maximum}"
+            ),
+            Self::EventsDropped { count } => write!(
+                formatter,
+                "capture dropped {count} events before correlation"
             ),
             Self::ClockDomainsDiffer { start, end } => write!(
                 formatter,
@@ -406,6 +414,11 @@ pub fn measure(
             maximum: options.max_events,
         });
     }
+    if options.dropped_events != 0 {
+        return Err(MeasureError::EventsDropped {
+            count: options.dropped_events,
+        });
+    }
     let start_selector = Selector::parse(&options.start_selector)?;
     let end_selector = Selector::parse(&options.end_selector)?;
     validate_policy(&start_selector, &end_selector, options.match_policy)?;
@@ -573,12 +586,6 @@ fn measurement_warnings(
             "temporal matching does not prove request-level causality",
         ));
     }
-    if options.dropped_events != 0 {
-        warnings.push(warning(
-            "EVENTS_DROPPED",
-            "the source capture dropped events before correlation",
-        ));
-    }
     if starts.iter().chain(ends).any(|event| {
         event.clock_domain == ClockDomain::CuptiNormalizedToHostMonotonic
             && event.timestamp_error_ns.is_none()
@@ -656,19 +663,19 @@ fn correlate_exact<'a>(
     ends: &[&'a Event],
     limit: Option<usize>,
 ) -> Outcome<'a> {
-    let mut start_groups: BTreeMap<u32, Vec<&Event>> = BTreeMap::new();
-    let mut end_groups: BTreeMap<u32, Vec<&Event>> = BTreeMap::new();
+    let mut start_groups: BTreeMap<CorrelationKey, Vec<&Event>> = BTreeMap::new();
+    let mut end_groups: BTreeMap<CorrelationKey, Vec<&Event>> = BTreeMap::new();
     let mut unmatched_start = 0_u64;
     let mut unmatched_end = 0_u64;
     for event in starts {
-        if let Some(key) = correlation_id(event) {
+        if let Some(key) = correlation_key(event) {
             start_groups.entry(key).or_default().push(event);
         } else {
             unmatched_start += 1;
         }
     }
     for event in ends {
-        if let Some(key) = correlation_id(event) {
+        if let Some(key) = correlation_key(event) {
             end_groups.entry(key).or_default().push(event);
         } else {
             unmatched_end += 1;
@@ -682,21 +689,21 @@ fn correlate_exact<'a>(
             unmatched_start += group.len() as u64;
             continue;
         };
-        if group.len() != 1 || end_group.len() != 1 {
+        if group.len() != end_group.len() {
             ambiguous += group.len().max(end_group.len()) as u64;
             continue;
         }
-        let start = group[0];
-        let end = end_group[0];
-        if let Some(latency) = end.timestamp_ns.checked_sub(start.timestamp_ns) {
-            pairs.push(Pair {
-                start,
-                end,
-                latency_ns: latency,
-            });
-        } else {
-            unmatched_start += 1;
-            unmatched_end += 1;
+        for (start, end) in group.iter().zip(end_group) {
+            if let Some(latency) = end.timestamp_ns.checked_sub(start.timestamp_ns) {
+                pairs.push(Pair {
+                    start,
+                    end,
+                    latency_ns: latency,
+                });
+            } else {
+                unmatched_start += 1;
+                unmatched_end += 1;
+            }
         }
     }
     unmatched_end += end_groups.values().map(Vec::len).sum::<usize>() as u64;
@@ -933,8 +940,11 @@ fn group_by_stream<'a>(
     unmatched
 }
 
-fn correlation_id(event: &Event) -> Option<u32> {
-    event.cuda.as_ref()?.correlation_id
+type CorrelationKey = (u32, u32, u32);
+
+fn correlation_key(event: &Event) -> Option<CorrelationKey> {
+    let cuda = event.cuda.as_ref()?;
+    Some((event.pid, cuda.context_id?, cuda.correlation_id?))
 }
 
 fn statistics(values: &[u64]) -> LatencyStatistics {
@@ -1098,6 +1108,38 @@ mod tests {
         assert_eq!(result.measurement.latency_ns.min, 50);
         assert_eq!(result.measurement.latency_ns.max, 80);
         assert_eq!(result.correlation.method, "exact_cupti_correlation_id");
+    }
+
+    #[test]
+    fn exact_matching_pairs_reused_ids_in_timestamp_order() {
+        let events = vec![
+            event(EventType::GpuKernelStart, 100, 7),
+            event(EventType::GpuKernelEnd, 150, 7),
+            event(EventType::GpuKernelStart, 200, 7),
+            event(EventType::GpuKernelEnd, 280, 7),
+        ];
+
+        let result = measure(&events, &options(MatchPolicy::Exact)).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 50);
+        assert_eq!(result.measurement.latency_ns.max, 80);
+    }
+
+    #[test]
+    fn exact_matching_never_pairs_across_cuda_contexts() {
+        let mut events = vec![
+            event(EventType::GpuKernelStart, 100, 7),
+            event(EventType::GpuKernelEnd, 150, 7),
+            event(EventType::GpuKernelStart, 200, 7),
+            event(EventType::GpuKernelEnd, 280, 7),
+        ];
+        events[2].cuda.as_mut().unwrap().context_id = Some(2);
+        events[3].cuda.as_mut().unwrap().context_id = Some(2);
+
+        let result = measure(&events, &options(MatchPolicy::Exact)).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 50);
+        assert_eq!(result.measurement.latency_ns.max, 80);
     }
 
     #[test]

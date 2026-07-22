@@ -282,33 +282,11 @@ fn measures_host_to_kernel_latency_from_merged_captures() {
     fs::remove_file(host_path).expect("host capture fixture must be removed");
     fs::remove_file(cupti_path).expect("CUPTI capture fixture must be removed");
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let result: MeasurementResult =
-        serde_json::from_slice(&output.stdout).expect("stdout must contain measurement JSON");
-    assert_eq!(result.measurement.latency_ns.min, 525);
-    assert_eq!(result.measurement.samples.dropped, 2);
-    assert_eq!(result.collection.host_events, 1);
-    assert_eq!(result.collection.cuda_events, 1);
-    assert_eq!(
-        result.correlation.confidence,
-        CorrelationConfidence::Heuristic
-    );
-    assert_eq!(
-        result
-            .warnings
-            .iter()
-            .map(|warning| warning.code.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "HEURISTIC_CORRELATION",
-            "EVENTS_DROPPED",
-            "CLOCK_ERROR_UNAVAILABLE"
-        ]
-    );
+    assert!(!output.status.success());
+    let result: ErrorResponse =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain structured error JSON");
+    assert_eq!(result.error.code, ErrorCode::EventsDropped);
+    assert!(result.error.message.contains("dropped 2 events"));
 }
 
 #[test]

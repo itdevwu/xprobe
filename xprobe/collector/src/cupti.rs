@@ -61,6 +61,9 @@ pub enum CuptiDecodeError {
     InvalidName {
         index: usize,
     },
+    InvalidTimestamp {
+        index: usize,
+    },
 }
 
 impl fmt::Display for CuptiDecodeError {
@@ -108,6 +111,9 @@ impl fmt::Display for CuptiDecodeError {
             }
             Self::InvalidName { index } => {
                 write!(formatter, "CUPTI record {index} name is not valid UTF-8")
+            }
+            Self::InvalidTimestamp { index } => {
+                write!(formatter, "CUPTI record {index} has a zero timestamp")
             }
         }
     }
@@ -337,6 +343,9 @@ fn decode_record(
         _ => return Err(CuptiDecodeError::UnknownRecordKind { index, kind }),
     };
     let timestamp_raw = read_u64(record, 0);
+    if timestamp_raw == 0 {
+        return Err(CuptiDecodeError::InvalidTimestamp { index });
+    }
     let name_bytes = &record[72..200];
     let name_length = name_bytes
         .iter()
@@ -587,6 +596,13 @@ mod tests {
             error,
             CuptiDecodeError::UnknownRecordKind { index: 0, kind: 99 }
         );
+    }
+
+    #[test]
+    fn rejects_zero_timestamps() {
+        let error = decode_capture(&capture(&[record(3, 0, 1, "bad")]), "xp_test")
+            .expect_err("zero timestamps must fail");
+        assert_eq!(error, CuptiDecodeError::InvalidTimestamp { index: 0 });
     }
 
     #[test]
