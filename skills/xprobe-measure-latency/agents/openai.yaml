@@ -1,4 +1,4 @@
 interface:
   display_name: "Xprobe Latency Measurement"
-  short_description: "Measure host-to-GPU latency with evidence"
-  default_prompt: "Use $xprobe-measure-latency to measure a bounded host-to-GPU latency path."
+  short_description: "Measure bounded CPU and GPU event latency"
+  default_prompt: "Use $xprobe-measure-latency to measure bounded latency between two observable events."

@@ -23,6 +23,7 @@ jobs:
       - run: just lint
       - run: just test
       - run: just test-install
+      - run: just test-skill-install
 
   cuda-agent:
     runs-on: ubuntu-24.04
