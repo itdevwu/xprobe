@@ -188,6 +188,22 @@ fn read_start_time(pid: u32, initial: bool) -> Result<u64, InspectError> {
     parse_start_time(&stat, &path)
 }
 
+pub(crate) fn read_parent_pid(pid: u32) -> Result<u32, InspectError> {
+    let path = proc_path(pid, "stat");
+    let stat = fs::read_to_string(&path)
+        .map_err(|source| process_io_error(pid, path.clone(), source, false))?;
+    let command_end = stat
+        .rfind(')')
+        .ok_or_else(|| invalid_proc(&path, "missing command terminator"))?;
+    let parent = stat
+        .get(command_end + 1..)
+        .and_then(|tail| tail.split_whitespace().nth(1))
+        .ok_or_else(|| invalid_proc(&path, "missing parent PID"))?;
+    parent
+        .parse()
+        .map_err(|_| invalid_proc(path, "invalid parent PID"))
+}
+
 fn parse_start_time(stat: &str, path: &Path) -> Result<u64, InspectError> {
     let command_end = stat
         .rfind(')')

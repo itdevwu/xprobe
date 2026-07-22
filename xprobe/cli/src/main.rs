@@ -151,17 +151,13 @@ struct DoctorArgs {
     non_interactive: bool,
 }
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Copy, Args)]
 struct DiscoverArgs {
     /// Target process ID.
     #[arg(long)]
     pid: u32,
 
-    /// Keep selectors containing this text in their path, symbol, or selector.
-    #[arg(long)]
-    query: Option<String>,
-
-    /// Maximum number of selectors to return.
+    /// Maximum number of CUDA worker candidates to return.
     #[arg(long, default_value_t = 200)]
     limit: usize,
 
@@ -2017,7 +2013,6 @@ fn run_doctor(args: DoctorArgs) -> ExitCode {
 fn run_discover(args: DiscoverArgs) -> ExitCode {
     let DiscoverArgs {
         pid,
-        query,
         limit,
         json,
         no_color: _,
@@ -2029,7 +2024,7 @@ fn run_discover(args: DiscoverArgs) -> ExitCode {
             return emit_error(error.code(), error.to_string(), error.recoverable(), json);
         }
     };
-    match discover::run(&report, query.as_deref(), limit) {
+    match discover::run(&report, limit) {
         Ok(result) => {
             if json {
                 println!(
@@ -2354,15 +2349,21 @@ fn print_process_report(report: &ProcessReport) {
 }
 
 fn print_discovery_result(result: &DiscoveryResult) {
-    println!("Target: PID {}", result.target.pid);
+    println!("Root: PID {}", result.root.pid);
     println!(
-        "Selectors: {} of {}{}",
-        result.events.len(),
-        result.total_matches,
+        "CUDA workers: {} of {}{}",
+        result.candidates.len(),
+        result.total_candidates,
         if result.truncated { " (truncated)" } else { "" }
     );
-    for event in &result.events {
-        println!("  {}", event.selector);
+    for candidate in &result.candidates {
+        println!(
+            "  PID {} parent={} GPUs={} {}",
+            candidate.target.pid,
+            candidate.parent_pid,
+            candidate.gpu_uuids.join(","),
+            candidate.executable
+        );
     }
     for warning in &result.warnings {
         eprintln!("{}: {}", warning.code, warning.message);

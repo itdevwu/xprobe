@@ -48,7 +48,7 @@ read the individual checks before selecting events.
 ```bash
 xprobe doctor --json --non-interactive --no-color
 
-xprobe discover --pid 4242 --query launch --limit 50 \
+xprobe discover --pid 4242 --limit 50 \
   --json --non-interactive --no-color
 
 xprobe validate --pid 4242 \
@@ -66,7 +66,7 @@ xprobe measure --pid 4242 \
 
 Kernel launch latency is only one event pair. The same workflow measures host
 function spans, CUDA API calls, GPU operation durations, transfers, and paths
-across CPU and GPU events exposed by `discover`.
+across CPU and GPU events after selecting the correct CUDA worker.
 
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
@@ -78,7 +78,7 @@ ambiguous counts, drops, clock quality, correlation confidence, and warnings.
 | Command | Purpose |
 | --- | --- |
 | `doctor` | Report local eBPF, ptrace, NVIDIA, CUDA, and CUPTI capabilities |
-| `discover` | List host symbols, CUDA API selectors, and observable GPU activities for a PID |
+| `discover` | List NVML-confirmed CUDA context holders under a process-tree root |
 | `validate` | Resolve two selectors and report collection, mutation, clock, and policy requirements without attaching |
 | `measure` | Collect or import bounded events, correlate pairs, emit statistics and full event evidence |
 
