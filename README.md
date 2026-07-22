@@ -1,15 +1,19 @@
 <div align="center">
-
-# xprobe
-
-_AI harness native profiler._
-
+  <h1>xprobe</h1>
+  <p><strong>Agent-ready Linux event latency profiler for CPU and NVIDIA GPU workloads.</strong></p>
+  <p>
+    <a href="https://github.com/itdevwu/xprobe/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/itdevwu/xprobe/ci.yml?branch=master&amp;style=for-the-badge&amp;label=CI"></a>
+    <a href="https://github.com/itdevwu/xprobe/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/itdevwu/xprobe?style=for-the-badge&amp;sort=semver"></a>
+    <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/github/license/itdevwu/xprobe?style=for-the-badge&amp;label=License"></a>
+    <a href="#requirements"><img alt="Linux x86-64" src="https://img.shields.io/badge/Linux-x86--64-FCC624?style=for-the-badge&amp;logo=linux&amp;logoColor=black"></a>
+    <a href="#support"><img alt="CUDA 12.x and 13.x" src="https://img.shields.io/badge/CUDA-12.x%20%7C%2013.x-76B900?style=for-the-badge&amp;logo=nvidia&amp;logoColor=white"></a>
+  </p>
 </div>
 
-`xprobe` is a bounded Linux profiler for measuring time between two observable
-events in a process, on the CPU, NVIDIA GPU, or across both. It is designed for
-coding agents and performance engineers: four commands, strict JSON contracts,
-explicit correlation quality, and no daemon or server lifecycle.
+`xprobe` is a bounded Linux performance profiler that measures latency between
+two observable events in a process, on the CPU, NVIDIA GPU, or across both. It
+combines eBPF uprobes and NVIDIA CUPTI with an agent-friendly CLI, strict JSON
+contracts, explicit correlation quality, and no daemon or server lifecycle.
 
 ## Public CLI
 
