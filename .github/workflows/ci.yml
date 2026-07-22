@@ -22,6 +22,7 @@ jobs:
       - run: just fmt-check
       - run: just lint
       - run: just test
+      - run: just test-install
 
   cuda-agent:
     runs-on: ubuntu-24.04

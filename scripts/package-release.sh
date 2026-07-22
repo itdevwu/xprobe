@@ -45,6 +45,7 @@ install -d \
   "${stage}/lib/xprobe/cuda13" \
   "${stage}/include/xprobe"
 install -m 0755 target/release/xprobe "${stage}/bin/xprobe"
+install -m 0755 install.sh "${stage}/install.sh"
 install -m 0755 "${agent_cuda12}" \
   "${stage}/lib/xprobe/cuda12/libxprobe-cupti.so"
 install -m 0755 "${agent_cuda13}" \

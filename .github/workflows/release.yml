@@ -76,6 +76,8 @@ jobs:
           path: build/cuda13/cupti
       - name: Build release archive
         run: scripts/package-release.sh
+      - name: Verify release installation
+        run: tests/install/test_install.sh dist/xprobe-*-linux-x86_64.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: xprobe-linux-x86_64
