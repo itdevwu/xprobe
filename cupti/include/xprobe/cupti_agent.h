@@ -7,10 +7,10 @@
 extern "C" {
 #endif
 
-#define XPROBE_CUPTI_AGENT_ABI_VERSION 1U
+#define XPROBE_CUPTI_AGENT_ABI_VERSION 2U
 #define XPROBE_CUPTI_OUTPUT_MAGIC "XPCUPTI"
 #define XPROBE_CUPTI_CONTROL_MAGIC "XPCTRL\0"
-#define XPROBE_CUPTI_CONTROL_VERSION 1U
+#define XPROBE_CUPTI_CONTROL_VERSION 2U
 #define XPROBE_CUPTI_NAME_LENGTH 128U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
 
@@ -24,6 +24,22 @@ enum xprobe_cupti_agent_status {
     XPROBE_CUPTI_AGENT_UNAVAILABLE = 1,
     XPROBE_CUPTI_AGENT_CUPTI_ERROR = 2,
     XPROBE_CUPTI_AGENT_OUTPUT_ERROR = 3
+};
+
+enum xprobe_cupti_capture_state {
+    XPROBE_CUPTI_CAPTURE_IDLE = 0,
+    XPROBE_CUPTI_CAPTURE_ACTIVE = 1,
+    XPROBE_CUPTI_CAPTURE_LIMIT_REACHED = 2,
+    XPROBE_CUPTI_CAPTURE_STOPPED = 3,
+    XPROBE_CUPTI_CAPTURE_FAILED = 4
+};
+
+enum xprobe_cupti_stop_reason {
+    XPROBE_CUPTI_STOP_NONE = 0,
+    XPROBE_CUPTI_STOP_REQUESTED = 1,
+    XPROBE_CUPTI_STOP_RECORD_LIMIT = 2,
+    XPROBE_CUPTI_STOP_CUPTI_ERROR = 3,
+    XPROBE_CUPTI_STOP_OUTPUT_ERROR = 4
 };
 
 enum xprobe_cupti_control_command {
@@ -54,8 +70,13 @@ struct xprobe_cupti_output_header {
     uint32_t header_size;
     uint32_t record_size;
     uint32_t feature_flags;
+    uint32_t capture_state;
+    uint32_t stop_reason;
     uint64_t record_count;
-    uint64_t dropped_records;
+    uint64_t record_capacity;
+    uint64_t observed_records;
+    uint64_t agent_dropped_records;
+    uint64_t cupti_dropped_records;
     uint64_t unknown_records;
 };
 
@@ -88,7 +109,7 @@ struct xprobe_cupti_record {
 
 unsigned int xprobe_cupti_agent_abi_version(void);
 int xprobe_cupti_agent_initialize(void);
-int xprobe_cupti_agent_start(const char *socket_path);
+int xprobe_cupti_agent_start(const char *socket_path, uint64_t record_capacity);
 int xprobe_cupti_agent_status(void);
 unsigned int xprobe_cupti_agent_last_cupti_result(void);
 int xprobe_cupti_agent_flush(void);
