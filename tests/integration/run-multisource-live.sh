@@ -14,8 +14,6 @@ ready="${build_dir}/ready"
 go="${build_dir}/go"
 stop="${build_dir}/stop"
 snapshot_socket="${build_dir}/cupti.sock"
-host_capture="$1/host.json"
-cupti_capture="$1/cupti.bin"
 live_capture="$1/live.jsonl"
 live_measurement="$1/live-measure.json"
 spec="${build_dir}/measurement-spec.json"
@@ -44,7 +42,6 @@ nvcc \
   /workspace/cupti/tests/cuda_multisource_fixture.cu \
   -o "${fixture}"
 
-XPROBE_CUPTI_OUTPUT="${cupti_capture}" \
 XPROBE_CUPTI_SOCKET="${snapshot_socket}" \
 CUDA_INJECTION64_PATH="${agent}" \
   "${fixture}" "${ready}" "${go}" "${stop}" &
@@ -90,13 +87,6 @@ printf '{"schema_version":"1.0","name":"spec_host_to_kernel","target":{"pid":%s,
   --cupti-socket "${snapshot_socket}" \
   --json --non-interactive --no-color >"${spec_measurement}"
 
-/workspace/target/debug/xprobe capture uprobe \
-  --pid "${target_pid}" \
-  --binary "${fixture}" \
-  --symbol xprobe_request_marker \
-  --samples 3 \
-  --timeout-ms 10000 \
-  --json --non-interactive --no-color >"${host_capture}"
 if [[ $(stat -c '%a' "${snapshot_socket}") != 600 ]]; then
   echo "CUPTI snapshot socket is not mode 0600" >&2
   exit 1
@@ -109,5 +99,5 @@ fi
 touch "${stop}"
 wait "${target_pid}"
 trap - EXIT
-chmod 0644 "${host_capture}" "${cupti_capture}" "${live_capture}" \
+chmod 0644 "${live_capture}" \
   "${live_measurement}" "${spec_measurement}" "${gpu_info}"

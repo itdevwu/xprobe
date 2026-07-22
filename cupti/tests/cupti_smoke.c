@@ -27,5 +27,14 @@ int main(void)
         offsetof(struct xprobe_cupti_record, name) != 72U) {
         return 6;
     }
+    if (sizeof(struct xprobe_cupti_filter) != 144U ||
+        sizeof(struct xprobe_cupti_control_request) != 312U) {
+        return 7;
+    }
+    if (offsetof(struct xprobe_cupti_control_request, record_capacity) != 16U ||
+        offsetof(struct xprobe_cupti_control_request, filters) != 24U ||
+        offsetof(struct xprobe_cupti_filter, name) != 16U) {
+        return 8;
+    }
     return 0;
 }

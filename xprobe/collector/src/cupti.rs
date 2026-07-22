@@ -23,10 +23,69 @@ const HEADER_SIZE: usize = 80;
 const HEADER_SIZE_U32: u32 = 80;
 const RECORD_SIZE: usize = 200;
 const RECORD_SIZE_U32: u32 = 200;
+const CONTROL_SIZE: usize = 312;
+const FILTER_SIZE: usize = 144;
+const FILTER_COUNT: usize = 2;
+const FILTER_NAME_SIZE: usize = 128;
 const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
 const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
 const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS | FEATURE_TRANSFER_RECORDS;
 const UNKNOWN_U32: u32 = u32::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum CuptiRecordKind {
+    CudaApiEntry = 1,
+    CudaApiExit = 2,
+    GpuKernelStart = 3,
+    GpuKernelEnd = 4,
+    GpuMemcpyStart = 5,
+    GpuMemcpyEnd = 6,
+    GpuMemsetStart = 7,
+    GpuMemsetEnd = 8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum CuptiApiDomain {
+    Any = 0,
+    Driver = 1,
+    Runtime = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum CuptiMemcpyKind {
+    Any = 0,
+    HostToDevice = 1,
+    DeviceToHost = 2,
+    DeviceToDevice = 3,
+    HostToHost = 4,
+    PeerToPeer = 5,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CuptiNameFilter {
+    Any,
+    Exact(String),
+    Prefix(String),
+    Suffix(String),
+    Contains(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CuptiEventFilter {
+    pub record_kind: CuptiRecordKind,
+    pub api_domain: CuptiApiDomain,
+    pub memcpy_kind: CuptiMemcpyKind,
+    pub name: CuptiNameFilter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CuptiArmConfig {
+    pub record_capacity: u64,
+    pub filters: Vec<CuptiEventFilter>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CuptiCapture {
@@ -87,6 +146,7 @@ pub enum CuptiDecodeError {
     },
     InvalidTimestamp {
         index: usize,
+        kind: u32,
     },
     InvalidCaptureState(u32),
     InvalidStopReason(u32),
@@ -144,8 +204,11 @@ impl fmt::Display for CuptiDecodeError {
             Self::InvalidName { index } => {
                 write!(formatter, "CUPTI record {index} name is not valid UTF-8")
             }
-            Self::InvalidTimestamp { index } => {
-                write!(formatter, "CUPTI record {index} has a zero timestamp")
+            Self::InvalidTimestamp { index, kind } => {
+                write!(
+                    formatter,
+                    "CUPTI record {index} of kind {kind} has a zero timestamp"
+                )
             }
             Self::InvalidCaptureState(state) => {
                 write!(formatter, "CUPTI capture state {state} is invalid")
@@ -173,6 +236,7 @@ impl Error for CuptiDecodeError {}
 
 #[derive(Debug)]
 pub enum CuptiSnapshotError {
+    InvalidControl(String),
     Connect { path: PathBuf, source: io::Error },
     Configure(io::Error),
     Write(io::Error),
@@ -183,6 +247,7 @@ pub enum CuptiSnapshotError {
 impl fmt::Display for CuptiSnapshotError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidControl(message) => formatter.write_str(message),
             Self::Connect { path, source } => {
                 write!(
                     formatter,
@@ -206,6 +271,7 @@ impl fmt::Display for CuptiSnapshotError {
 impl Error for CuptiSnapshotError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::InvalidControl(_) => None,
             Self::Connect { source, .. }
             | Self::Configure(source)
             | Self::Write(source)
@@ -213,6 +279,21 @@ impl Error for CuptiSnapshotError {
             Self::Decode(source) => Some(source),
         }
     }
+}
+
+/// Arm a bounded capture with filters for the two measurement endpoints.
+///
+/// # Errors
+///
+/// Returns [`CuptiSnapshotError`] when the configuration is invalid or the
+/// request cannot be sent or decoded.
+pub fn arm(
+    socket_path: &Path,
+    timeout: Duration,
+    session_id: &str,
+    config: &CuptiArmConfig,
+) -> Result<CuptiCapture, CuptiSnapshotError> {
+    request(socket_path, timeout, session_id, 1, Some(config))
 }
 
 /// Request one immutable capture snapshot from a running CUPTI agent.
@@ -229,7 +310,7 @@ pub fn snapshot(
     timeout: Duration,
     session_id: &str,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
-    request(socket_path, timeout, session_id, 1)
+    request(socket_path, timeout, session_id, 2, None)
 }
 
 /// Request a final snapshot and logically disable a running CUPTI agent.
@@ -244,7 +325,20 @@ pub fn stop(
     timeout: Duration,
     session_id: &str,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
-    request(socket_path, timeout, session_id, 2)
+    request(socket_path, timeout, session_id, 3, None)
+}
+
+/// Stop capture and close the Agent control socket.
+///
+/// # Errors
+///
+/// Returns [`CuptiSnapshotError`] when the request cannot be sent or decoded.
+pub fn close(
+    socket_path: &Path,
+    timeout: Duration,
+    session_id: &str,
+) -> Result<CuptiCapture, CuptiSnapshotError> {
+    request(socket_path, timeout, session_id, 4, None)
 }
 
 fn request(
@@ -252,7 +346,9 @@ fn request(
     timeout: Duration,
     session_id: &str,
     command: u32,
+    config: Option<&CuptiArmConfig>,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
+    let control = encode_control(command, config)?;
     let mut stream =
         UnixStream::connect(socket_path).map_err(|source| CuptiSnapshotError::Connect {
             path: socket_path.to_owned(),
@@ -264,10 +360,6 @@ fn request(
     stream
         .set_write_timeout(Some(timeout))
         .map_err(CuptiSnapshotError::Configure)?;
-    let mut control = [0_u8; 16];
-    control[..8].copy_from_slice(CONTROL_MAGIC);
-    control[8..12].copy_from_slice(&CONTROL_VERSION.to_ne_bytes());
-    control[12..].copy_from_slice(&command.to_ne_bytes());
     stream
         .write_all(&control)
         .map_err(CuptiSnapshotError::Write)?;
@@ -277,6 +369,54 @@ fn request(
     let mut bytes = Vec::new();
     read_snapshot(&mut stream, &mut bytes)?;
     decode_capture(&bytes, session_id).map_err(CuptiSnapshotError::Decode)
+}
+
+fn encode_control(
+    command: u32,
+    config: Option<&CuptiArmConfig>,
+) -> Result<[u8; CONTROL_SIZE], CuptiSnapshotError> {
+    let mut control = [0_u8; CONTROL_SIZE];
+    control[..8].copy_from_slice(CONTROL_MAGIC);
+    control[8..12].copy_from_slice(&CONTROL_VERSION.to_ne_bytes());
+    control[12..16].copy_from_slice(&command.to_ne_bytes());
+    let Some(config) = config else {
+        return Ok(control);
+    };
+    if config.record_capacity == 0 {
+        return Err(CuptiSnapshotError::InvalidControl(
+            "CUPTI record capacity must be positive".to_owned(),
+        ));
+    }
+    if config.filters.is_empty() || config.filters.len() > FILTER_COUNT {
+        return Err(CuptiSnapshotError::InvalidControl(format!(
+            "CUPTI capture requires one or two endpoint filters, found {}",
+            config.filters.len()
+        )));
+    }
+    control[16..24].copy_from_slice(&config.record_capacity.to_ne_bytes());
+    for (index, filter) in config.filters.iter().enumerate() {
+        let offset = 24 + index * FILTER_SIZE;
+        control[offset..offset + 4].copy_from_slice(&(filter.record_kind as u32).to_ne_bytes());
+        control[offset + 4..offset + 8].copy_from_slice(&(filter.api_domain as u32).to_ne_bytes());
+        control[offset + 8..offset + 12]
+            .copy_from_slice(&(filter.memcpy_kind as u32).to_ne_bytes());
+        let (name_match, name) = match &filter.name {
+            CuptiNameFilter::Any => (0_u32, ""),
+            CuptiNameFilter::Exact(name) => (1, name.as_str()),
+            CuptiNameFilter::Prefix(name) => (2, name.as_str()),
+            CuptiNameFilter::Suffix(name) => (3, name.as_str()),
+            CuptiNameFilter::Contains(name) => (4, name.as_str()),
+        };
+        let name_bytes = name.as_bytes();
+        if name_bytes.len() >= FILTER_NAME_SIZE || name_bytes.contains(&0) {
+            return Err(CuptiSnapshotError::InvalidControl(format!(
+                "CUPTI filter name must be a NUL-free string shorter than {FILTER_NAME_SIZE} bytes"
+            )));
+        }
+        control[offset + 12..offset + 16].copy_from_slice(&name_match.to_ne_bytes());
+        control[offset + 16..offset + 16 + name_bytes.len()].copy_from_slice(name_bytes);
+    }
+    Ok(control)
 }
 
 fn read_snapshot(reader: &mut impl Read, bytes: &mut Vec<u8>) -> Result<(), CuptiSnapshotError> {
@@ -439,7 +579,7 @@ fn decode_record(
     };
     let timestamp_raw = read_u64(record, 0);
     if timestamp_raw == 0 {
-        return Err(CuptiDecodeError::InvalidTimestamp { index });
+        return Err(CuptiDecodeError::InvalidTimestamp { index, kind });
     }
     let name_bytes = &record[72..200];
     let name_length = name_bytes
@@ -576,7 +716,9 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        CuptiDecodeError, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture, read_snapshot,
+        CuptiApiDomain, CuptiArmConfig, CuptiDecodeError, CuptiEventFilter, CuptiMemcpyKind,
+        CuptiNameFilter, CuptiRecordKind, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture,
+        encode_control, read_snapshot,
     };
     use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind};
 
@@ -698,7 +840,10 @@ mod tests {
     fn rejects_zero_timestamps() {
         let error = decode_capture(&capture(&[record(3, 0, 1, "bad")]), "xp_test")
             .expect_err("zero timestamps must fail");
-        assert_eq!(error, CuptiDecodeError::InvalidTimestamp { index: 0 });
+        assert_eq!(
+            error,
+            CuptiDecodeError::InvalidTimestamp { index: 0, kind: 3 }
+        );
     }
 
     #[test]
@@ -818,5 +963,48 @@ mod tests {
         assert_eq!(decoded.events.len(), 1);
         assert_eq!(decoded.events[0].session_id, "xp_live");
         assert_eq!(decoded.events[0].event_type, EventType::GpuKernelStart);
+    }
+
+    #[test]
+    fn encodes_bounded_arm_filters() {
+        let control = encode_control(
+            1,
+            Some(&CuptiArmConfig {
+                record_capacity: 250_000,
+                filters: vec![CuptiEventFilter {
+                    record_kind: CuptiRecordKind::GpuKernelStart,
+                    api_domain: CuptiApiDomain::Any,
+                    memcpy_kind: CuptiMemcpyKind::Any,
+                    name: CuptiNameFilter::Prefix("flash_".to_owned()),
+                }],
+            }),
+        )
+        .expect("ARM request must encode");
+
+        assert_eq!(control.len(), 312);
+        assert_eq!(&control[0..8], super::CONTROL_MAGIC);
+        assert_eq!(u32::from_ne_bytes(control[12..16].try_into().unwrap()), 1);
+        assert_eq!(
+            u64::from_ne_bytes(control[16..24].try_into().unwrap()),
+            250_000
+        );
+        assert_eq!(u32::from_ne_bytes(control[24..28].try_into().unwrap()), 3);
+        assert_eq!(u32::from_ne_bytes(control[36..40].try_into().unwrap()), 2);
+        assert_eq!(&control[40..46], b"flash_");
+        assert!(control[168..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn rejects_unbounded_arm_requests() {
+        let error = encode_control(
+            1,
+            Some(&CuptiArmConfig {
+                record_capacity: 1,
+                filters: Vec::new(),
+            }),
+        )
+        .expect_err("empty filter set must fail");
+
+        assert!(error.to_string().contains("one or two endpoint filters"));
     }
 }

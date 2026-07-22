@@ -12,6 +12,7 @@ extern "C" {
 #define XPROBE_CUPTI_CONTROL_MAGIC "XPCTRL\0"
 #define XPROBE_CUPTI_CONTROL_VERSION 2U
 #define XPROBE_CUPTI_NAME_LENGTH 128U
+#define XPROBE_CUPTI_FILTER_COUNT 2U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
 
 enum xprobe_cupti_feature {
@@ -43,14 +44,34 @@ enum xprobe_cupti_stop_reason {
 };
 
 enum xprobe_cupti_control_command {
-    XPROBE_CUPTI_CONTROL_SNAPSHOT = 1,
-    XPROBE_CUPTI_CONTROL_STOP = 2
+    XPROBE_CUPTI_CONTROL_ARM = 1,
+    XPROBE_CUPTI_CONTROL_SNAPSHOT = 2,
+    XPROBE_CUPTI_CONTROL_STOP = 3,
+    XPROBE_CUPTI_CONTROL_CLOSE = 4
+};
+
+enum xprobe_cupti_name_match {
+    XPROBE_CUPTI_NAME_ANY = 0,
+    XPROBE_CUPTI_NAME_EXACT = 1,
+    XPROBE_CUPTI_NAME_PREFIX = 2,
+    XPROBE_CUPTI_NAME_SUFFIX = 3,
+    XPROBE_CUPTI_NAME_CONTAINS = 4
+};
+
+struct xprobe_cupti_filter {
+    uint32_t record_kind;
+    uint32_t api_domain;
+    uint32_t memcpy_kind;
+    uint32_t name_match;
+    char name[XPROBE_CUPTI_NAME_LENGTH];
 };
 
 struct xprobe_cupti_control_request {
     char magic[8];
     uint32_t version;
     uint32_t command;
+    uint64_t record_capacity;
+    struct xprobe_cupti_filter filters[XPROBE_CUPTI_FILTER_COUNT];
 };
 
 enum xprobe_cupti_record_kind {
