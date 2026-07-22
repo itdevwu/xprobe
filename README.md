@@ -1,17 +1,16 @@
 <div align="center">
   <h1>xprobe</h1>
-  <p><strong>Agent-ready Linux event latency profiler for CPU and NVIDIA GPU workloads.</strong></p>
+  <p><strong>AI harness for native CPU and NVIDIA GPU performance profiling.</strong></p>
   <p>
     <a href="https://github.com/itdevwu/xprobe/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/itdevwu/xprobe/ci.yml?branch=master&amp;style=for-the-badge&amp;label=CI"></a>
     <a href="https://github.com/itdevwu/xprobe/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/itdevwu/xprobe?style=for-the-badge&amp;sort=semver"></a>
     <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/github/license/itdevwu/xprobe?style=for-the-badge&amp;label=License"></a>
-    <a href="#requirements"><img alt="Linux x86-64" src="https://img.shields.io/badge/Linux-x86--64-FCC624?style=for-the-badge&amp;logo=linux&amp;logoColor=black"></a>
     <a href="#support"><img alt="CUDA 12.x and 13.x" src="https://img.shields.io/badge/CUDA-12.x%20%7C%2013.x-76B900?style=for-the-badge&amp;logo=nvidia&amp;logoColor=white"></a>
   </p>
 </div>
 
-`xprobe` is a bounded Linux performance profiler that measures latency between
-two observable events in a process, on the CPU, NVIDIA GPU, or across both. It
+`xprobe` is an AI harness for measuring latency between two observable events
+in a process, on the CPU, NVIDIA GPU, or across both. Its bounded native profiler
 combines eBPF uprobes and NVIDIA CUPTI with an agent-friendly CLI, strict JSON
 contracts, explicit correlation quality, and no daemon or server lifecycle.
 
@@ -108,7 +107,6 @@ The packaging script checks both CUPTI SONAMEs and rejects build-time RPATHs.
 | CUDA/CUPTI | 12.x and 13.x with automatic major selection |
 | Correlation | exact, first-after, nearest, stack-nested, stream-order |
 | Online injection | same mount namespace; ptrace permission required |
-| Tested GPU | NVIDIA GeForce RTX 3060 Laptop GPU, driver 592.00, compute capability 8.6 |
 
 GPU-to-GPU durations remain available across the supported majors. Cross
 CPU/GPU subtraction requires the Agent's runtime alignment check to pass;
