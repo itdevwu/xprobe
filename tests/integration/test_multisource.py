@@ -70,45 +70,13 @@ def main() -> None:
         assert spec_result["measurement"]["name"] == "spec_host_to_kernel"
         assert spec_result["measurement"]["samples"]["matched"] == 3
 
-        measured = subprocess.run(
-            [
-                xprobe,
-                "measure",
-                "--input",
-                pathlib.Path(output_dir) / "host.json",
-                "--input",
-                pathlib.Path(output_dir) / "cupti.bin",
-                "--from",
-                "uprobe:/tmp/xprobe-multisource-live/"
-                "xprobe-multisource-target:xprobe_request_marker:entry",
-                "--to",
-                "cuda:kernel_start:name~xprobe_multisource_kernel.*",
-                "--match",
-                "first-after",
-                "--samples",
-                "3",
-                "--json",
-                "--non-interactive",
-                "--no-color",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if measured.returncode != 0:
-            sys.stdout.write(measured.stdout)
-            sys.stderr.write(measured.stderr)
-            raise SystemExit(measured.returncode)
-        result = json.loads(measured.stdout)
         trace_path = pathlib.Path(output_dir) / "trace.json"
         exported = subprocess.run(
             [
                 xprobe,
                 "export",
                 "--input",
-                pathlib.Path(output_dir) / "host.json",
-                "--input",
-                pathlib.Path(output_dir) / "cupti.bin",
+                pathlib.Path(output_dir) / "live.jsonl",
                 "--format",
                 "chrome",
                 "--output",
@@ -129,31 +97,29 @@ def main() -> None:
         chrome_trace = json.loads(trace_path.read_text())
         gpu = (pathlib.Path(output_dir) / "gpu.txt").read_text().strip()
 
-    assert result["measurement"]["samples"]["matched"] == 3
-    assert result["measurement"]["samples"]["dropped"] == 0
-    assert result["measurement"]["latency_ns"]["min"] > 0
-    assert result["correlation"]["confidence"] == "heuristic"
-    assert result["clock"]["alignment"] == "cupti_normalized_to_host_monotonic"
-    assert result["collection"]["host_events"] == 3
-    assert result["collection"]["cuda_events"] >= 12
+    assert live_result["measurement"]["samples"]["dropped"] == 0
+    assert live_result["measurement"]["latency_ns"]["min"] > 0
+    assert live_result["correlation"]["confidence"] == "heuristic"
+    assert live_result["clock"]["alignment"] == "cupti_normalized_to_host_monotonic"
+    assert live_result["collection"]["cuda_events"] >= 3
     assert export_result["format"] == "chrome"
     assert export_result["event_count"] == len(chrome_trace["traceEvents"])
-    assert export_result["event_count"] >= result["collection"]["cuda_events"]
-    assert [warning["code"] for warning in result["warnings"]] == [
+    assert export_result["event_count"] == len(live_events)
+    assert [warning["code"] for warning in live_result["warnings"]] == [
         "HEURISTIC_CORRELATION",
         "CLOCK_ERROR_UNAVAILABLE",
     ]
     print(
         json.dumps(
             {
-                "matched": result["measurement"]["samples"]["matched"],
-                "host_events": result["collection"]["host_events"],
-                "cuda_events": result["collection"]["cuda_events"],
+                "matched": live_result["measurement"]["samples"]["matched"],
+                "host_events": live_result["collection"]["host_events"],
+                "cuda_events": live_result["collection"]["cuda_events"],
                 "live_events": len(live_events),
                 "live_matched": live_result["measurement"]["samples"]["matched"],
                 "spec_matched": spec_result["measurement"]["samples"]["matched"],
                 "trace_events": export_result["event_count"],
-                "min_ns": result["measurement"]["latency_ns"]["min"],
+                "min_ns": live_result["measurement"]["latency_ns"]["min"],
                 "gpu": gpu,
             },
             sort_keys=True,

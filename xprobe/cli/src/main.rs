@@ -23,10 +23,10 @@ use xprobe_core::{cupti_compat, discover, doctor, inject, inspect, resolve, vali
 use xprobe_correlator::{MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
-    CapabilityReport, CheckResult, DiscoveryResult, ErrorCode, ErrorResponse, ExportFormat,
-    HostCaptureResult, MatchPolicy, MeasurementResult, MeasurementSpec, ProcessReport,
-    ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity, TraceExportResult,
-    ValidationResult, Warning, XprobeError,
+    CapabilityReport, CheckResult, DiscoveryResult, ErrorCode, ErrorResponse, EventType,
+    ExportFormat, HostCaptureResult, MatchPolicy, MeasurementResult, MeasurementSpec, MemcpyKind,
+    ProcessReport, ResolvedCudaSelector, ResolvedProbe, SchemaVersion, SessionStatus,
+    TargetIdentity, TraceExportResult, ValidationResult, Warning, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -1035,6 +1035,7 @@ struct LiveCollection {
     host_captures: Option<Vec<HostCaptureResult>>,
     latest_cuda: Option<cupti::CuptiCapture>,
     managed_agent: bool,
+    cupti_armed: bool,
     agent_injected: bool,
     agent_major: Option<u32>,
     agent_path: Option<PathBuf>,
@@ -1062,11 +1063,11 @@ fn collect_live_measurement(
             }
         }
     })();
-    let managed_capture = collection.managed_agent;
-    let stop_result = stop_managed_agent(&mut collection, request);
+    let cuda_capture = collection.cupti_armed;
+    let stop_result = stop_cupti_agent(&mut collection, request);
     let mut result = match (outcome, stop_result) {
         (Ok(mut result), Ok(())) => {
-            if managed_capture {
+            if cuda_capture {
                 let status = result.status;
                 result = measure_live_capture(
                     collection.host_captures.as_deref().unwrap_or(&[]),
@@ -1167,32 +1168,9 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
     }
 
     let activation = prepare_cupti_activation(&report, &validation, request)?;
+    let arm_config = cupti_arm_config(&validation, request.options.max_events)?;
+    let baseline = arm_cupti_capture(&activation, arm_config.as_ref(), request)?;
     let socket = activation.socket;
-    let baseline = match socket.as_deref() {
-        Some(path) => match cupti::snapshot(path, request.timeout, &request.options.session_id) {
-            Ok(capture) => Some(capture),
-            Err(error) => {
-                let failure =
-                    CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true);
-                if activation.managed {
-                    return match cupti::stop(path, request.timeout, &request.options.session_id) {
-                        Ok(_) => Err(failure),
-                        Err(cleanup) => Err(CommandFailure::new(
-                            ErrorCode::CleanupFailed,
-                            format!(
-                                "failed to stop CUPTI agent after baseline snapshot error: \
-                                 {cleanup}; original error: {}",
-                                failure.message
-                            ),
-                            true,
-                        )),
-                    };
-                }
-                return Err(failure);
-            }
-        },
-        None => None,
-    };
     let baseline_timestamp = baseline
         .as_ref()
         .and_then(|capture| capture.events.last())
@@ -1230,11 +1208,205 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
         host_captures,
         latest_cuda: None,
         managed_agent: activation.managed,
+        cupti_armed: baseline.is_some(),
         agent_injected: activation.injected,
         agent_major: activation.major,
         agent_path: activation.agent_path,
         cupti_path: activation.cupti_path,
     })
+}
+
+fn arm_cupti_capture(
+    activation: &CuptiActivation,
+    config: Option<&cupti::CuptiArmConfig>,
+    request: &LiveMeasureRequest,
+) -> Result<Option<cupti::CuptiCapture>, CommandFailure> {
+    let (Some(path), Some(config)) = (activation.socket.as_deref(), config) else {
+        assert!(activation.socket.is_none() && config.is_none());
+        return Ok(None);
+    };
+    let capture = match cupti::arm(path, request.timeout, &request.options.session_id, config) {
+        Ok(capture) => capture,
+        Err(error) => {
+            let failure =
+                CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true);
+            return cleanup_failed_arm(activation, request, failure);
+        }
+    };
+    if capture.state != cupti::CuptiCaptureState::Active {
+        let failure = CommandFailure::new(
+            ErrorCode::CuptiNotAvailable,
+            format!(
+                "CUPTI Agent did not enter active state after ARM: {:?}",
+                capture.state
+            ),
+            true,
+        );
+        return cleanup_failed_arm(activation, request, failure);
+    }
+    Ok(Some(capture))
+}
+
+fn cleanup_failed_arm(
+    activation: &CuptiActivation,
+    request: &LiveMeasureRequest,
+    failure: CommandFailure,
+) -> Result<Option<cupti::CuptiCapture>, CommandFailure> {
+    if !activation.managed {
+        return Err(failure);
+    }
+    let path = activation
+        .socket
+        .as_deref()
+        .expect("managed activation has a socket");
+    match cupti::close(path, request.timeout, &request.options.session_id) {
+        Ok(_) => Err(failure),
+        Err(cleanup) => Err(CommandFailure::new(
+            ErrorCode::CleanupFailed,
+            format!(
+                "failed to close CUPTI agent after ARM error: {cleanup}; original error: {}",
+                failure.message
+            ),
+            true,
+        )),
+    }
+}
+
+fn cupti_arm_config(
+    validation: &ValidationResult,
+    max_events: usize,
+) -> Result<Option<cupti::CuptiArmConfig>, CommandFailure> {
+    if !validation.requirements.needs_cupti {
+        return Ok(None);
+    }
+    let filters = [&validation.start, &validation.end]
+        .into_iter()
+        .filter_map(|endpoint| endpoint.cuda.as_ref())
+        .map(cupti_event_filter)
+        .collect::<Result<Vec<_>, _>>()?;
+    let record_capacity = u64::try_from(max_events).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            format!("max-events exceeds the CUPTI Agent range: {error}"),
+            true,
+        )
+    })?;
+    Ok(Some(cupti::CuptiArmConfig {
+        record_capacity,
+        filters,
+    }))
+}
+
+fn cupti_event_filter(
+    selector: &ResolvedCudaSelector,
+) -> Result<cupti::CuptiEventFilter, CommandFailure> {
+    let record_kind = match selector.event_type {
+        EventType::CudaApiEntry => cupti::CuptiRecordKind::CudaApiEntry,
+        EventType::CudaApiExit => cupti::CuptiRecordKind::CudaApiExit,
+        EventType::GpuKernelStart => cupti::CuptiRecordKind::GpuKernelStart,
+        EventType::GpuKernelEnd => cupti::CuptiRecordKind::GpuKernelEnd,
+        EventType::GpuMemcpyStart => cupti::CuptiRecordKind::GpuMemcpyStart,
+        EventType::GpuMemcpyEnd => cupti::CuptiRecordKind::GpuMemcpyEnd,
+        EventType::GpuMemsetStart => cupti::CuptiRecordKind::GpuMemsetStart,
+        EventType::GpuMemsetEnd => cupti::CuptiRecordKind::GpuMemsetEnd,
+        _ => {
+            return Err(CommandFailure::new(
+                ErrorCode::InvalidEventSelector,
+                "validated CUDA endpoint has a non-CUDA event type",
+                false,
+            ));
+        }
+    };
+    let api_domain = match selector.api_domain.as_deref() {
+        None => cupti::CuptiApiDomain::Any,
+        Some("driver_api") => cupti::CuptiApiDomain::Driver,
+        Some("runtime_api") => cupti::CuptiApiDomain::Runtime,
+        Some(domain) => {
+            return Err(CommandFailure::new(
+                ErrorCode::InvalidEventSelector,
+                format!("validated CUDA endpoint has unsupported API domain {domain:?}"),
+                false,
+            ));
+        }
+    };
+    let memcpy_kind = match selector.memcpy_kind {
+        None | Some(MemcpyKind::Unknown) => cupti::CuptiMemcpyKind::Any,
+        Some(MemcpyKind::HostToDevice) => cupti::CuptiMemcpyKind::HostToDevice,
+        Some(MemcpyKind::DeviceToHost) => cupti::CuptiMemcpyKind::DeviceToHost,
+        Some(MemcpyKind::DeviceToDevice) => cupti::CuptiMemcpyKind::DeviceToDevice,
+        Some(MemcpyKind::HostToHost) => cupti::CuptiMemcpyKind::HostToHost,
+        Some(MemcpyKind::PeerToPeer) => cupti::CuptiMemcpyKind::PeerToPeer,
+    };
+    let name = if let Some(name) = selector.api_name.as_ref() {
+        cupti::CuptiNameFilter::Exact(name.clone())
+    } else if let Some(pattern) = selector.kernel_name_regex.as_deref() {
+        bounded_kernel_name_filter(pattern)
+    } else {
+        cupti::CuptiNameFilter::Any
+    };
+    Ok(cupti::CuptiEventFilter {
+        record_kind,
+        api_domain,
+        memcpy_kind,
+        name,
+    })
+}
+
+fn bounded_kernel_name_filter(pattern: &str) -> cupti::CuptiNameFilter {
+    if pattern == ".*" {
+        return cupti::CuptiNameFilter::Any;
+    }
+    let candidates = [
+        ("^", "$", 1_u8),
+        ("^", ".*", 2),
+        (".*", "$", 3),
+        (".*", ".*", 4),
+        ("^", "", 2),
+        ("", "$", 3),
+        (".*", "", 4),
+        ("", "", 4),
+    ];
+    for (prefix, suffix, kind) in candidates {
+        let Some(inner) = pattern
+            .strip_prefix(prefix)
+            .and_then(|value| value.strip_suffix(suffix))
+        else {
+            continue;
+        };
+        let Some(literal) = regex_literal(inner) else {
+            continue;
+        };
+        if literal.is_empty() || literal.len() >= 128 {
+            continue;
+        }
+        return match kind {
+            1 => cupti::CuptiNameFilter::Exact(literal),
+            2 => cupti::CuptiNameFilter::Prefix(literal),
+            3 => cupti::CuptiNameFilter::Suffix(literal),
+            4 => cupti::CuptiNameFilter::Contains(literal),
+            _ => unreachable!("fixed kernel filter kind"),
+        };
+    }
+    cupti::CuptiNameFilter::Any
+}
+
+fn regex_literal(pattern: &str) -> Option<String> {
+    let mut literal = String::with_capacity(pattern.len());
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            let escaped = characters.next()?;
+            if escaped.is_ascii_alphanumeric() {
+                return None;
+            }
+            literal.push(escaped);
+        } else if ".+*?()|[]{}^$".contains(character) {
+            return None;
+        } else {
+            literal.push(character);
+        }
+    }
+    Some(literal)
 }
 
 struct CuptiActivation {
@@ -1399,19 +1571,24 @@ fn resolve_agent_path(
     })
 }
 
-fn stop_managed_agent(
+fn stop_cupti_agent(
     collection: &mut LiveCollection,
     request: &LiveMeasureRequest,
 ) -> Result<(), CommandFailure> {
-    if !collection.managed_agent {
+    if !collection.cupti_armed {
         return Ok(());
     }
     let socket = collection
         .socket
         .as_deref()
-        .expect("managed CUPTI agent has a socket");
-    let capture = cupti::stop(socket, request.timeout, &request.options.session_id)
-        .map_err(|error| CommandFailure::new(ErrorCode::CleanupFailed, error.to_string(), true))?;
+        .expect("armed CUPTI agent has a socket");
+    collection.cupti_armed = false;
+    let capture = if collection.managed_agent {
+        cupti::close(socket, request.timeout, &request.options.session_id)
+    } else {
+        cupti::stop(socket, request.timeout, &request.options.session_id)
+    }
+    .map_err(|error| CommandFailure::new(ErrorCode::CleanupFailed, error.to_string(), true))?;
     collection.latest_cuda = Some(capture);
     collection.managed_agent = false;
     Ok(())
@@ -1419,9 +1596,14 @@ fn stop_managed_agent(
 
 impl Drop for LiveCollection {
     fn drop(&mut self) {
-        if self.managed_agent {
+        if self.cupti_armed {
             if let Some(socket) = self.socket.as_deref() {
-                if let Err(error) = cupti::stop(socket, Duration::from_secs(2), "xp_cleanup") {
+                let result = if self.managed_agent {
+                    cupti::close(socket, Duration::from_secs(2), "xp_cleanup")
+                } else {
+                    cupti::stop(socket, Duration::from_secs(2), "xp_cleanup")
+                };
+                if let Err(error) = result {
                     eprintln!("xprobe: failed to stop CUPTI agent during cleanup: {error}");
                 }
             }
@@ -2283,5 +2465,39 @@ const fn yes_no(value: bool) -> &'static str {
 const fn schema_version(version: SchemaVersion) -> &'static str {
     match version {
         SchemaVersion::V1 => "1.0",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use xprobe_collector::cupti::CuptiNameFilter;
+
+    use super::{bounded_kernel_name_filter, regex_literal};
+
+    #[test]
+    fn lowers_only_equivalent_bounded_kernel_patterns() {
+        assert_eq!(
+            bounded_kernel_name_filter("^flash_.*"),
+            CuptiNameFilter::Prefix("flash_".to_owned())
+        );
+        assert_eq!(
+            bounded_kernel_name_filter(".*_kernel$"),
+            CuptiNameFilter::Suffix("_kernel".to_owned())
+        );
+        assert_eq!(
+            bounded_kernel_name_filter("cudaLaunch"),
+            CuptiNameFilter::Contains("cudaLaunch".to_owned())
+        );
+        assert_eq!(
+            bounded_kernel_name_filter("^(flash|attention)$"),
+            CuptiNameFilter::Any
+        );
+    }
+
+    #[test]
+    fn decodes_escaped_regex_literals_conservatively() {
+        assert_eq!(regex_literal("kernel\\.v1"), Some("kernel.v1".to_owned()));
+        assert_eq!(regex_literal("kernel\\d"), None);
+        assert_eq!(regex_literal("kernel+"), None);
     }
 }

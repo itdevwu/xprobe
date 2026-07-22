@@ -72,7 +72,9 @@ _Static_assert(sizeof(struct xprobe_cupti_output_header) == 80U,
                "unexpected CUPTI output header layout");
 _Static_assert(sizeof(struct xprobe_cupti_record) == 200U,
                "unexpected CUPTI record layout");
-_Static_assert(sizeof(struct xprobe_cupti_control_request) == 16U,
+_Static_assert(sizeof(struct xprobe_cupti_filter) == 144U,
+               "unexpected CUPTI filter layout");
+_Static_assert(sizeof(struct xprobe_cupti_control_request) == 312U,
                "unexpected CUPTI control request layout");
 
 static struct xprobe_cupti_record *records;
@@ -105,6 +107,8 @@ static pthread_t snapshot_thread;
 static _Atomic int snapshot_thread_stop;
 static _Atomic int snapshot_listener = -1;
 static int snapshot_thread_started;
+static struct xprobe_cupti_filter capture_filters[XPROBE_CUPTI_FILTER_COUNT];
+static _Atomic int capture_filter_enabled;
 static const CUpti_ActivityKind enabled_activity_kinds[] = {
     CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
     CUPTI_ACTIVITY_KIND_MEMCPY,
@@ -112,6 +116,7 @@ static const CUpti_ActivityKind enabled_activity_kinds[] = {
 };
 
 static int shutdown_agent(void);
+static int initialize_agent(void);
 
 static int allocate_capture(uint64_t capacity)
 {
@@ -298,6 +303,111 @@ static void copy_name(char destination[XPROBE_CUPTI_NAME_LENGTH],
     destination[index] = '\0';
 }
 
+static size_t bounded_name_length(const char name[XPROBE_CUPTI_NAME_LENGTH])
+{
+    size_t length = 0U;
+
+    while (length < XPROBE_CUPTI_NAME_LENGTH && name[length] != '\0') {
+        ++length;
+    }
+    return length;
+}
+
+static int name_matches(const struct xprobe_cupti_filter *filter,
+                        const char record_name[XPROBE_CUPTI_NAME_LENGTH])
+{
+    size_t filter_length;
+    size_t record_length;
+
+    if (filter->name_match == XPROBE_CUPTI_NAME_ANY) {
+        return 1;
+    }
+    filter_length = bounded_name_length(filter->name);
+    record_length = bounded_name_length(record_name);
+    if (filter_length == XPROBE_CUPTI_NAME_LENGTH ||
+        record_length == XPROBE_CUPTI_NAME_LENGTH) {
+        return 0;
+    }
+    if (filter->name_match == XPROBE_CUPTI_NAME_EXACT) {
+        return filter_length == record_length &&
+               memcmp(filter->name, record_name, filter_length) == 0;
+    }
+    if (filter->name_match == XPROBE_CUPTI_NAME_PREFIX) {
+        return filter_length <= record_length &&
+               memcmp(filter->name, record_name, filter_length) == 0;
+    }
+    if (filter->name_match == XPROBE_CUPTI_NAME_SUFFIX) {
+        return filter_length <= record_length &&
+               memcmp(filter->name, record_name + record_length - filter_length,
+                      filter_length) == 0;
+    }
+    if (filter->name_match == XPROBE_CUPTI_NAME_CONTAINS) {
+        if (filter_length == 0U) {
+            return 1;
+        }
+        for (size_t offset = 0U; offset + filter_length <= record_length;
+             ++offset) {
+            if (memcmp(filter->name, record_name + offset, filter_length) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static uint32_t semantic_memcpy_kind(uint32_t cupti_kind)
+{
+    switch (cupti_kind) {
+    case 1U:
+    case 3U:
+        return 1U;
+    case 2U:
+    case 4U:
+        return 2U;
+    case 5U:
+    case 6U:
+    case 7U:
+    case 8U:
+        return 3U;
+    case 9U:
+        return 4U;
+    case 10U:
+        return 5U;
+    default:
+        return 0U;
+    }
+}
+
+static int record_matches_filter(const struct xprobe_cupti_record *record,
+                                 const struct xprobe_cupti_filter *filter)
+{
+    if (filter->record_kind == 0U || filter->record_kind != record->kind) {
+        return 0;
+    }
+    if (filter->api_domain != 0U &&
+        filter->api_domain != record->callback_domain) {
+        return 0;
+    }
+    if (filter->memcpy_kind != 0U &&
+        filter->memcpy_kind != semantic_memcpy_kind(record->grid_z)) {
+        return 0;
+    }
+    return name_matches(filter, record->name);
+}
+
+static int capture_filter_matches(const struct xprobe_cupti_record *record)
+{
+    if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
+        return 1;
+    }
+    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+        if (record_matches_filter(record, &capture_filters[index]) != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void enqueue_record(const struct xprobe_cupti_record *record)
 {
     uint64_t index;
@@ -305,6 +415,9 @@ static void enqueue_record(const struct xprobe_cupti_record *record)
 
     if (atomic_load_explicit(&capture_state, memory_order_relaxed) !=
         XPROBE_CUPTI_CAPTURE_ACTIVE) {
+        return;
+    }
+    if (capture_filter_matches(record) == 0) {
         return;
     }
     index = atomic_fetch_add_explicit(&record_count, 1U, memory_order_relaxed);
@@ -427,8 +540,18 @@ static void enqueue_kernel_record(uint32_t device_id, uint32_t context_id,
     enqueue_record(&record);
 }
 
+static int activity_started_during_capture(uint64_t timestamp_ns)
+{
+    return timestamp_ns != 0U &&
+           normalize_activity_timestamp(timestamp_ns) >=
+               capture_start_timestamp_ns;
+}
+
 #define ENQUEUE_KERNEL_RECORDS(kernel)                                             \
     do {                                                                           \
+        if (activity_started_during_capture((kernel)->start) == 0) {               \
+            return;                                                                \
+        }                                                                          \
         enqueue_kernel_record(                                                     \
             (kernel)->deviceId, (kernel)->contextId, (kernel)->streamId,           \
             (kernel)->correlationId, (kernel)->gridX, (kernel)->gridY,             \
@@ -530,6 +653,9 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
             const CUpti_ActivityMemcpy6 *memcpy_record =
                 (const CUpti_ActivityMemcpy6 *)activity;
+            if (activity_started_during_capture(memcpy_record->start) == 0) {
+                continue;
+            }
             enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_START,
                                   memcpy_record->start);
             enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_END,
@@ -537,6 +663,9 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMSET) {
             const CUpti_ActivityMemset4 *memset_record =
                 (const CUpti_ActivityMemset4 *)activity;
+            if (activity_started_during_capture(memset_record->start) == 0) {
+                continue;
+            }
             enqueue_memset_record(memset_record, XPROBE_CUPTI_GPU_MEMSET_START,
                                   memset_record->start);
             enqueue_memset_record(memset_record, XPROBE_CUPTI_GPU_MEMSET_END,
@@ -829,6 +958,66 @@ static int flush_activity_buffers(int allow_empty_flush)
     return xprobe_cupti_agent_status();
 }
 
+static int valid_filter(const struct xprobe_cupti_filter *filter)
+{
+    if (filter->record_kind > XPROBE_CUPTI_GPU_MEMSET_END ||
+        filter->api_domain > CUPTI_CB_DOMAIN_RUNTIME_API ||
+        filter->memcpy_kind > 5U ||
+        filter->name_match > XPROBE_CUPTI_NAME_CONTAINS) {
+        return 0;
+    }
+    return filter->name_match == XPROBE_CUPTI_NAME_ANY ||
+           bounded_name_length(filter->name) < XPROBE_CUPTI_NAME_LENGTH;
+}
+
+static int arm_capture(const struct xprobe_cupti_control_request *request)
+{
+    int status;
+
+    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+        if (valid_filter(&request->filters[index]) == 0) {
+            fprintf(stderr, "xprobe CUPTI: invalid capture filter\n");
+            remember_output_error();
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+    }
+    if (subscriber_active != 0 || enabled_activity_count != 0U) {
+        status = shutdown_agent();
+        if (status != XPROBE_CUPTI_AGENT_READY) {
+            return status;
+        }
+    }
+    if (allocate_capture(request->record_capacity) != XPROBE_CUPTI_AGENT_READY) {
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
+    reset_capture();
+    memcpy(capture_filters, request->filters, sizeof(capture_filters));
+    atomic_store_explicit(&capture_filter_enabled, 1, memory_order_release);
+    return initialize_agent();
+}
+
+static int stop_capture(void)
+{
+    int status = XPROBE_CUPTI_AGENT_READY;
+
+    if (subscriber_active != 0 || enabled_activity_count != 0U) {
+        status = flush_activity_buffers(1);
+        if (status == XPROBE_CUPTI_AGENT_READY) {
+            status = shutdown_agent();
+        }
+    }
+    if (status == XPROBE_CUPTI_AGENT_READY &&
+        atomic_load_explicit(&capture_state, memory_order_acquire) ==
+            XPROBE_CUPTI_CAPTURE_ACTIVE) {
+        atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_STOPPED,
+                              memory_order_release);
+        atomic_store_explicit(&stop_reason, XPROBE_CUPTI_STOP_REQUESTED,
+                              memory_order_relaxed);
+    }
+    return status;
+}
+
 static void *serve_snapshots(void *unused)
 {
     (void)unused;
@@ -840,7 +1029,7 @@ static void *serve_snapshots(void *unused)
         int poll_result = poll(&poll_descriptor, 1U, 100);
         int client;
         struct xprobe_cupti_control_request request;
-        int stop_requested = 0;
+        int close_requested = 0;
 
         if (poll_result < 0 && errno == EINTR) {
             continue;
@@ -871,25 +1060,27 @@ static void *serve_snapshots(void *unused)
             memcmp(request.magic, XPROBE_CUPTI_CONTROL_MAGIC,
                    sizeof(request.magic)) != 0 ||
             request.version != XPROBE_CUPTI_CONTROL_VERSION ||
-            (request.command != XPROBE_CUPTI_CONTROL_SNAPSHOT &&
-             request.command != XPROBE_CUPTI_CONTROL_STOP)) {
+            (request.command < XPROBE_CUPTI_CONTROL_ARM ||
+             request.command > XPROBE_CUPTI_CONTROL_CLOSE)) {
             fprintf(stderr, "xprobe CUPTI: invalid snapshot control request\n");
         } else if (pthread_mutex_lock(&flush_mutex) != 0) {
             fprintf(stderr, "xprobe CUPTI: failed to lock snapshot flush mutex\n");
         } else {
-            int flush_status = flush_activity_buffers(1);
+            int command_status = XPROBE_CUPTI_AGENT_READY;
 
-            stop_requested = request.command == XPROBE_CUPTI_CONTROL_STOP;
-            if (stop_requested != 0 && flush_status == XPROBE_CUPTI_AGENT_READY &&
-                atomic_load_explicit(&capture_state, memory_order_relaxed) ==
+            if (request.command == XPROBE_CUPTI_CONTROL_ARM) {
+                command_status = arm_capture(&request);
+            } else if (request.command == XPROBE_CUPTI_CONTROL_SNAPSHOT) {
+                if (atomic_load_explicit(&capture_state, memory_order_acquire) ==
                     XPROBE_CUPTI_CAPTURE_ACTIVE) {
-                atomic_store_explicit(&capture_state,
-                                      XPROBE_CUPTI_CAPTURE_STOPPED,
-                                      memory_order_relaxed);
-                atomic_store_explicit(&stop_reason,
-                                      XPROBE_CUPTI_STOP_REQUESTED,
-                                      memory_order_relaxed);
+                    command_status = flush_activity_buffers(1);
+                }
+            } else {
+                command_status = stop_capture();
+                close_requested =
+                    request.command == XPROBE_CUPTI_CONTROL_CLOSE;
             }
+            (void)command_status;
             if (write_capture(client, 1) != 0) {
                 fprintf(stderr, "xprobe CUPTI: failed to send snapshot: %s\n",
                         strerror(errno));
@@ -902,13 +1093,7 @@ static void *serve_snapshots(void *unused)
             fprintf(stderr, "xprobe CUPTI: failed to close snapshot client: %s\n",
                     strerror(errno));
         }
-        if (stop_requested != 0) {
-            shutdown_agent();
-            if (xprobe_cupti_agent_status() == XPROBE_CUPTI_AGENT_READY) {
-                atomic_store_explicit(&agent_status,
-                                      XPROBE_CUPTI_AGENT_UNAVAILABLE,
-                                      memory_order_release);
-            }
+        if (close_requested != 0) {
             atomic_store_explicit(&snapshot_thread_stop, 1, memory_order_release);
         }
     }
@@ -1141,13 +1326,19 @@ int xprobe_cupti_agent_start(const char *configured_socket, uint64_t capacity)
         }
     }
     reset_capture();
-    if (initialize_agent() != XPROBE_CUPTI_AGENT_READY) {
-        return xprobe_cupti_agent_status();
-    }
-    if (start_snapshot_server() != XPROBE_CUPTI_AGENT_READY) {
-        remember_output_error();
-        shutdown_agent();
-        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    if (configured_socket != NULL) {
+        atomic_store_explicit(&capture_filter_enabled, 1, memory_order_release);
+        atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_READY,
+                              memory_order_release);
+        if (start_snapshot_server() != XPROBE_CUPTI_AGENT_READY) {
+            remember_output_error();
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+    } else {
+        atomic_store_explicit(&capture_filter_enabled, 0, memory_order_release);
+        if (initialize_agent() != XPROBE_CUPTI_AGENT_READY) {
+            return xprobe_cupti_agent_status();
+        }
     }
     return XPROBE_CUPTI_AGENT_READY;
 }

@@ -60,6 +60,7 @@ run_measure() {
     --to 'cuda:kernel_end:name~xprobe_multisource_kernel.*' \
     --match exact \
     --samples 3 \
+    --max-events 32 \
     --timeout-ms 10000 \
     --json --non-interactive --no-color \
     >"$1.json" 2>"$1.stderr" &
