@@ -62,6 +62,23 @@ pub struct ValidationIssue {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyRecommendationReason {
+    DeterministicCorrelationKey,
+    HostCallFrame,
+    CudaStreamOrder,
+    TemporalOrderOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyRecommendation {
+    pub policy: MatchPolicy,
+    pub reason: PolicyRecommendationReason,
+    pub compatible_policies: Vec<MatchPolicy>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidationResult {
@@ -72,6 +89,7 @@ pub struct ValidationResult {
     pub start: ValidatedEndpoint,
     pub end: ValidatedEndpoint,
     pub match_policy: MatchPolicy,
+    pub policy_recommendation: PolicyRecommendation,
     pub requirements: ValidationRequirements,
     #[serde(default)]
     pub issues: Vec<ValidationIssue>,

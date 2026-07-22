@@ -6,7 +6,7 @@ use std::{
 };
 
 use xprobe_protocol::{
-    CudaProcessCandidate, DiscoveryResult, DiscoverySchemaVersion, ErrorCode, ProcessReport,
+    CudaProcessCandidate, DiscoveryResult, ErrorCode, ProcessReport, SchemaVersion,
 };
 
 use crate::inspect::{self, InspectError};
@@ -123,7 +123,7 @@ pub fn run(report: &ProcessReport, limit: usize) -> Result<DiscoveryResult, Disc
     candidates.truncate(limit);
     inspect::verify_target(&report.target)?;
     Ok(DiscoveryResult {
-        schema_version: DiscoverySchemaVersion::current(),
+        schema_version: SchemaVersion::current(),
         ok: true,
         root: report.target.clone(),
         limit: limit as u64,

@@ -3,8 +3,9 @@ use std::{collections::BTreeMap, error::Error, fmt};
 use regex::Regex;
 use xprobe_protocol::{
     AgentActivation, EndpointSource, ErrorCode, EventType, HostProbeKind, MatchPolicy, MemcpyKind,
-    ProcessReport, ResolvedCudaSelector, SchemaVersion, ValidatedEndpoint, ValidationIssue,
-    ValidationRequirements, ValidationResult, Warning,
+    PolicyRecommendation, PolicyRecommendationReason, ProcessReport, ResolvedCudaSelector,
+    SchemaVersion, ValidatedEndpoint, ValidationIssue, ValidationRequirements, ValidationResult,
+    Warning,
 };
 
 use crate::{
@@ -168,6 +169,7 @@ pub fn run(
     );
     check_cupti_compatibility(report, &requirements, &mut issues);
     check_policy(&start, &end, match_policy, &mut issues, &mut warnings);
+    let policy_recommendation = recommend_policy(&start, &end);
     check_selector_breadth(&start, "start", &mut warnings);
     check_selector_breadth(&end, "end", &mut warnings);
 
@@ -180,10 +182,54 @@ pub fn run(
         start: start.public,
         end: end.public,
         match_policy,
+        policy_recommendation,
         requirements,
         issues,
         warnings,
     })
+}
+
+fn recommend_policy(start: &Endpoint, end: &Endpoint) -> PolicyRecommendation {
+    let mut compatible_policies = Vec::with_capacity(5);
+    if supports_stack_nested(start, end) {
+        compatible_policies.push(MatchPolicy::StackNested);
+    }
+    if supports_exact(&start.kind, &end.kind) {
+        compatible_policies.push(MatchPolicy::Exact);
+    }
+    if supports_stream_order(&start.kind, &end.kind) {
+        compatible_policies.push(MatchPolicy::StreamOrder);
+    }
+    compatible_policies.push(MatchPolicy::FirstAfter);
+    compatible_policies.push(MatchPolicy::Nearest);
+
+    let (policy, reason) = if compatible_policies.contains(&MatchPolicy::StackNested) {
+        (
+            MatchPolicy::StackNested,
+            PolicyRecommendationReason::HostCallFrame,
+        )
+    } else if compatible_policies.contains(&MatchPolicy::Exact) {
+        (
+            MatchPolicy::Exact,
+            PolicyRecommendationReason::DeterministicCorrelationKey,
+        )
+    } else if compatible_policies.contains(&MatchPolicy::StreamOrder) {
+        (
+            MatchPolicy::StreamOrder,
+            PolicyRecommendationReason::CudaStreamOrder,
+        )
+    } else {
+        (
+            MatchPolicy::FirstAfter,
+            PolicyRecommendationReason::TemporalOrderOnly,
+        )
+    };
+
+    PolicyRecommendation {
+        policy,
+        reason,
+        compatible_policies,
+    }
 }
 
 fn check_cupti_compatibility(
@@ -587,9 +633,15 @@ fn warning(code: &str, message: &str) -> Warning {
 
 #[cfg(test)]
 mod tests {
-    use xprobe_protocol::{AgentActivation, EventType, MatchPolicy, MemcpyKind};
+    use xprobe_protocol::{
+        AgentActivation, ElfObjectKind, EndpointSource, EventType, HostProbeKind, MatchPolicy,
+        MemcpyKind, PolicyRecommendationReason, ProcessMapping, ResolvedProbe, SchemaVersion,
+        TargetIdentity, ValidatedEndpoint,
+    };
 
-    use super::{parse_cuda_selector, parse_match_policy, run};
+    use super::{
+        Endpoint, EndpointKind, parse_cuda_selector, parse_match_policy, recommend_policy, run,
+    };
     use crate::inspect;
 
     #[test]
@@ -638,6 +690,11 @@ mod tests {
         )
         .unwrap();
         assert!(result.valid);
+        assert_eq!(result.policy_recommendation.policy, MatchPolicy::Exact);
+        assert_eq!(
+            result.policy_recommendation.reason,
+            PolicyRecommendationReason::DeterministicCorrelationKey
+        );
         assert_eq!(
             result.requirements.agent_activation,
             AgentActivation::InjectionRequired
@@ -673,6 +730,66 @@ mod tests {
         assert!(!result.requirements.target_mutation);
         assert!(!result.requirements.needs_clock_alignment);
         assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn recommends_stack_matching_for_host_function_spans() {
+        let endpoint = |selector: &str, event_type, kind, probe_kind| Endpoint {
+            public: ValidatedEndpoint {
+                selector: selector.to_owned(),
+                source: EndpointSource::Host,
+                event_type,
+                collectable: true,
+                host: Some(ResolvedProbe {
+                    schema_version: SchemaVersion::current(),
+                    ok: true,
+                    target: TargetIdentity {
+                        pid: 1,
+                        process_start_time: 1,
+                    },
+                    selector: selector.to_owned(),
+                    binary_path: "/srv/app".to_owned(),
+                    build_id: None,
+                    object_kind: ElfObjectKind::Executable,
+                    probe_kind,
+                    symbol: Some("work".to_owned()),
+                    symbol_virtual_address: Some(0x1000),
+                    symbol_size: Some(16),
+                    file_offset: 0x1000,
+                    runtime_address: 0x401000,
+                    mapping: ProcessMapping {
+                        start_address: 0x400000,
+                        end_address: 0x500000,
+                        file_offset: 0,
+                    },
+                }),
+                cuda: None,
+            },
+            kind,
+        };
+        let start = endpoint(
+            "uprobe:/srv/app:work:entry",
+            EventType::HostFunctionEntry,
+            EndpointKind::HostEntry,
+            HostProbeKind::Uprobe,
+        );
+        let end = endpoint(
+            "uprobe:/srv/app:work:return",
+            EventType::HostFunctionExit,
+            EndpointKind::HostReturn,
+            HostProbeKind::Uretprobe,
+        );
+        let recommendation = recommend_policy(&start, &end);
+        assert_eq!(recommendation.policy, MatchPolicy::StackNested);
+        assert_eq!(
+            recommendation.reason,
+            PolicyRecommendationReason::HostCallFrame
+        );
+        assert!(
+            recommendation
+                .compatible_policies
+                .contains(&MatchPolicy::Nearest)
+        );
     }
 
     #[test]

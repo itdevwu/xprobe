@@ -2,8 +2,8 @@
 
 xprobe exposes four public commands: `doctor`, `discover`, `validate`, and
 `measure`. Use `--json --non-interactive --no-color` with every command. JSON
-responses carry `schema_version: "1.0"`, while `discover` process-candidate
-results carry `"2.0"`; diagnostics and the injection warning go to stderr.
+responses carry `schema_version: "2.0"`; diagnostics and the injection warning
+go to stderr. Pre-0.3 schema versions are not maintained in parallel.
 
 ## Discovery and selectors
 
@@ -30,7 +30,9 @@ and policy before measurement.
 Use `exact` for CUDA events with the same CUPTI correlation ID,
 `stack-nested` for entry/return of the same host function, and `stream-order`
 for activity events on one CUDA stream. `first-after` and `nearest` are temporal
-heuristics and cannot establish causality.
+heuristics and cannot establish causality. Read `policy_recommendation.policy`,
+its machine-readable `reason`, and `compatible_policies`; xprobe never silently
+changes the requested policy.
 
 ## Bounds and failures
 

@@ -1,20 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{TargetIdentity, Warning};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub enum DiscoverySchemaVersion {
-    #[serde(rename = "2.0")]
-    V2,
-}
-
-impl DiscoverySchemaVersion {
-    #[must_use]
-    pub const fn current() -> Self {
-        Self::V2
-    }
-}
+use crate::{SchemaVersion, TargetIdentity, Warning};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -29,7 +16,7 @@ pub struct CudaProcessCandidate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryResult {
-    pub schema_version: DiscoverySchemaVersion,
+    pub schema_version: SchemaVersion,
     pub ok: bool,
     pub root: TargetIdentity,
     pub limit: u64,

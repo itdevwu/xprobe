@@ -93,7 +93,7 @@ impl ErrorResponse {
     #[must_use]
     pub fn new(error: XprobeError) -> Self {
         Self {
-            schema_version: SchemaVersion::V1,
+            schema_version: SchemaVersion::V2,
             ok: false,
             error,
         }

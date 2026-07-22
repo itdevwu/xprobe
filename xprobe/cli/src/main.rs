@@ -2419,6 +2419,10 @@ fn print_validation_result(result: &ValidationResult) {
     println!("End: {}", result.end.selector);
     println!("Match: {:?}", result.match_policy);
     println!(
+        "Recommended match: {:?} ({:?})",
+        result.policy_recommendation.policy, result.policy_recommendation.reason
+    );
+    println!(
         "Agent activation: {:?}",
         result.requirements.agent_activation
     );
@@ -2465,7 +2469,7 @@ const fn yes_no(value: bool) -> &'static str {
 
 const fn schema_version(version: SchemaVersion) -> &'static str {
     match version {
-        SchemaVersion::V1 => "1.0",
+        SchemaVersion::V2 => "2.0",
     }
 }
 

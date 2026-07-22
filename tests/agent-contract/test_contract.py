@@ -19,7 +19,7 @@ SKILL_PATH = "skills/xprobe-measure-latency/SKILL.md"
 
 
 def run_json(
-    binary: pathlib.Path, arguments: list[str], schema_version: str = "1.0"
+    binary: pathlib.Path, arguments: list[str], schema_version: str = "2.0"
 ) -> dict:
     completed = subprocess.run(
         [binary, *arguments, *COMMON_FLAGS],
@@ -175,6 +175,12 @@ def main() -> None:
     assert validated["requirements"]["agent_activation"] == "injection_required"
     assert validated["requirements"]["target_mutation"] is True
     assert validated["valid"] is True
+    assert validated["policy_recommendation"]["policy"] == "exact"
+    assert (
+        validated["policy_recommendation"]["reason"]
+        == "deterministic_correlation_key"
+    )
+    assert "first_after" in validated["policy_recommendation"]["compatible_policies"]
     assert any(
         warning["code"] == "TARGET_PROCESS_WILL_BE_MODIFIED"
         for warning in validated["warnings"]
@@ -186,7 +192,7 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "schema_version": "1.0",
+                "schema_version": "2.0",
                 "ok": True,
                 "agents": ["claude", "codex", "cursor"],
                 "commands": sorted(STABLE_COMMANDS),

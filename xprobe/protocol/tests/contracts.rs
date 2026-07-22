@@ -20,7 +20,7 @@ where
 #[test]
 fn event_contract_round_trips() {
     assert_round_trip::<Event>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "session_id": "xp_test",
         "event_id": "evt_1",
         "sequence": 1,
@@ -51,7 +51,7 @@ fn event_contract_round_trips() {
 #[test]
 fn host_capture_contract_round_trips() {
     assert_round_trip::<HostCaptureResult>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "session_id": "xp_uprobe_1234_1000",
         "target": {"pid": 1234, "process_start_time": 42},
@@ -60,7 +60,7 @@ fn host_capture_contract_round_trips() {
         "dropped": 0,
         "timed_out": false,
         "events": [{
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "session_id": "xp_uprobe_1234_1000",
             "event_id": "evt_1",
             "sequence": 1,
@@ -112,7 +112,7 @@ fn discovery_contract_round_trips() {
 #[test]
 fn error_contract_round_trips() {
     assert_round_trip::<ErrorResponse>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": false,
         "error": {
             "code": "SYMBOL_NOT_FOUND",
@@ -127,7 +127,7 @@ fn error_contract_round_trips() {
 #[test]
 fn capability_contract_round_trips() {
     assert_round_trip::<CapabilityReport>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "capabilities": {
             "uprobe": true,
@@ -163,7 +163,7 @@ fn capability_contract_round_trips() {
 #[test]
 fn measurement_spec_contract_round_trips() {
     assert_round_trip::<MeasurementSpec>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "name": "request_to_kernel",
         "target": {"pid": 1234, "process_start_time": 42},
         "start_selector": "uprobe:/srv/app:handle_request:entry",
@@ -179,7 +179,7 @@ fn measurement_spec_contract_round_trips() {
 #[test]
 fn trace_export_contract_round_trips() {
     assert_round_trip::<TraceExportResult>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "format": "chrome",
         "output": "/tmp/xprobe-trace.json",
@@ -190,7 +190,7 @@ fn trace_export_contract_round_trips() {
 #[test]
 fn measurement_result_contract_round_trips() {
     assert_round_trip::<MeasurementResult>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "session_id": "xp_test",
         "status": "completed",
@@ -235,7 +235,7 @@ fn measurement_result_contract_round_trips() {
 #[test]
 fn process_report_contract_round_trips() {
     assert_round_trip::<ProcessReport>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "target": {"pid": 1234, "process_start_time": 42},
         "executable": "/srv/app/server",
@@ -281,7 +281,7 @@ fn process_report_contract_round_trips() {
 #[test]
 fn resolved_probe_contract_round_trips() {
     assert_round_trip::<ResolvedProbe>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "target": {"pid": 1234, "process_start_time": 42},
         "selector": "uprobe:/srv/app/libserver.so:handle_request:entry",
@@ -305,7 +305,7 @@ fn resolved_probe_contract_round_trips() {
 #[test]
 fn validation_result_contract_round_trips() {
     assert_round_trip::<ValidationResult>(&json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "valid": false,
         "target": {"pid": 1234, "process_start_time": 42},
@@ -338,6 +338,11 @@ fn validation_result_contract_round_trips() {
             }
         },
         "match_policy": "exact",
+        "policy_recommendation": {
+            "policy": "exact",
+            "reason": "deterministic_correlation_key",
+            "compatible_policies": ["exact", "first_after", "nearest"]
+        },
         "requirements": {
             "needs_ebpf": false,
             "needs_cupti": true,
@@ -377,7 +382,7 @@ fn checked_in_schemas_are_current() {
 #[test]
 fn unknown_contract_fields_are_rejected() {
     let result = serde_json::from_value::<CapabilityReport>(json!({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "ok": true,
         "capabilities": {
             "uprobe": true,

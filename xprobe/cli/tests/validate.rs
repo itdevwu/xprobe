@@ -31,6 +31,13 @@ fn validate_reports_environment_requirements_without_attaching() {
     let result: ValidationResult =
         serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
     assert_eq!(result.match_policy, MatchPolicy::Exact);
+    assert_eq!(result.policy_recommendation.policy, MatchPolicy::Exact);
+    assert!(
+        result
+            .policy_recommendation
+            .compatible_policies
+            .contains(&MatchPolicy::FirstAfter)
+    );
     assert!(result.requirements.needs_cupti);
     assert!(result.requirements.needs_cupti_callback);
     assert!(result.requirements.needs_cupti_activity);
