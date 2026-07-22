@@ -38,7 +38,9 @@ def run_json(binary: pathlib.Path, arguments: list[str]) -> dict:
 
 
 def check_skill(workspace: pathlib.Path) -> None:
-    skill = (workspace / SKILL_PATH).read_text()
+    skill_path = workspace / SKILL_PATH
+    skill_root = skill_path.parent.resolve()
+    skill = skill_path.read_text()
     frontmatter = re.match(r"^---\n(.*?)\n---", skill, re.DOTALL)
     assert frontmatter is not None
     assert re.search(r"^name: xprobe-measure-latency$", frontmatter.group(1), re.MULTILINE)
@@ -66,6 +68,11 @@ def check_skill(workspace: pathlib.Path) -> None:
     assert "Expect a warning on automatic CUPTI injection" in skill
     assert "leave the CUPTI shared object mapped" in skill
     assert "Do not use unbounded" in skill
+
+    for relative_link in re.findall(r"\]\(([^)]+)\)", skill):
+        target = (skill_root / relative_link).resolve()
+        assert target.is_relative_to(skill_root), relative_link
+        assert target.is_file(), relative_link
 
     entries = {
         "codex": workspace / "AGENTS.md",

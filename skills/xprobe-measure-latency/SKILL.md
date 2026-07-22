@@ -5,9 +5,10 @@ description: Discover, validate, and measure bounded latency between Linux host 
 
 # Measure latency with xprobe
 
-Use JSON mode and treat checked-in schemas as the contract. Keep collection
-bounded. Read [references/result-quality.md](references/result-quality.md) when
-using temporal correlation or normalized clocks.
+Use JSON mode and keep collection bounded. Read
+[references/cli-contract.md](references/cli-contract.md) for selector and exit
+semantics. Read [references/result-quality.md](references/result-quality.md)
+before using temporal correlation or normalized clocks.
 
 ## Workflow
 
@@ -44,6 +45,3 @@ replacing the target identity and selectors with values from `discover`.
 - Do not claim exact causality for `first-after` or `nearest`.
 - Do not ignore drops, unmatched or ambiguous pairs, unknown clock error, or a
   `timed_out` status.
-
-Read `docs/cli-contract.md` for selector grammar, exit codes, and error
-envelopes.
