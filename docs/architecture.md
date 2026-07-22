@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the implemented xprobe 0.2.1 architecture.
+This document describes the implemented xprobe architecture.
 
 ## Boundary
 
@@ -77,23 +77,23 @@ and CPU/TID, updates bounded counters, and submits fixed records. Rust ownership
 detaches links on every return path.
 
 CUDA events use an in-process CUPTI Agent. CUDA 12 and CUDA 13 builds share the
-same source and capture ABI but link `libcupti.so.12` and `libcupti.so.13`
-respectively. CUDA 12 decodes Kernel9 records; CUDA 13 selects Kernel10,
-Kernel11, or Kernel12 from the runtime CUPTI version. The Agent subscribes to
-Runtime and Driver API callbacks and concurrent kernel, memcpy, and memset activity. Callbacks
-write fixed records to a bounded 65,536-slot array without blocking I/O. CUPTI
-activity timestamps are normalized to `CLOCK_MONOTONIC` through its timestamp
-callback or an explicit CUDA 12 clock calibration. Before each capture is
-written, activity timestamps must fall within the bounded Agent activation and
-snapshot window. The ABI host-monotonic feature flag is cleared when that check
-fails, preserving GPU same-domain durations while preventing cross-domain
-subtraction.
+same source and capture ABI but link their matching CUPTI SONAME. Loading the
+Agent creates a control socket; `measure` separately arms one fresh,
+`--max-events`-bounded capture with filters for its CUDA endpoints. Runtime and
+Driver callbacks plus kernel, memcpy, and memset activity are filtered before
+fixed records consume capacity. Callback hot paths do not perform blocking I/O
+or allocation.
 
-The Unix socket control protocol has two commands: snapshot and stop. Stop
-flushes final activity, returns the final capture, disables activities,
-unsubscribes callbacks, closes and unlinks the socket, and leaves the shared
-object mapped. A later measurement resets the bounded buffers and subscribes
-again.
+CUPTI activity timestamps are normalized to `CLOCK_MONOTONIC` through its
+timestamp callback or an explicit CUDA 12 clock calibration. Activity that
+began before the ARM epoch is excluded. The Agent verifies the retained window
+before setting the host-monotonic ABI feature, preserving GPU same-domain
+durations while preventing invalid cross-domain subtraction.
+
+Snapshot flushes and reads the active capture. Stop flushes and disables CUPTI
+but retains an externally managed socket for a later ARM. Automatically
+injected collection closes its private socket after the final capture. Neither
+path unloads the shared object.
 
 ## Online injection
 
