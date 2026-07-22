@@ -48,15 +48,17 @@ def check_skill(workspace: pathlib.Path) -> None:
     assert frontmatter is not None
     assert re.search(r"^name: xprobe-measure-latency$", frontmatter.group(1), re.MULTILINE)
     assert re.search(r"^description: .+", frontmatter.group(1), re.MULTILINE)
+    normalized_skill = re.sub(r"\s+", " ", skill)
 
     ordered_steps = [
+        "xprobe --version",
         "xprobe doctor",
         "xprobe discover",
         "xprobe validate",
         "xprobe measure",
         "Check `status`",
     ]
-    positions = [skill.index(step) for step in ordered_steps]
+    positions = [normalized_skill.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
     for quality_field in (
         "unmatched",
@@ -69,15 +71,81 @@ def check_skill(workspace: pathlib.Path) -> None:
         "confidence",
         "evidence",
     ):
-        assert quality_field in skill
-    assert "Expect a warning on automatic CUPTI injection" in skill
-    assert "leave the CUPTI shared object mapped" in skill
-    assert "Do not use unbounded" in skill
+        assert quality_field in normalized_skill
+    for investigation_step in (
+        "application-level latency baseline",
+        "short duration-bounded survey",
+        "scripts/analyze_trace.py",
+        "selector hints",
+        "busy union",
+        "overlap factor",
+        "NCU or PC sampling",
+    ):
+        assert investigation_step in normalized_skill
+    assert "leave the CUPTI shared object mapped" in normalized_skill
 
     for relative_link in re.findall(r"\]\(([^)]+)\)", skill):
         target = (skill_root / relative_link).resolve()
         assert target.is_relative_to(skill_root), relative_link
         assert target.is_file(), relative_link
+
+    analyzer = skill_root / "scripts/analyze_trace.py"
+    assert analyzer.is_file()
+    assert os.access(analyzer, os.X_OK)
+    assert not list(skill_root.rglob("__pycache__"))
+    assert not list(skill_root.rglob("*.pyc"))
+    examples = sorted((skill_root / "examples").glob("*.json"))
+    assert len(examples) >= 5
+    policies = set()
+    for example in examples:
+        specification = json.loads(example.read_text())
+        assert specification["schema_version"] == "2.0", example
+        assert specification["max_events"] > 0, example
+        policies.add(specification["match_policy"])
+    assert {"exact", "first_after", "stack_nested", "stream_order"} <= policies
+
+    investigation = (skill_root / "references/investigation.md").read_text()
+    quality = (skill_root / "references/result-quality.md").read_text()
+    trace_analysis = (skill_root / "references/trace-analysis.md").read_text()
+    normalized_investigation = re.sub(r"\s+", " ", investigation)
+    normalized_quality = re.sub(r"\s+", " ", quality)
+    normalized_trace_analysis = re.sub(r"\s+", " ", trace_analysis)
+    for required in (
+        "Triton",
+        "procfs start time",
+        "EVENT_RATE_TOO_HIGH",
+        "readelf -Ws",
+        "NO_MATCHED_SAMPLES",
+    ):
+        assert required in normalized_investigation
+    for required in (
+        "minimum_records",
+        "first selected event",
+        "ARM completion",
+        "Summed kernel",
+        "profiler",
+    ):
+        assert required in normalized_quality
+    for required in (
+        "busy_union_ns",
+        "summed_activity_ns",
+        "launch_variants",
+        "Cross-stream",
+    ):
+        assert required in normalized_trace_analysis
+
+    engineering_rules = re.sub(
+        r"\s+", " ", (workspace / "AGENTS.md").read_text()
+    )
+    for required in (
+        "external reviews as evidence to investigate",
+        "dedicated feature or fix branch",
+        "Rebase pull requests",
+        "GLIBC_2.34 ceiling",
+        "downloading the public archive",
+        "transient infrastructure failure",
+    ):
+        assert required in engineering_rules
 
     entries = {
         "codex": workspace / "AGENTS.md",

@@ -40,6 +40,14 @@ Direct `measure` calls require a positive `--samples` or `--duration-ms` bound.
 `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000. Use exactly
 one source mode: `--pid`, one or more `--input` files, or `--spec`.
 
+Kernel and other GPU activity durations require separate start and end records,
+so `max-events` is record capacity rather than sample capacity. Sample completion
+is checked after bounded snapshots and does not reserve space in the CUPTI
+buffer. `duration-ms` limits correlation from the first selected event and also
+sets a live stop from ARM completion; either samples or duration may complete a
+call when both are present. Timeout bounds the complete foreground operation and
+cleanup.
+
 `--events-out PATH` atomically writes the bounded capture with mode `0600`, not
 only matched evidence. Collection completeness and CUPTI capacity, observed,
 retained, dropped, and buffer utilization fields describe capture integrity
