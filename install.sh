@@ -2,7 +2,7 @@
 set -eu
 
 repository=${XPROBE_REPOSITORY:-itdevwu/xprobe}
-version=${XPROBE_VERSION:-0.2.1}
+version=${XPROBE_VERSION:-0.3.0}
 if [ -n "${XPROBE_PREFIX:-}" ]; then
   prefix=$XPROBE_PREFIX
 elif [ -n "${HOME:-}" ]; then
@@ -19,7 +19,7 @@ Install a released xprobe binary and its CUDA Agents.
 Usage: install.sh [--version VERSION] [--prefix DIR] [--uninstall]
 
 Options:
-  --version VERSION  Release to install (default: 0.2.1)
+  --version VERSION  Release to install (default: 0.3.0)
   --prefix DIR       Installation prefix (default: $HOME/.local)
   --uninstall        Remove xprobe from the selected prefix
   -h, --help         Show this help
@@ -82,8 +82,8 @@ set -- $glibc
 glibc_major=${2%%.*}
 glibc_minor=${2#*.}
 glibc_minor=${glibc_minor%%.*}
-if [ "$glibc_major" -lt 2 ] || { [ "$glibc_major" -eq 2 ] && [ "$glibc_minor" -lt 35 ]; }; then
-  fail "glibc 2.35 or newer is required; found $2"
+if [ "$glibc_major" -lt 2 ] || { [ "$glibc_major" -eq 2 ] && [ "$glibc_minor" -lt 34 ]; }; then
+  fail "glibc 2.34 or newer is required; found $2"
 fi
 
 source_dir=
