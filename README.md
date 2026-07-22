@@ -18,7 +18,7 @@ contracts, explicit correlation quality, and no daemon or server lifecycle.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.2.1/install.sh | sh
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.0/install.sh | sh
 ```
 
 This installs the released CLI and CUDA 12/13 Agents under `~/.local`. xprobe
@@ -32,7 +32,7 @@ Install the version-matched Skill with the open Agent Skills CLI:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.2.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.0/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -91,7 +91,7 @@ for safe reactivation.
 
 ## Support
 
-| Surface | 0.2.1 support |
+| Surface | 0.3.0 support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.34 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |

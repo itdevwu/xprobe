@@ -17,7 +17,7 @@ installer's responsibility:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.2.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.0/skills/xprobe-measure-latency \
   --global
 ```
 

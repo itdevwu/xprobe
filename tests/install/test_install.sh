@@ -41,7 +41,25 @@ else
 fi
 
 prefix=$temporary_dir/prefix
-HOME=$temporary_dir/home PATH=/usr/bin:/bin \
+mkdir -p "$temporary_dir/fake-bin"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'if [ "$1" = GNU_LIBC_VERSION ]; then' \
+  '  printf "glibc %s\\n" "$FAKE_GLIBC_VERSION"' \
+  'else' \
+  '  exec /usr/bin/getconf "$@"' \
+  'fi' >"$temporary_dir/fake-bin/getconf"
+chmod 0755 "$temporary_dir/fake-bin/getconf"
+
+if HOME=$temporary_dir/home FAKE_GLIBC_VERSION=2.33 \
+  PATH=$temporary_dir/fake-bin:/usr/bin:/bin \
+  "$source_dir/install.sh" --prefix "$prefix" >/dev/null 2>&1; then
+  printf 'installer accepted glibc 2.33\n' >&2
+  exit 1
+fi
+
+HOME=$temporary_dir/home FAKE_GLIBC_VERSION=2.34 \
+  PATH=$temporary_dir/fake-bin:/usr/bin:/bin \
   "$source_dir/install.sh" --prefix "$prefix"
 
 test -x "$prefix/bin/xprobe"
@@ -54,7 +72,8 @@ test -d "$prefix/share/xprobe/schemas"
 test -d "$prefix/share/xprobe/skills"
 "$prefix/bin/xprobe" --version
 
-HOME=$temporary_dir/home "$source_dir/install.sh" \
+HOME=$temporary_dir/home FAKE_GLIBC_VERSION=2.34 \
+  PATH=$temporary_dir/fake-bin:/usr/bin:/bin "$source_dir/install.sh" \
   --prefix "$prefix" --uninstall
 test ! -e "$prefix/bin/xprobe"
 test ! -e "$prefix/lib/xprobe"
