@@ -1,9 +1,11 @@
-use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command,
+};
 
 use xprobe_protocol::{
-    ClockDomain, CorrelationConfidence, ErrorCode, ErrorResponse, Event, EventSource, EventType,
-    HostCaptureResult, HostEvent, HostProbeKind, MeasurementResult, SchemaVersion, SessionStatus,
-    TargetIdentity,
+    CaptureCompleteness, ClockDomain, CorrelationConfidence, ErrorCode, ErrorResponse, Event,
+    EventSource, EventType, HostCaptureResult, HostEvent, HostProbeKind, MeasurementResult,
+    SchemaVersion, SessionStatus, TargetIdentity,
 };
 
 const HEADER_SIZE: usize = 80;
@@ -171,11 +173,27 @@ fn measures_exact_kernel_durations_from_a_completed_capture() {
     assert_eq!(result.measurement.latency_ns.max, 80);
     assert_eq!(result.correlation.confidence, CorrelationConfidence::Exact);
     assert_eq!(result.clock.alignment, "cupti_same_domain");
+    assert_eq!(
+        result.collection.completeness,
+        CaptureCompleteness::Complete
+    );
+    let cupti = result
+        .collection
+        .cupti
+        .as_ref()
+        .expect("CUPTI capture metadata must be reported");
+    assert_eq!(cupti.record_capacity, 4);
+    assert_eq!(cupti.observed_records, 4);
+    assert_eq!(cupti.retained_records, 4);
+    assert_eq!(cupti.dropped_records, 0);
+    assert!((cupti.buffer_utilization - 1.0).abs() < f64::EPSILON);
     assert_eq!(result.evidence.len(), 2);
     assert_eq!(result.evidence[0].latency_ns, 50);
     let evidence = fs::read_to_string(&evidence_path).expect("evidence must be written");
+    let mode = fs::metadata(&evidence_path).unwrap().permissions().mode() & 0o777;
     fs::remove_file(evidence_path).expect("evidence fixture must be removed");
     assert_eq!(evidence.lines().count(), 4);
+    assert_eq!(mode, 0o600);
 }
 
 #[test]
@@ -222,11 +240,56 @@ fn rejects_a_capture_that_reached_the_agent_record_limit() {
             .message
             .contains("configured limit of 2 records")
     );
+    assert_eq!(response.error.details["record_capacity"], 2);
+    assert_eq!(response.error.details["observed_records"], 3);
+    assert!(!response.error.hints.is_empty());
+}
+
+#[test]
+fn rejects_an_active_capture_as_incomplete() {
+    let path = capture_path("active");
+    write_capture(
+        &path,
+        &[
+            record(3, 100, 11, "test_kernel"),
+            record(4, 150, 11, "test_kernel"),
+        ],
+    );
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[24..28].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[28..32].copy_from_slice(&0_u32.to_le_bytes());
+    fs::write(&path, bytes).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            path.to_str().expect("temporary path must be UTF-8"),
+            "--from",
+            "cuda:kernel_start:name~test.*",
+            "--to",
+            "cuda:kernel_end:name~test.*",
+            "--match",
+            "exact",
+            "--samples",
+            "1",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let response: ErrorResponse = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response.error.code, ErrorCode::CuptiNotAvailable);
+    assert_eq!(response.error.details["capture_state"], "active");
+    assert!(!response.error.hints.is_empty());
 }
 
 #[test]
 fn rejects_unaligned_api_to_kernel_latency() {
     let path = capture_path("unaligned");
+    let evidence_path = capture_path("unaligned-events.jsonl");
     write_capture(
         &path,
         &[
@@ -247,6 +310,10 @@ fn rejects_unaligned_api_to_kernel_latency() {
             "exact",
             "--samples",
             "1",
+            "--events-out",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
             "--json",
         ])
         .output()
@@ -257,6 +324,106 @@ fn rejects_unaligned_api_to_kernel_latency() {
     let error: ErrorResponse =
         serde_json::from_slice(&output.stdout).expect("stdout must contain error JSON");
     assert_eq!(error.error.code, ErrorCode::ClockAlignmentFailed);
+    assert_eq!(error.error.details["start_clock"], "host_monotonic");
+    assert_eq!(error.error.details["end_clock"], "cupti");
+    assert_eq!(
+        error.error.details["artifact_path"],
+        evidence_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(error.error.details["artifact_event_count"], 2);
+    assert!(!error.error.hints.is_empty());
+    let evidence = fs::read_to_string(&evidence_path).expect("failure evidence must be written");
+    fs::remove_file(evidence_path).expect("failure evidence must be removed");
+    assert_eq!(evidence.lines().count(), 2);
+}
+
+#[test]
+fn preserves_capture_when_no_samples_match() {
+    let path = capture_path("no-match");
+    let evidence_path = capture_path("no-match-events.jsonl");
+    write_capture(
+        &path,
+        &[
+            record(3, 100, 11, "actual_kernel"),
+            record(4, 150, 11, "actual_kernel"),
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            path.to_str().expect("temporary path must be UTF-8"),
+            "--from",
+            "cuda:kernel_start:name~missing.*",
+            "--to",
+            "cuda:kernel_end:name~missing.*",
+            "--match",
+            "exact",
+            "--samples",
+            "1",
+            "--events-out",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    fs::remove_file(path).expect("capture fixture must be removed");
+
+    assert_eq!(output.status.code(), Some(1));
+    let error: ErrorResponse = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error.error.code, ErrorCode::NoMatchedSamples);
+    assert_eq!(error.error.details["captured_events"], 2);
+    assert_eq!(error.error.details["artifact_event_count"], 2);
+    let evidence = fs::read_to_string(&evidence_path).expect("failure evidence must be written");
+    fs::remove_file(evidence_path).expect("failure evidence must be removed");
+    assert_eq!(evidence.lines().count(), 2);
+}
+
+#[test]
+fn reports_artifact_failure_without_hiding_measurement_failure() {
+    let path = capture_path("artifact-failure");
+    let missing_parent = capture_path("missing-parent");
+    let evidence_path = missing_parent.join("events.jsonl");
+    write_capture(
+        &path,
+        &[
+            record(3, 100, 11, "actual_kernel"),
+            record(4, 150, 11, "actual_kernel"),
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            path.to_str().expect("temporary path must be UTF-8"),
+            "--from",
+            "cuda:kernel_start:name~missing.*",
+            "--to",
+            "cuda:kernel_end:name~missing.*",
+            "--match",
+            "exact",
+            "--samples",
+            "1",
+            "--events-out",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    fs::remove_file(path).expect("capture fixture must be removed");
+
+    assert_eq!(output.status.code(), Some(1));
+    let error: ErrorResponse = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error.error.code, ErrorCode::TraceExportFailed);
+    assert_eq!(
+        error.error.details["original_error_code"],
+        "NO_MATCHED_SAMPLES"
+    );
+    assert!(!error.error.hints.is_empty());
 }
 
 #[test]
@@ -335,6 +502,8 @@ fn measures_host_to_kernel_latency_from_merged_captures() {
         serde_json::from_slice(&output.stdout).expect("stdout must contain structured error JSON");
     assert_eq!(result.error.code, ErrorCode::EventsDropped);
     assert!(result.error.message.contains("dropped 2 events"));
+    assert_eq!(result.error.details["dropped_events"], 2);
+    assert!(!result.error.hints.is_empty());
 }
 
 #[test]

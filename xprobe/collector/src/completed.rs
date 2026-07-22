@@ -6,11 +6,20 @@ use xprobe_protocol::{Event, HostCaptureResult};
 use crate::cupti::{self, CuptiCaptureState, CuptiDecodeError};
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CompletedCuptiStatistics {
+    pub complete: bool,
+    pub record_capacity: u64,
+    pub observed_records: u64,
+    pub dropped_records: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompletedCapture {
     pub dropped_records: u64,
     pub unknown_records: u64,
     pub record_limit_reached: Option<u64>,
     pub capture_failed: bool,
+    pub cupti: Option<CompletedCuptiStatistics>,
     pub events: Vec<Event>,
 }
 
@@ -97,6 +106,12 @@ pub fn decode(bytes: &[u8], session_id: &str) -> Result<CompletedCapture, Comple
                 capture.state,
                 CuptiCaptureState::Idle | CuptiCaptureState::Failed
             ),
+            cupti: Some(CompletedCuptiStatistics {
+                complete: capture.state == CuptiCaptureState::Stopped,
+                record_capacity: capture.record_capacity,
+                observed_records: capture.observed_records,
+                dropped_records: capture.dropped_records,
+            }),
             events: capture.events,
         })
     }
@@ -117,6 +132,7 @@ fn decode_json(bytes: &[u8]) -> Result<CompletedCapture, CompletedCaptureError> 
             unknown_records: 0,
             record_limit_reached: None,
             capture_failed: false,
+            cupti: None,
             events: capture.events,
         });
     }
@@ -134,6 +150,7 @@ fn decode_json(bytes: &[u8]) -> Result<CompletedCapture, CompletedCaptureError> 
         unknown_records: 0,
         record_limit_reached: None,
         capture_failed: false,
+        cupti: None,
         events,
     })
 }
@@ -153,6 +170,7 @@ pub fn merge(
         unknown_records: 0,
         record_limit_reached: None,
         capture_failed: false,
+        cupti: None,
         events: Vec::new(),
     };
     let mut target_pid = None;
@@ -169,6 +187,25 @@ pub fn merge(
             .record_limit_reached
             .max(capture.record_limit_reached);
         merged.capture_failed |= capture.capture_failed;
+        if let Some(cupti) = capture.cupti {
+            if let Some(existing) = merged.cupti.as_mut() {
+                existing.complete &= cupti.complete;
+                existing.record_capacity = existing
+                    .record_capacity
+                    .checked_add(cupti.record_capacity)
+                    .ok_or(CompletedCaptureError::CounterOverflow)?;
+                existing.observed_records = existing
+                    .observed_records
+                    .checked_add(cupti.observed_records)
+                    .ok_or(CompletedCaptureError::CounterOverflow)?;
+                existing.dropped_records = existing
+                    .dropped_records
+                    .checked_add(cupti.dropped_records)
+                    .ok_or(CompletedCaptureError::CounterOverflow)?;
+            } else {
+                merged.cupti = Some(cupti);
+            }
+        }
         for event in capture.events {
             if let Some(expected) = target_pid {
                 if event.pid != expected {
@@ -269,6 +306,7 @@ mod tests {
                     unknown_records: 0,
                     record_limit_reached: None,
                     capture_failed: false,
+                    cupti: None,
                     events: vec![event(12, 30)],
                 },
                 CompletedCapture {
@@ -276,6 +314,7 @@ mod tests {
                     unknown_records: 0,
                     record_limit_reached: None,
                     capture_failed: false,
+                    cupti: None,
                     events: vec![event(12, 20)],
                 },
             ],
@@ -296,6 +335,7 @@ mod tests {
                 unknown_records: 0,
                 record_limit_reached: None,
                 capture_failed: false,
+                cupti: None,
                 events: vec![event(12, 20), event(13, 30)],
             }],
             "merged",

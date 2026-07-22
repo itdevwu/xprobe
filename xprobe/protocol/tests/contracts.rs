@@ -223,9 +223,11 @@ fn measurement_result_contract_round_trips() {
             "estimated_error_ns": 2500
         },
         "collection": {
+            "completeness": "complete",
             "host_events": 1,
             "cuda_events": 1,
-            "dropped_events": 0
+            "dropped_events": 0,
+            "cupti": null
         },
         "evidence": [],
         "warnings": []

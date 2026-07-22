@@ -80,6 +80,12 @@
         "abi_type"
       ]
     },
+    "CaptureCompleteness": {
+      "type": "string",
+      "enum": [
+        "complete"
+      ]
+    },
     "ClockDomain": {
       "type": "string",
       "enum": [
@@ -111,10 +117,23 @@
     "CollectionSummary": {
       "type": "object",
       "properties": {
+        "completeness": {
+          "$ref": "#/$defs/CaptureCompleteness"
+        },
         "cuda_events": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "cupti": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CuptiCollectionSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "dropped_events": {
           "type": "integer",
@@ -129,6 +148,7 @@
       },
       "additionalProperties": false,
       "required": [
+        "completeness",
         "host_events",
         "cuda_events",
         "dropped_events"
@@ -291,6 +311,43 @@
         }
       },
       "additionalProperties": false
+    },
+    "CuptiCollectionSummary": {
+      "type": "object",
+      "properties": {
+        "buffer_utilization": {
+          "type": "number",
+          "format": "double"
+        },
+        "dropped_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "observed_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "record_capacity": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retained_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record_capacity",
+        "observed_records",
+        "retained_records",
+        "dropped_records",
+        "buffer_utilization"
+      ]
     },
     "Dim3": {
       "type": "object",

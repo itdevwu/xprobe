@@ -62,6 +62,8 @@ def check_skill(workspace: pathlib.Path) -> None:
         "unmatched",
         "ambiguous",
         "dropped",
+        "collection completeness",
+        "buffer utilization",
         "clock alignment",
         "correlation method",
         "confidence",

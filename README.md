@@ -71,7 +71,9 @@ across CPU and GPU events after selecting the correct CUDA worker.
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
 contain every matched start/end event, latency statistics, unmatched and
-ambiguous counts, drops, clock quality, correlation confidence, and warnings.
+ambiguous counts, collection completeness, CUPTI buffer usage, clock quality,
+correlation confidence, and warnings. With `--events-out`, the bounded capture
+is also preserved when correlation or clock validation fails.
 
 ## Public CLI
 

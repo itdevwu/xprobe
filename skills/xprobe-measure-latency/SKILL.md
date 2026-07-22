@@ -29,8 +29,9 @@ before using temporal correlation or normalized clocks.
    --no-color`. Use `--events-out PATH [--format jsonl|chrome]` when an artifact
    is needed. For a versioned configuration, use `xprobe measure --spec FILE`.
 5. Check `status`, matched/unmatched/ambiguous/dropped counts, clock alignment,
-   `estimated_error_ns`, correlation method/confidence/score, every warning,
-   and each `evidence` pair before interpreting latency.
+   `estimated_error_ns`, collection completeness and CUPTI buffer utilization,
+   correlation method/confidence/score, every warning, and each `evidence` pair
+   before interpreting latency.
 
 For completed captures, replace `--pid` with one or more `--input` arguments.
 Use `examples/request-to-first-kernel.json` as a `MeasurementSpec` shape after
@@ -47,3 +48,5 @@ replacing the target identity and selectors with values for the selected worker.
 - Do not claim exact causality for `first-after` or `nearest`.
 - Do not ignore drops, unmatched or ambiguous pairs, unknown clock error, or a
   `timed_out` status.
+- On a nonzero result after collection, read `details` and `hints` and inspect
+  the `events-out` artifact before changing selectors, policy, or bounds.

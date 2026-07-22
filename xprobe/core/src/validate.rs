@@ -756,10 +756,10 @@ mod tests {
                     symbol_virtual_address: Some(0x1000),
                     symbol_size: Some(16),
                     file_offset: 0x1000,
-                    runtime_address: 0x401000,
+                    runtime_address: 0x0040_1000,
                     mapping: ProcessMapping {
-                        start_address: 0x400000,
-                        end_address: 0x500000,
+                        start_address: 0x0040_0000,
+                        end_address: 0x0050_0000,
                         file_offset: 0,
                     },
                 }),
