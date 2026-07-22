@@ -21,6 +21,10 @@ test: build
 test-agent-contract: build
     python3 tests/agent-contract/test_contract.py target/debug/xprobe
 
+test-install:
+    sh -n install.sh tests/install/test_install.sh
+    tests/install/test_install.sh
+
 test-bpf:
     cmake -S . -B build -G Ninja -DXPROBE_BUILD_BPF=ON
     cmake --build build --target xprobe-bpf
