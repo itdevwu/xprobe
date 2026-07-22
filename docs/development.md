@@ -38,8 +38,11 @@ tests/install/test_install.sh dist/xprobe-*-linux-x86_64.tar.gz
 ```
 
 Packaging checks both CUPTI SONAMEs, rejects build-time RPATHs, and includes the
-versioned installer. The archive test installs into a temporary prefix, runs the
-packaged binary, verifies both Agents and shared resources, and uninstalls it.
+versioned installer. It also rejects CLI or Agent ELF dependencies above
+`GLIBC_2.34`, matching the actual v0.2.1 ELF requirement and preventing a
+release runner change from silently raising it. The archive test installs into
+a temporary prefix, runs the packaged binary, verifies both Agents and shared
+resources, and uninstalls it.
 
 ## eBPF tests
 

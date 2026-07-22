@@ -1,6 +1,6 @@
 # Installation
 
-The released xprobe package supports Linux x86_64 with glibc 2.35 or newer. It
+The released xprobe package supports Linux x86_64 with glibc 2.34 or newer. It
 contains the CLI and separate CUDA 12 and CUDA 13 CUPTI Agents. A CUDA toolkit
 is not required to install xprobe; NVIDIA driver and CUPTI availability matter
 only when measuring GPU events.

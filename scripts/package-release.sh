@@ -14,6 +14,7 @@ agent_cuda12=${XPROBE_CUPTI_AGENT_CUDA12:-build/cuda12/cupti/libxprobe-cupti.so}
 agent_cuda13=${XPROBE_CUPTI_AGENT_CUDA13:-build/cuda13/cupti/libxprobe-cupti.so}
 
 cargo build --workspace --release --locked
+scripts/check-glibc-ceiling.sh target/release/xprobe 2.34
 
 verify_agent() {
   local agent=$1
@@ -33,6 +34,7 @@ verify_agent() {
     echo "${agent} contains a build-time RPATH or RUNPATH" >&2
     exit 1
   fi
+  scripts/check-glibc-ceiling.sh "${agent}" 2.34
 }
 
 verify_agent "${agent_cuda12}" 12

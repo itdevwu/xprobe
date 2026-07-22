@@ -22,7 +22,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 ```
 
 This installs the released CLI and CUDA 12/13 Agents under `~/.local`. xprobe
-supports Linux x86_64 with glibc 2.35 or newer. NVIDIA CUDA is optional unless
+supports Linux x86_64 with glibc 2.34 or newer. NVIDIA CUDA is optional unless
 GPU events are selected. See [Installation](docs/installation.md) for checksum
 verification, custom prefixes, upgrades, and removal.
 
@@ -91,7 +91,7 @@ for safe reactivation.
 
 | Surface | 0.2.1 support |
 | --- | --- |
-| OS/architecture | Linux x86_64, glibc 2.35 or newer |
+| OS/architecture | Linux x86_64, glibc 2.34 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |
 | CUDA callbacks | Runtime and Driver API entry/exit |
 | GPU activity | Kernel, memcpy, and memset start/end |
