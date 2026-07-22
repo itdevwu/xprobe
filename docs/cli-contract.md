@@ -130,8 +130,10 @@ activate the CUPTI agent. If it is absent, `--agent` or
 then the matching development build path. An unobservable target major is
 accepted only when exactly one supported CUPTI major is installed. Injection
 requires Linux x86_64, a shared mount namespace, and ptrace permission. It emits
-a stderr warning and `CUPTI_AGENT_INJECTED`. Final stop disables CUPTI and
-removes the socket while leaving the `.so` mapped.
+a stderr warning and `CUPTI_AGENT_INJECTED`. Each live call arms a fresh
+`--max-events`-bounded capture with endpoint filters. Final stop disables CUPTI;
+automatic injection also removes its private socket while leaving the `.so`
+mapped.
 
 Completed inputs may be CUPTI ABI binary, bounded host-capture JSON, or Event
 JSONL. Repeated inputs are merged after target-PID checks. Unknown records,

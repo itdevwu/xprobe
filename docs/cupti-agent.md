@@ -1,98 +1,83 @@
-# CUPTI agent and online injection
+# CUPTI Agent and online injection
 
-The versioned `libxprobe-cupti.so` Agents collect CUDA Runtime/Driver callback boundaries and
-concurrent kernel, memcpy, and memset activity. The public CLI normally manages
-it through `measure --pid`; applications do not need to preload it.
+`libxprobe-cupti.so` collects CUDA Runtime/Driver callback boundaries and
+kernel, memcpy, and memset activity inside the target process. Normal users
+invoke it through `measure --pid`; it is a bounded collector, not a daemon or a
+persistent profiling session.
 
-Release packages provide `lib/xprobe/cuda12/libxprobe-cupti.so`, linked to
-`libcupti.so.12`, and `lib/xprobe/cuda13/libxprobe-cupti.so`, linked to
-`libcupti.so.13`. xprobe selects the major from target mappings or, when the
-target exposes no toolkit major, from a single unambiguous installed CUPTI.
-Conflicting, missing, and unsupported versions fail before ptrace attachment.
-The Agent independently validates host-clock alignment at capture time. A
-runtime that cannot establish alignment still produces CUPTI-domain GPU
-durations, but host/GPU measurements fail with `CLOCK_ALIGNMENT_FAILED`.
+Release packages contain separate Agents linked to `libcupti.so.12` and
+`libcupti.so.13`. xprobe selects the major from the target's mapped CUDA
+libraries, or from one unambiguous installed CUPTI major when the target does
+not expose one. A conflict, unsupported major, or missing Agent fails before
+ptrace attachment.
 
-## Lifecycle
+## Measurement lifecycle
 
-1. `measure` validates the selectors and inspects mapped libraries.
-2. If the Agent is absent, xprobe selects the CUDA 12 or 13 build, warns, and
-   remotely calls target `dlopen` and `dlsym` through ptrace.
-3. `xprobe_cupti_agent_start(socket_path)` resets bounded state, subscribes
-   callbacks/activity, and starts a mode-0600 Unix socket.
-4. Snapshot requests force-flush CUPTI and return one immutable ABI capture.
-5. Stop returns a final capture, disables activities, unsubscribes callbacks,
-   closes/unlinks the socket, and leaves the library mapped.
-6. A later start repeats from fresh counters without another `dlopen`.
+Validation is read-only. When it reports `injection_required`, `measure` warns
+before remotely calling target-side `dlopen`, `dlsym`, and
+`xprobe_cupti_agent_start` through ptrace. Loading the shared object establishes
+a mode-0600 Unix control socket but does not start CUPTI collection.
 
-The target and xprobe must use the same mount namespace. ptrace credentials,
-Yama, seccomp, and LSM policy apply. xprobe does not use a hypothetical
-cross-process CUPTI attach API; CUPTI's dynamic attach APIs run inside the
-target process.
+Each measurement sends `ARM` with its event capacity and at most two endpoint
+filters. The Agent allocates fresh capture storage, installs the filters, and
+then enables callbacks and activity collection. API names and domains, memcpy
+directions, and simple kernel-name exact/prefix/suffix/contains patterns are
+filtered before they consume capture capacity. Complex kernel regular
+expressions use a wider Agent filter and retain exact Rust-side matching.
 
-The exported compatibility entry points remain:
+`SNAPSHOT` flushes pending activity and returns an immutable capture. `STOP`
+returns the final capture and disables CUPTI while retaining the socket, so a
+preloaded Agent can service a later bounded measurement. An automatically
+injected measurement uses `CLOSE`, which performs the same logical stop and
+then removes its private socket. In both cases the shared object remains mapped;
+it must not be passed to `dlclose` while CUDA may still reference callback code.
 
-- `InitializeInjection` for `CUDA_INJECTION64_PATH` startup injection;
-- `xprobe_cupti_agent_initialize` for environment-configured integration;
-- `xprobe_cupti_agent_flush` for completed file output;
-- status and ABI-version queries.
+Activity records that began before the ARM epoch are excluded as a whole. This
+prevents CUPTI's boundary records, which can have an unavailable start
+timestamp, from becoming malformed or unmatched in-window evidence.
 
-Do not `dlclose` the agent in a live CUDA process. Callback or activity code may
-still be referenced by the CUDA/CUPTI runtime even after logical stop.
+The target and xprobe must share a mount namespace. ptrace credentials, Yama,
+seccomp, and LSM policy still apply. Every remote call restores the stopped
+thread's registers and touched stack state before detach, including failure
+paths.
 
-## Control protocol
+## Control and capture ABI
 
-Each Unix socket connection sends a fixed 16-byte native-endian request:
+Control version 2 uses one fixed 312-byte native-endian request defined by
+`cupti/include/xprobe/cupti_agent.h`. It contains magic, version, command,
+record capacity, and two fixed endpoint filters. Commands are `ARM`,
+`SNAPSHOT`, `STOP`, and `CLOSE`. Every accepted command returns one capture
+followed by EOF.
 
-```text
-magic[8] = "XPCTRL\0\0"
-version  = 1 (u32)
-command  = 1 snapshot | 2 stop (u32)
-```
+Capture ABI v2 starts with an 80-byte header and zero or more 200-byte records.
+The header reports capture state and stop reason, configured capacity, observed
+and retained counts, Agent and CUPTI drops, unknown activity, record sizes, and
+feature flags. Capacity comes from `--max-events`; there is no special 2^16
+limit. Reaching the configured limit freezes capture and causes measurement to
+fail explicitly instead of returning partial success.
 
-The response is the capture ABI followed by EOF. Invalid requests are logged
-and closed without a capture.
+Records preserve process/thread, device/context/stream, correlation IDs,
+callback domain/ID, dimensions or transfer metadata, and one bounded name.
+Activity timestamps are normalized to `CLOCK_MONOTONIC` through the CUPTI
+timestamp callback or CUDA 12 clock calibration. If alignment cannot be
+established, GPU durations remain usable in the CUPTI domain but host/GPU
+subtraction fails with `CLOCK_ALIGNMENT_FAILED`. CUPTI provides no numeric
+interpolation error bound, so normalized results emit
+`CLOCK_ERROR_UNAVAILABLE`.
 
-## Capture ABI v1
+## Hot-path constraints
 
-The response starts with a 48-byte header and zero or more 200-byte records.
-The header contains magic `XPCUPTI\0`, ABI/header/record sizes, feature flags,
-record count, drops, and unknown-record count. The C layout is defined in
-`cupti/include/xprobe/cupti_agent.h`.
+The API callback reads time and fixed metadata and writes one preallocated
+record. Endpoint matching is bounded string/integer comparison. The path does
+not allocate, perform file or socket I/O, symbolize names, or take blocking
+locks. CUPTI activity buffer decoding is likewise bounded by the configured
+capture capacity; flushing and response I/O run on the control thread.
 
-Feature flags declare host-monotonic activity timestamp normalization and
-transfer records. Records preserve PID/TID, device/context/stream, CUPTI
-correlation IDs, callback domain/ID, dimensions or transfer metadata, and a
-bounded name. The maximum retained record count is 65,536; overflow increments
-the drop counter.
+## Verification
 
-CUPTI does not expose a numeric bound for its GPU-to-host interpolation.
-Normalized activity therefore has `timestamp_error_ns: null`, and measurement
-emits `CLOCK_ERROR_UNAVAILABLE`.
-
-## Callback constraints
-
-The API callback reads time and fixed metadata and commits one preallocated
-record. It performs no allocation, file I/O, socket I/O, symbolization, or
-blocking synchronization. Activity buffers are allocated and decoded through
-CUPTI's activity callbacks. Snapshot/stop flushing runs on the socket thread.
-
-## Build and test
-
-```bash
-just test-cupti
-just test-cupti-live-cuda12
-just test-cupti-live-cuda12-min
-just test-injection-live-cuda12
-just test-multisource-live-cuda12
-just test-cupti-live
-just test-injection-live
-just test-multisource-live
-just benchmark-gpu
-```
-
-`test-injection-live` starts a CUDA target with no preload, runs two sequential
-measurements, verifies first-load and reactivation behavior, checks socket
-cleanup, and confirms one mapped agent path. The pinned CUDA devel container
-compiles the agent against CUPTI; the tested device is an NVIDIA GeForce RTX
-3060 Laptop GPU, driver 592.00, compute capability 8.6.
+`just test-cupti-live` checks ABI and activity collection. `just
+test-injection-live` performs first-load and reactivation measurements against
+one mapped Agent. `just test-multisource-live` covers host/GPU orchestration and
+repeated ARM/STOP windows. CUDA 12 variants exercise the same paths against the
+other linked major, and `just benchmark-gpu` checks callback overhead and
+timestamp precision.
