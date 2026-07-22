@@ -2,8 +2,8 @@
 
 xprobe exposes four public commands: `doctor`, `discover`, `validate`, and
 `measure`. Use `--json --non-interactive --no-color` with every command. JSON
-responses carry `schema_version: "1.0"`; diagnostics and the injection warning
-go to stderr.
+responses carry `schema_version: "1.0"`, while `discover` process-candidate
+results carry `"2.0"`; diagnostics and the injection warning go to stderr.
 
 ## Discovery and selectors
 

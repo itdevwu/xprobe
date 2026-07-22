@@ -21,7 +21,7 @@
       "$ref": "#/$defs/TargetIdentity"
     },
     "schema_version": {
-      "$ref": "#/$defs/SchemaVersion"
+      "$ref": "#/$defs/DiscoverySchemaVersion"
     },
     "total_candidates": {
       "type": "integer",
@@ -86,10 +86,10 @@
         "gpu_uuids"
       ]
     },
-    "SchemaVersion": {
+    "DiscoverySchemaVersion": {
       "type": "string",
       "enum": [
-        "1.0"
+        "2.0"
       ]
     },
     "TargetIdentity": {
