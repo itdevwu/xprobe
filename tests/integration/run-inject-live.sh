@@ -70,8 +70,27 @@ run_measure() {
   wait "${measurement_pid}"
 }
 
+run_api_measure() {
+  agent_args=()
+  if [[ ${auto_agent} != 1 ]]; then
+    agent_args=(--agent "${agent}")
+  fi
+  "${xprobe_bin}" measure \
+    --pid "${target_pid}" \
+    "${agent_args[@]}" \
+    --from 'cuda:runtime_api:cudaLaunchKernel:entry' \
+    --to 'cuda:runtime_api:cudaLaunchKernel:exit' \
+    --match exact \
+    --samples 3 \
+    --max-events 32 \
+    --timeout-ms 10000 \
+    --json --non-interactive --no-color \
+    >"$1.json" 2>"$1.stderr"
+}
+
 run_measure "$1/first"
 run_measure "$1/second"
+run_api_measure "$1/api"
 
 if [[ ${auto_agent} == 1 ]]; then
   mapped_agents=$(awk '$0 ~ /lib\/xprobe\/cuda(12|13)\/libxprobe-cupti.so/ {print $NF}' "/proc/${target_pid}/maps" | sort -u | wc -l)

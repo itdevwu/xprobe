@@ -44,6 +44,8 @@ int xprobe_cupti_agent_flush(void)
 #include <cupti.h>
 #include <cupti_activity.h>
 #include <cupti_callbacks.h>
+#include <cupti_driver_cbid.h>
+#include <cupti_runtime_cbid.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1326,6 +1328,99 @@ static int enable_activity(uint32_t bit, CUpti_ActivityKind kind)
     return XPROBE_CUPTI_AGENT_READY;
 }
 
+static int api_filter_matches_callback(CUpti_CallbackDomain domain,
+                                       const char *callback_name)
+{
+    char semantic_name[XPROBE_CUPTI_NAME_LENGTH];
+    size_t length;
+
+    copy_name(semantic_name, callback_name);
+    length = bounded_name_length(semantic_name);
+    if (length < XPROBE_CUPTI_NAME_LENGTH) {
+        for (size_t index = length; index > 2U; --index) {
+            size_t suffix = index - 2U;
+
+            if (semantic_name[suffix] != '_' ||
+                semantic_name[suffix + 1U] != 'v') {
+                continue;
+            }
+            size_t digit = suffix + 2U;
+            while (digit < length && semantic_name[digit] >= '0' &&
+                   semantic_name[digit] <= '9') {
+                ++digit;
+            }
+            if (digit == length && digit > suffix + 2U) {
+                semantic_name[suffix] = '\0';
+            }
+            break;
+        }
+    }
+    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+        const struct xprobe_cupti_filter *filter = &capture_filters[index];
+
+        if ((filter->record_kind == XPROBE_CUPTI_CUDA_API_ENTRY ||
+             filter->record_kind == XPROBE_CUPTI_CUDA_API_EXIT) &&
+            (filter->api_domain == 0U ||
+             filter->api_domain == (uint32_t)domain) &&
+            name_matches(filter, semantic_name) != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int enable_filtered_callbacks(CUpti_CallbackDomain domain,
+                                     uint32_t callback_count)
+{
+    uint32_t enabled = 0U;
+
+    for (uint32_t callback_id = 1U; callback_id < callback_count; ++callback_id) {
+        const char *callback_name = NULL;
+        CUptiResult result =
+            cuptiGetCallbackName(domain, callback_id, &callback_name);
+
+        if (result == CUPTI_ERROR_INVALID_PARAMETER) {
+            continue;
+        }
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiGetCallbackName", result);
+            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        }
+        if (api_filter_matches_callback(domain, callback_name) == 0) {
+            continue;
+        }
+        result = cuptiEnableCallback(1U, subscriber, domain, callback_id);
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiEnableCallback", result);
+            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        }
+        ++enabled;
+    }
+    if (enabled == 0U) {
+        fprintf(stderr,
+                "xprobe CUPTI: no callback ID matched the requested API filter\n");
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
+    return XPROBE_CUPTI_AGENT_READY;
+}
+
+static int enable_api_callbacks(CUpti_CallbackDomain domain,
+                                uint32_t callback_count)
+{
+    CUptiResult result;
+
+    if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
+        result = cuptiEnableDomain(1U, subscriber, domain);
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiEnableDomain", result);
+            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        }
+        return XPROBE_CUPTI_AGENT_READY;
+    }
+    return enable_filtered_callbacks(domain, callback_count);
+}
+
 static int activate_capture(void)
 {
 #if CUPTI_API_VERSION >= 130000
@@ -1408,19 +1503,19 @@ static int activate_capture(void)
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
     if (needs_runtime != 0) {
-        result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_RUNTIME_API);
-        if (result != CUPTI_SUCCESS) {
-            report_cupti_error("cuptiEnableDomain", result);
+        if (enable_api_callbacks(CUPTI_CB_DOMAIN_RUNTIME_API,
+                                 CUPTI_RUNTIME_TRACE_CBID_SIZE) !=
+            XPROBE_CUPTI_AGENT_READY) {
             shutdown_agent();
-            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+            return xprobe_cupti_agent_status();
         }
     }
     if (needs_driver != 0) {
-        result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_DRIVER_API);
-        if (result != CUPTI_SUCCESS) {
-            report_cupti_error("cuptiEnableDomain", result);
+        if (enable_api_callbacks(CUPTI_CB_DOMAIN_DRIVER_API,
+                                 CUPTI_DRIVER_TRACE_CBID_SIZE) !=
+            XPROBE_CUPTI_AGENT_READY) {
             shutdown_agent();
-            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+            return xprobe_cupti_agent_status();
         }
     }
     atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_READY,
