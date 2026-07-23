@@ -25,9 +25,11 @@ pub use event::{
 };
 pub use export::{ExportFormat, TraceExportResult};
 pub use measurement::{
-    CaptureCompleteness, ClockQuality, CollectionSummary, CorrelationConfidence,
-    CorrelationSummary, CuptiCollectionSummary, LatencyStatistics, MatchPolicy, MatchedEventPair,
-    Measurement, MeasurementResult, MeasurementSpec, SampleSummary, SessionStatus, TargetIdentity,
+    AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
+    AggregateInventory, AggregateInventoryResult, CaptureCompleteness, ClockQuality,
+    CollectionSummary, CorrelationConfidence, CorrelationSummary, CuptiCollectionSummary,
+    LatencyStatistics, MatchPolicy, MatchedEventPair, Measurement, MeasurementMode,
+    MeasurementResult, MeasurementSpec, SampleSummary, SessionStatus, TargetIdentity,
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};

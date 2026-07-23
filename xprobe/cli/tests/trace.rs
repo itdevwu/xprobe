@@ -1,7 +1,8 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use xprobe_protocol::{
-    ErrorCode, ErrorResponse, MatchPolicy, MeasurementSpec, SchemaVersion, TargetIdentity,
+    ErrorCode, ErrorResponse, MatchPolicy, MeasurementMode, MeasurementSpec, SchemaVersion,
+    TargetIdentity,
 };
 
 fn spec_path(name: &str) -> PathBuf {
@@ -27,7 +28,9 @@ fn trace_rejects_a_reused_target_from_the_spec() {
         samples: Some(1),
         duration_ms: None,
         timeout_ms: 1_000,
-        max_events: 100,
+        max_events: Some(100),
+        measurement_mode: MeasurementMode::Exact,
+        max_groups: None,
     };
     fs::write(&path, serde_json::to_vec_pretty(&spec).unwrap())
         .expect("trace spec must be written");
@@ -67,7 +70,9 @@ fn measure_accepts_a_versioned_live_spec() {
         samples: Some(1),
         duration_ms: None,
         timeout_ms: 1_000,
-        max_events: 100,
+        max_events: Some(100),
+        measurement_mode: MeasurementMode::Exact,
+        max_groups: None,
     };
     fs::write(&path, serde_json::to_vec_pretty(&spec).unwrap())
         .expect("measurement spec must be written");

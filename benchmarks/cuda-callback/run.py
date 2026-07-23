@@ -35,7 +35,7 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         "record_offset": fields[13],
     }
     assert fields[0] == b"XPCUPTI\0", header
-    assert header["abi_version"] == 3, header
+    assert header["abi_version"] == 4, header
     assert header["header_size"] == HEADER.size, header
     assert header["record_size"] == RECORD.size, header
     assert len(data) == HEADER.size + header["record_count"] * RECORD.size, header

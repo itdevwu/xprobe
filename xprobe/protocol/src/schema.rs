@@ -1,12 +1,13 @@
 use schemars::{Schema, schema_for};
 
 use crate::{
-    CapabilityReport, DiscoveryResult, ErrorResponse, Event, HostCaptureResult, MeasurementResult,
-    MeasurementSpec, ProcessReport, ResolvedProbe, TraceExportResult, ValidationResult,
+    AggregateInventoryResult, CapabilityReport, DiscoveryResult, ErrorResponse, Event,
+    HostCaptureResult, MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe,
+    TraceExportResult, ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 11] {
+pub fn generated_schemas() -> [(&'static str, Schema); 12] {
     [
         ("event.schema.json", schema_for!(Event)),
         ("error.schema.json", schema_for!(ErrorResponse)),
@@ -14,6 +15,10 @@ pub fn generated_schemas() -> [(&'static str, Schema); 11] {
         (
             "measurement-result.schema.json",
             schema_for!(MeasurementResult),
+        ),
+        (
+            "aggregate-inventory-result.schema.json",
+            schema_for!(AggregateInventoryResult),
         ),
         ("capability.schema.json", schema_for!(CapabilityReport)),
         ("discover.schema.json", schema_for!(DiscoveryResult)),

@@ -79,6 +79,30 @@ def main() -> None:
         assert any(warning["code"] == "CUPTI_AGENT_INJECTED" for warning in first["warnings"])
         assert all(warning["code"] != "CUPTI_AGENT_INJECTED" for warning in second["warnings"])
         assert all(warning["code"] != "CUPTI_AGENT_INJECTED" for warning in api["warnings"])
+        aggregate = json.loads((output / "aggregate.json").read_text())
+        assert aggregate["ok"] is True
+        assert aggregate["status"] == "completed"
+        assert aggregate["collection"]["observed_activities"] > 0
+        assert (
+            aggregate["collection"]["observed_activities"]
+            > aggregate["collection"]["group_capacity"]
+        )
+        assert aggregate["collection"]["observed_activities"] == aggregate["collection"]["grouped_activities"]
+        assert aggregate["collection"]["dropped_activities"] == 0
+        assert aggregate["collection"]["groups"] == 1
+        assert aggregate["collection"]["occupied_slots"] == 1
+        assert aggregate["inventory"]["groups"][0]["activity"] == "kernel"
+        assert aggregate["inventory"]["groups"][0]["count"] > 0
+        assert aggregate["inventory"]["groups"][0]["duration_ns"]["min"] > 0
+        assert all(
+            warning["code"] != "CUPTI_AGENT_INJECTED"
+            for warning in aggregate["warnings"]
+        )
+        aggregate_limit = json.loads((output / "aggregate-limit.json").read_text())
+        assert aggregate_limit["ok"] is False
+        assert aggregate_limit["error"]["code"] == "EVENT_RATE_TOO_HIGH"
+        assert aggregate_limit["error"]["details"]["group_capacity"] == 1
+        assert aggregate_limit["error"]["details"]["observed_activities"] >= 2
         assert int((output / "mapped-agents.txt").read_text()) == 1
         if package is not None:
             expected_major = 12 if ":12." in sys.argv[1] else 13
@@ -96,7 +120,7 @@ def main() -> None:
                     "schema_version": "2.0",
                     "ok": True,
                     "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
-                    "measurements": 3,
+                    "measurements": 4,
                 },
                 sort_keys=True,
             )

@@ -8,6 +8,11 @@ __global__ void xprobe_multisource_kernel(int *output)
     *output += 1;
 }
 
+__global__ void xprobe_auxiliary_kernel(int *output)
+{
+    *output += 2;
+}
+
 extern "C" __attribute__((noinline, visibility("default"))) void
 xprobe_request_marker()
 {
@@ -55,6 +60,10 @@ int main(int argc, char **argv)
         xprobe_request_marker();
         xprobe_multisource_kernel<<<1, 1>>>(device_output);
         result = cudaGetLastError();
+        if (result == cudaSuccess) {
+            xprobe_auxiliary_kernel<<<1, 1>>>(device_output);
+            result = cudaGetLastError();
+        }
         if (result == cudaSuccess) {
             result = cudaDeviceSynchronize();
         }

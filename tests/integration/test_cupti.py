@@ -49,8 +49,8 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
     if len(data) < HEADER.size:
         raise AssertionError("CUPTI capture is shorter than its header")
     fields = HEADER.unpack_from(data)
-    if fields[1] != 3:
-        raise AssertionError(f"expected capture ABI 3, found {fields[1]}")
+    if fields[1] != 4:
+        raise AssertionError(f"expected capture ABI 4, found {fields[1]}")
     header = {
         "abi_version": fields[1],
         "header_size": fields[2],
@@ -67,7 +67,7 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         "record_offset": fields[13],
     }
     assert fields[0] == b"XPCUPTI\0"
-    assert header["abi_version"] == 3
+    assert header["abi_version"] == 4
     assert header["header_size"] == HEADER.size
     assert header["record_size"] == RECORD.size
     assert header["feature_flags"] in {2, 3}

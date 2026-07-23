@@ -18,9 +18,26 @@
       "$ref": "#/$defs/MatchPolicy"
     },
     "max_events": {
-      "type": "integer",
+      "type": [
+        "integer",
+        "null"
+      ],
       "format": "uint64",
+      "default": null,
       "minimum": 0
+    },
+    "max_groups": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "default": null,
+      "minimum": 0
+    },
+    "measurement_mode": {
+      "$ref": "#/$defs/MeasurementMode",
+      "default": "exact"
     },
     "name": {
       "type": [
@@ -58,8 +75,7 @@
     "start_selector",
     "end_selector",
     "match_policy",
-    "timeout_ms",
-    "max_events"
+    "timeout_ms"
   ],
   "$defs": {
     "MatchPolicy": {
@@ -70,6 +86,13 @@
         "nearest",
         "stack_nested",
         "stream_order"
+      ]
+    },
+    "MeasurementMode": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "aggregate"
       ]
     },
     "SchemaVersion": {
