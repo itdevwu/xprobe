@@ -11,8 +11,10 @@ or while repeatable traffic is active. A quiet target commonly produces
 Keep launcher and worker roles separate. `discover --pid ROOT_PID` reports only
 CUDA context holders, so a wrapper PID should not be selected unless it appears
 as a candidate. Map GPU UUID and command/rank metadata to workload ownership.
-Measure multiple relevant workers one at a time. After a restart, rerun discovery
-and use PID plus procfs start time; never reuse an old PID-only choice.
+For multiple relevant workers, follow [multi-process.md](multi-process.md):
+inventory a representative worker where homogeneity is defensible, then run
+independent narrow captures concurrently. After a restart, rerun discovery and
+use PID plus procfs start time; never reuse an old PID-only choice.
 
 ## Map broadly before selecting
 

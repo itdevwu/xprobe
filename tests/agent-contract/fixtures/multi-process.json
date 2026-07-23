@@ -1,0 +1,88 @@
+{
+  "schema_version": "2.0",
+  "homogeneous": true,
+  "representative": {
+    "pid": 4101,
+    "process_start_time": 90001
+  },
+  "selected": [
+    {
+      "pid": 4101,
+      "process_start_time": 90001
+    },
+    {
+      "pid": 4102,
+      "process_start_time": 90002
+    }
+  ],
+  "discovery": {
+    "candidates": [
+      {
+        "target": {
+          "pid": 4101,
+          "process_start_time": 90001
+        },
+        "command_line": ["python", "worker.py", "--rank", "0"],
+        "gpu_uuids": ["GPU-fixture"]
+      },
+      {
+        "target": {
+          "pid": 4102,
+          "process_start_time": 90002
+        },
+        "command_line": ["python", "worker.py", "--rank", "1"],
+        "gpu_uuids": ["GPU-fixture"]
+      },
+      {
+        "target": {
+          "pid": 4199,
+          "process_start_time": 90199
+        },
+        "command_line": ["python", "unrelated.py"],
+        "gpu_uuids": ["GPU-fixture"]
+      }
+    ]
+  },
+  "validations": [
+    {
+      "schema_version": "2.0",
+      "ok": true,
+      "valid": true,
+      "target": {
+        "pid": 4101,
+        "process_start_time": 90001
+      },
+      "warnings": [
+        {
+          "code": "TARGET_PROCESS_WILL_BE_MODIFIED",
+          "message": "fixture mutation warning"
+        }
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "ok": true,
+      "valid": true,
+      "target": {
+        "pid": 4102,
+        "process_start_time": 90002
+      },
+      "warnings": [
+        {
+          "code": "TARGET_PROCESS_WILL_BE_MODIFIED",
+          "message": "fixture mutation warning"
+        }
+      ]
+    }
+  ],
+  "stale_validation": {
+    "schema_version": "2.0",
+    "ok": true,
+    "valid": true,
+    "target": {
+      "pid": 4102,
+      "process_start_time": 99002
+    },
+    "warnings": []
+  }
+}

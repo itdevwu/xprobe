@@ -12,6 +12,8 @@ to install or repair the CLI and this Skill. Read
 unknown workload. Read [references/result-quality.md](references/result-quality.md)
 before interpreting correlation, clocks, concurrency, or overhead. The exact
 CLI and selector syntax is in [references/cli-contract.md](references/cli-contract.md).
+For more than one selected process, follow
+[references/multi-process.md](references/multi-process.md).
 
 ## Workflow
 
@@ -30,9 +32,10 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
 4. For GPU or mixed work, run `xprobe discover --pid ROOT_PID --limit 200 --json
    --non-interactive --no-color`. It returns NVML-confirmed CUDA context holders
    under that process tree. Choose a worker from workload, PID/start-time,
-   command line, and GPU UUID evidence. Measure workers separately when several
-   ranks are relevant. For CPU-only work, do not run `discover`; continue with
-   the selected process PID.
+   command line, and GPU UUID evidence. When several ranks are relevant, retain
+   every selected PID plus process start time and use the multi-process workflow.
+   For CPU-only work, do not run `discover`; continue with the selected process
+   PID.
 5. Map GPU or mixed work before choosing a name. Validate broad kernel, memcpy,
    or memset activity endpoints, then collect one bounded, representative coarse
    inventory per event family with `measure --aggregate --duration-ms ...`.
@@ -40,7 +43,9 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
    directly; do not require CUDA or CUPTI. Scope breadth and collection duration
    are independent: keep the selector broad where an activity inventory exists,
    choose a duration that covers the workload cycle being diagnosed, and give
-   `--max-groups` headroom.
+   `--max-groups` headroom. For defensibly homogeneous workers, inventory one
+   representative worker and apply its evidence-derived narrow selector to all
+   selected workers.
 6. Use aggregate names, selector hints, counts, duration totals and bounds, and
    transfer bytes to form one narrow hypothesis. For an exact GPU artifact, run
    `scripts/analyze_trace.py` and use launch variants, stream distribution, busy
@@ -48,14 +53,18 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
    [references/trace-analysis.md](references/trace-analysis.md) when interpreting
    the report. For CPU-only work, use resolved host selectors and result evidence
    to form the hypothesis instead.
-7. Run `xprobe validate --pid WORKER_PID --from SELECTOR --to SELECTOR --match
-   POLICY --json --non-interactive --no-color`. Stop when `valid` is false. If
+7. Run one read-only `xprobe validate` per selected worker. Compare every
+   response target with the PID plus process start time retained from discovery
+   before mutation, and stop that worker when `valid` is false. If
    `agent_activation` is `injection_required`, disclose that `measure` will
    ptrace the target and leave the CUPTI shared object mapped. Use
    `policy_recommendation` explicitly; xprobe never changes policy for the caller.
 8. Run one bounded `xprobe measure` for that hypothesis. Set samples or duration,
    timeout, and max-events; write `--events-out` when the capture may need audit
-   or offline re-correlation. Use `--spec FILE` for a versioned live configuration.
+   or offline re-correlation. Use a versioned `--spec FILE` containing the stable
+   target identity. For multiple workers, launch the independent calls
+   concurrently, preserve per-worker outputs and failures, and never correlate
+   across process artifacts.
 9. Check `status`, matched/unmatched/ambiguous/dropped counts, collection
    completeness, buffer utilization, clock alignment, estimated error,
    correlation method/confidence/score, warnings, and every evidence pair.

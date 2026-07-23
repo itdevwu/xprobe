@@ -34,6 +34,13 @@ installation with `skills` CLI 1.5.20 in isolated
 home directories. This pinned test protects released behavior while the
 documented `skills@1` selector receives compatible path updates.
 
+For multi-process workloads, the Skill selects explicit PID/start-time
+identities, inventories a representative worker when homogeneity is supported
+by evidence, and asks the agent framework to launch one independent bounded
+measurement per selected worker concurrently. Results, warnings, failures, and
+artifacts remain per process; xprobe does not add a multi-process command or
+claim cross-process causality.
+
 ## Contract test
 
 ```bash

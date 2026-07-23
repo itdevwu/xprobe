@@ -43,3 +43,21 @@ target RSS from procfs while the command runs. It deliberately does not gate on
 short GPU throughput windows: device clock changes can make those samples move
 opposite to profiler overhead. The JSON output includes every asserted resource
 and collection value so regressions remain diagnosable.
+
+Run the agent-orchestrated worker benchmark with:
+
+```bash
+just benchmark-multiprocess
+```
+
+Fresh homogeneous batches of one, two, and four CUDA workers are discovered by
+PID plus start time. One representative worker supplies a broad aggregate
+inventory; its selector hints are validated for every worker before independent
+spec-based measurements start concurrently. The benchmark rejects identity
+changes, missing injection warnings, path reuse, non-overlapping commands,
+incomplete captures, and drops.
+
+Its JSON keeps validation, command timing, quality, artifact metadata, and
+baseline-versus-collection throughput per worker. Perturbation is reported
+without a fixed pass ratio because shared GPU scheduling and first injection
+cost vary by workload and worker count.

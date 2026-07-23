@@ -118,10 +118,12 @@ def check_skill(workspace: pathlib.Path) -> None:
 
     investigation = (skill_root / "references/investigation.md").read_text()
     quality = (skill_root / "references/result-quality.md").read_text()
+    multi_process = (skill_root / "references/multi-process.md").read_text()
     trace_analysis = (skill_root / "references/trace-analysis.md").read_text()
     setup = (skill_root / "references/setup.md").read_text()
     normalized_investigation = re.sub(r"\s+", " ", investigation)
     normalized_quality = re.sub(r"\s+", " ", quality)
+    normalized_multi_process = re.sub(r"\s+", " ", multi_process)
     normalized_trace_analysis = re.sub(r"\s+", " ", trace_analysis)
     normalized_setup = re.sub(r"\s+", " ", setup)
     for required in (
@@ -143,6 +145,17 @@ def check_skill(workspace: pathlib.Path) -> None:
         "max-groups",
     ):
         assert required in normalized_quality
+    for required in (
+        "representative worker",
+        "target.process_start_time",
+        "target` exactly matches",
+        "native concurrent tool calls",
+        "Do not cancel sibling commands",
+        "Never reuse an artifact path",
+        "Do not concatenate artifacts",
+        "overall experiment incomplete",
+    ):
+        assert required in normalized_multi_process
     for required in (
         "busy_union_ns",
         "summed_activity_ns",

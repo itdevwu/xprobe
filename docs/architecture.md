@@ -46,7 +46,9 @@ that pair before and after metadata operations and attachment. PID reuse returns
 the requested process-tree root, and returns only confirmed CUDA context
 holders with stable process identity, parent PID, command line, and GPU UUIDs.
 It does not attach and does not choose a worker. That orchestration belongs to
-the calling Agent or user.
+the calling Agent or user. A multi-process investigation uses one bounded
+command per selected PID/start-time identity; concurrency and per-worker failure
+handling remain in the caller, and event correlation never crosses processes.
 
 Host selector resolution converts ELF virtual addresses through load segments
 to file offsets, then through `/proc/<pid>/maps` to runtime addresses. This

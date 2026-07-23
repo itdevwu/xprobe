@@ -19,10 +19,12 @@ test: build
     ctest --test-dir build --output-on-failure
     python3 tests/agent-contract/test_contract.py target/debug/xprobe
     python3 tests/agent-contract/test_trace_analysis.py
+    python3 tests/agent-contract/test_multi_process_workflow.py
 
 test-agent-contract: build
     python3 tests/agent-contract/test_contract.py target/debug/xprobe
     python3 tests/agent-contract/test_trace_analysis.py
+    python3 tests/agent-contract/test_multi_process_workflow.py
 
 test-skill-install:
     tests/agent-contract/test_skill_install.sh
@@ -71,6 +73,9 @@ benchmark-gpu:
 
 benchmark-aggregate:
     python3 benchmarks/cuda-aggregate/run.py "{{cuda13_devel_image}}"
+
+benchmark-multiprocess:
+    python3 benchmarks/cuda-multiprocess/run.py "{{cuda13_devel_image}}"
 
 fmt:
     cargo fmt --all
