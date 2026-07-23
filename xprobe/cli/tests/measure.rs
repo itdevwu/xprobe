@@ -8,7 +8,7 @@ use xprobe_protocol::{
     SchemaVersion, SessionStatus, TargetIdentity,
 };
 
-const HEADER_SIZE: usize = 80;
+const HEADER_SIZE: usize = 88;
 const RECORD_SIZE: usize = 200;
 
 fn capture_path(name: &str) -> PathBuf {
@@ -35,8 +35,8 @@ fn record(kind: u32, timestamp: u64, correlation_id: u32, name: &str) -> [u8; RE
 fn write_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
     let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
     bytes[0..8].copy_from_slice(b"XPCUPTI\0");
-    bytes[8..12].copy_from_slice(&2_u32.to_le_bytes());
-    bytes[12..16].copy_from_slice(&80_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[12..16].copy_from_slice(&88_u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&200_u32.to_le_bytes());
     bytes[24..28].copy_from_slice(&3_u32.to_le_bytes());
     bytes[28..32].copy_from_slice(&1_u32.to_le_bytes());
@@ -54,8 +54,8 @@ fn write_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
 fn write_normalized_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
     let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
     bytes[0..8].copy_from_slice(b"XPCUPTI\0");
-    bytes[8..12].copy_from_slice(&2_u32.to_le_bytes());
-    bytes[12..16].copy_from_slice(&80_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[12..16].copy_from_slice(&88_u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&200_u32.to_le_bytes());
     bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
     bytes[24..28].copy_from_slice(&3_u32.to_le_bytes());

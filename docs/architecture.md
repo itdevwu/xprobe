@@ -89,10 +89,12 @@ began before the ARM epoch is excluded. The Agent verifies the retained window
 before setting the host-monotonic ABI feature, preserving GPU same-domain
 durations while preventing invalid cross-domain subtraction.
 
-Snapshot flushes and reads the active capture. Stop flushes and disables CUPTI
-but retains an externally managed socket for a later ARM. Automatically
-injected collection closes its private socket after the final capture. Neither
-path unloads the shared object.
+Snapshot flushes and reads only records after a checked caller watermark. The
+CLI rejects noncontiguous offsets and counter rollback while accumulating the
+bounded capture. Stop flushes the final delta and disables CUPTI but retains an
+externally managed socket for a later ARM. Automatically injected collection
+closes its private socket after the final capture. Neither path unloads the
+shared object.
 
 ## Online injection
 

@@ -17,13 +17,13 @@ use xprobe_protocol::{
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
-const CONTROL_VERSION: u32 = 2;
-const ABI_VERSION: u32 = 2;
-const HEADER_SIZE: usize = 80;
-const HEADER_SIZE_U32: u32 = 80;
+const CONTROL_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 3;
+const HEADER_SIZE: usize = 88;
+const HEADER_SIZE_U32: u32 = 88;
 const RECORD_SIZE: usize = 200;
 const RECORD_SIZE_U32: u32 = 200;
-const CONTROL_SIZE: usize = 312;
+const CONTROL_SIZE: usize = 320;
 const FILTER_SIZE: usize = 144;
 const FILTER_COUNT: usize = 2;
 const FILTER_NAME_SIZE: usize = 128;
@@ -89,6 +89,7 @@ pub struct CuptiArmConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CuptiCapture {
+    pub record_offset: u64,
     pub state: CuptiCaptureState,
     pub stop_reason: CuptiStopReason,
     pub record_capacity: u64,
@@ -151,6 +152,7 @@ pub enum CuptiDecodeError {
     InvalidCaptureState(u32),
     InvalidStopReason(u32),
     InvalidCounters {
+        offset: u64,
         records: u64,
         capacity: u64,
         observed: u64,
@@ -217,12 +219,13 @@ impl fmt::Display for CuptiDecodeError {
                 write!(formatter, "CUPTI capture stop reason {reason} is invalid")
             }
             Self::InvalidCounters {
+                offset,
                 records,
                 capacity,
                 observed,
             } => write!(
                 formatter,
-                "CUPTI capture counters are inconsistent: records={records}, \
+                "CUPTI capture counters are inconsistent: offset={offset}, records={records}, \
                  capacity={capacity}, observed={observed}"
             ),
             Self::CounterOverflow => {
@@ -293,7 +296,7 @@ pub fn arm(
     session_id: &str,
     config: &CuptiArmConfig,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
-    request(socket_path, timeout, session_id, 1, Some(config))
+    request(socket_path, timeout, session_id, 1, 0, Some(config))
 }
 
 /// Request one immutable capture snapshot from a running CUPTI agent.
@@ -309,8 +312,9 @@ pub fn snapshot(
     socket_path: &Path,
     timeout: Duration,
     session_id: &str,
+    record_offset: u64,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
-    request(socket_path, timeout, session_id, 2, None)
+    request(socket_path, timeout, session_id, 2, record_offset, None)
 }
 
 /// Request a final snapshot and logically disable a running CUPTI agent.
@@ -324,8 +328,9 @@ pub fn stop(
     socket_path: &Path,
     timeout: Duration,
     session_id: &str,
+    record_offset: u64,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
-    request(socket_path, timeout, session_id, 3, None)
+    request(socket_path, timeout, session_id, 3, record_offset, None)
 }
 
 /// Stop capture and close the Agent control socket.
@@ -337,8 +342,9 @@ pub fn close(
     socket_path: &Path,
     timeout: Duration,
     session_id: &str,
+    record_offset: u64,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
-    request(socket_path, timeout, session_id, 4, None)
+    request(socket_path, timeout, session_id, 4, record_offset, None)
 }
 
 fn request(
@@ -346,9 +352,10 @@ fn request(
     timeout: Duration,
     session_id: &str,
     command: u32,
+    record_offset: u64,
     config: Option<&CuptiArmConfig>,
 ) -> Result<CuptiCapture, CuptiSnapshotError> {
-    let control = encode_control(command, config)?;
+    let control = encode_control(command, record_offset, config)?;
     let mut stream =
         UnixStream::connect(socket_path).map_err(|source| CuptiSnapshotError::Connect {
             path: socket_path.to_owned(),
@@ -373,12 +380,14 @@ fn request(
 
 fn encode_control(
     command: u32,
+    record_offset: u64,
     config: Option<&CuptiArmConfig>,
 ) -> Result<[u8; CONTROL_SIZE], CuptiSnapshotError> {
     let mut control = [0_u8; CONTROL_SIZE];
     control[..8].copy_from_slice(CONTROL_MAGIC);
     control[8..12].copy_from_slice(&CONTROL_VERSION.to_ne_bytes());
     control[12..16].copy_from_slice(&command.to_ne_bytes());
+    control[24..32].copy_from_slice(&record_offset.to_ne_bytes());
     let Some(config) = config else {
         return Ok(control);
     };
@@ -393,9 +402,14 @@ fn encode_control(
             config.filters.len()
         )));
     }
+    if record_offset != 0 {
+        return Err(CuptiSnapshotError::InvalidControl(
+            "CUPTI ARM record offset must be zero".to_owned(),
+        ));
+    }
     control[16..24].copy_from_slice(&config.record_capacity.to_ne_bytes());
     for (index, filter) in config.filters.iter().enumerate() {
-        let offset = 24 + index * FILTER_SIZE;
+        let offset = 32 + index * FILTER_SIZE;
         control[offset..offset + 4].copy_from_slice(&(filter.record_kind as u32).to_ne_bytes());
         control[offset + 4..offset + 8].copy_from_slice(&(filter.api_domain as u32).to_ne_bytes());
         control[offset + 8..offset + 12]
@@ -475,8 +489,13 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     let record_count_raw = read_u64(bytes, 32);
     let record_capacity = read_u64(bytes, 40);
     let observed_records = read_u64(bytes, 48);
-    if record_count_raw > record_capacity || observed_records < record_count_raw {
+    let record_offset = read_u64(bytes, 80);
+    let committed_records = record_offset
+        .checked_add(record_count_raw)
+        .ok_or(CuptiDecodeError::CounterOverflow)?;
+    if committed_records > record_capacity || observed_records < committed_records {
         return Err(CuptiDecodeError::InvalidCounters {
+            offset: record_offset,
             records: record_count_raw,
             capacity: record_capacity,
             observed: observed_records,
@@ -502,7 +521,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         events.push(decode_record(record, index, session_id, feature_flags)?);
     }
     events.sort_by_key(|event| event.timestamp_ns);
-    let mut sequence = 0_u64;
+    let mut sequence = record_offset;
     for event in &mut events {
         event.sequence = sequence;
         event.event_id = format!("evt_{sequence}");
@@ -517,6 +536,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         .checked_add(cupti_dropped_records)
         .ok_or(CuptiDecodeError::CounterOverflow)?;
     Ok(CuptiCapture {
+        record_offset,
         state,
         stop_reason,
         record_capacity,
@@ -966,9 +986,25 @@ mod tests {
     }
 
     #[test]
+    fn decodes_incremental_capture_offsets() {
+        let mut bytes = normalized_capture(&[record(3, 100, 7, "test_kernel")]);
+        bytes[40..48].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[48..56].copy_from_slice(&3_u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&2_u64.to_le_bytes());
+
+        let decoded = decode_capture(&bytes, "xp_delta").expect("delta must decode");
+
+        assert_eq!(decoded.record_offset, 2);
+        assert_eq!(decoded.events.len(), 1);
+        assert_eq!(decoded.events[0].sequence, 2);
+        assert_eq!(decoded.events[0].event_id, "evt_2");
+    }
+
+    #[test]
     fn encodes_bounded_arm_filters() {
         let control = encode_control(
             1,
+            0,
             Some(&CuptiArmConfig {
                 record_capacity: 250_000,
                 filters: vec![CuptiEventFilter {
@@ -981,23 +1017,25 @@ mod tests {
         )
         .expect("ARM request must encode");
 
-        assert_eq!(control.len(), 312);
+        assert_eq!(control.len(), 320);
         assert_eq!(&control[0..8], super::CONTROL_MAGIC);
         assert_eq!(u32::from_ne_bytes(control[12..16].try_into().unwrap()), 1);
         assert_eq!(
             u64::from_ne_bytes(control[16..24].try_into().unwrap()),
             250_000
         );
-        assert_eq!(u32::from_ne_bytes(control[24..28].try_into().unwrap()), 3);
-        assert_eq!(u32::from_ne_bytes(control[36..40].try_into().unwrap()), 2);
-        assert_eq!(&control[40..46], b"flash_");
-        assert!(control[168..].iter().all(|byte| *byte == 0));
+        assert_eq!(u64::from_ne_bytes(control[24..32].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(control[32..36].try_into().unwrap()), 3);
+        assert_eq!(u32::from_ne_bytes(control[44..48].try_into().unwrap()), 2);
+        assert_eq!(&control[48..54], b"flash_");
+        assert!(control[176..].iter().all(|byte| *byte == 0));
     }
 
     #[test]
     fn rejects_unbounded_arm_requests() {
         let error = encode_control(
             1,
+            0,
             Some(&CuptiArmConfig {
                 record_capacity: 1,
                 filters: Vec::new(),
@@ -1006,5 +1044,13 @@ mod tests {
         .expect_err("empty filter set must fail");
 
         assert!(error.to_string().contains("one or two endpoint filters"));
+    }
+
+    #[test]
+    fn encodes_incremental_snapshot_offset() {
+        let control = encode_control(2, 42, None).expect("snapshot request must encode");
+
+        assert_eq!(u64::from_ne_bytes(control[24..32].try_into().unwrap()), 42);
+        assert!(control[32..].iter().all(|byte| *byte == 0));
     }
 }
