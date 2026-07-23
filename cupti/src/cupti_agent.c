@@ -374,12 +374,12 @@ static int name_matches(const struct xprobe_cupti_filter *filter,
     }
     filter_length = bounded_name_length(filter->name);
     record_length = bounded_name_length(record_name);
-    if (filter_length == XPROBE_CUPTI_NAME_LENGTH ||
-        record_length == XPROBE_CUPTI_NAME_LENGTH) {
+    if (filter_length == XPROBE_CUPTI_NAME_LENGTH) {
         return 0;
     }
     if (filter->name_match == XPROBE_CUPTI_NAME_EXACT) {
-        return filter_length == record_length &&
+        return record_length < XPROBE_CUPTI_NAME_LENGTH &&
+               filter_length == record_length &&
                memcmp(filter->name, record_name, filter_length) == 0;
     }
     if (filter->name_match == XPROBE_CUPTI_NAME_PREFIX) {
@@ -387,7 +387,8 @@ static int name_matches(const struct xprobe_cupti_filter *filter,
                memcmp(filter->name, record_name, filter_length) == 0;
     }
     if (filter->name_match == XPROBE_CUPTI_NAME_SUFFIX) {
-        return filter_length <= record_length &&
+        return record_length < XPROBE_CUPTI_NAME_LENGTH &&
+               filter_length <= record_length &&
                memcmp(filter->name, record_name + record_length - filter_length,
                       filter_length) == 0;
     }

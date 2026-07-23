@@ -26,7 +26,7 @@ const RECORD_SIZE_U32: u32 = 200;
 const CONTROL_SIZE: usize = 328;
 const FILTER_SIZE: usize = 144;
 const FILTER_COUNT: usize = 2;
-const FILTER_NAME_SIZE: usize = 128;
+pub const CUPTI_NAME_CAPACITY: usize = 128;
 const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
 const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
 const FEATURE_AGGREGATE_RECORDS: u32 = 1 << 2;
@@ -108,6 +108,7 @@ pub enum CuptiAggregateActivity {
 pub struct CuptiAggregateGroup {
     pub activity: CuptiAggregateActivity,
     pub name: Option<String>,
+    pub name_complete: Option<bool>,
     pub device_id: Option<u32>,
     pub memcpy_kind: Option<MemcpyKind>,
     pub count: u64,
@@ -464,9 +465,9 @@ fn encode_control(
             CuptiNameFilter::Contains(name) => (4, name.as_str()),
         };
         let name_bytes = name.as_bytes();
-        if name_bytes.len() >= FILTER_NAME_SIZE || name_bytes.contains(&0) {
+        if name_bytes.len() >= CUPTI_NAME_CAPACITY || name_bytes.contains(&0) {
             return Err(CuptiSnapshotError::InvalidControl(format!(
-                "CUPTI filter name must be a NUL-free string shorter than {FILTER_NAME_SIZE} bytes"
+                "CUPTI filter name must be a NUL-free string shorter than {CUPTI_NAME_CAPACITY} bytes"
             )));
         }
         control[offset + 12..offset + 16].copy_from_slice(&name_match.to_ne_bytes());
@@ -679,6 +680,7 @@ fn decode_aggregate_record(
     Ok(CuptiAggregateGroup {
         activity,
         name: has_name.then(|| name.to_owned()),
+        name_complete: has_name.then_some(name_length + 1 < CUPTI_NAME_CAPACITY),
         device_id: optional_unknown(read_u32(record, 44)),
         memcpy_kind,
         count,
@@ -887,9 +889,9 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        CuptiApiDomain, CuptiArmConfig, CuptiCaptureMode, CuptiDecodeError, CuptiEventFilter,
-        CuptiMemcpyKind, CuptiNameFilter, CuptiRecordKind, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE,
-        decode_capture, encode_control, read_snapshot,
+        CUPTI_NAME_CAPACITY, CuptiApiDomain, CuptiArmConfig, CuptiCaptureMode, CuptiDecodeError,
+        CuptiEventFilter, CuptiMemcpyKind, CuptiNameFilter, CuptiRecordKind, HEADER_SIZE,
+        OUTPUT_MAGIC, RECORD_SIZE, decode_capture, encode_control, read_snapshot,
     };
     use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind};
 
@@ -1203,12 +1205,29 @@ mod tests {
             decoded.aggregate_groups[0].name.as_deref(),
             Some("vector_add")
         );
+        assert_eq!(decoded.aggregate_groups[0].name_complete, Some(true));
         assert_eq!(decoded.aggregate_groups[0].count, 4);
         assert_eq!(
             decoded.aggregate_groups[1].memcpy_kind,
             Some(MemcpyKind::HostToDevice)
         );
         assert_eq!(decoded.aggregate_groups[1].total_bytes, Some(4096));
+    }
+
+    #[test]
+    fn marks_a_full_name_buffer_as_possibly_truncated() {
+        let name = "x".repeat(CUPTI_NAME_CAPACITY - 1);
+        let decoded = decode_capture(
+            &aggregate_capture(&[aggregate_record(3, 1, 100, 0, 0, &name)], 1),
+            "xp_aggregate_name",
+        )
+        .expect("aggregate capture must decode");
+
+        assert_eq!(
+            decoded.aggregate_groups[0].name.as_deref(),
+            Some(name.as_str())
+        );
+        assert_eq!(decoded.aggregate_groups[0].name_complete, Some(false));
     }
 
     #[test]

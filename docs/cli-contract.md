@@ -181,6 +181,10 @@ inventory, not exact event evidence: it reports count, total/min/max/mean
 duration, optional transferred bytes, table occupancy, and drop completeness.
 Aggregate kernel regex must be reducible to an exact, prefix, suffix, or
 contains filter because this mode intentionally has no Rust-side event pass.
+Each kernel group reports `name_complete`. CUPTI names that fill the fixed
+127-byte observed prefix are marked `false`; their selector hints use that
+prefix instead of claiming an exact full name, so the next capture can still
+filter in the Agent hot path.
 
 Live host endpoints attach PID-scoped eBPF probes. Linux syscall endpoints use
 raw tracepoints so they do not depend on tracingfs event IDs; ordinary named

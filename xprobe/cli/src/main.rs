@@ -1872,7 +1872,7 @@ fn bounded_kernel_name_filter(pattern: &str) -> cupti::CuptiNameFilter {
         let Some(literal) = regex_literal(inner) else {
             continue;
         };
-        if literal.is_empty() || literal.len() >= 128 {
+        if literal.is_empty() || literal.len() >= cupti::CUPTI_NAME_CAPACITY {
             continue;
         }
         return match kind {
@@ -2587,6 +2587,7 @@ fn protocol_aggregate_group(group: cupti::CuptiAggregateGroup) -> AggregateGroup
             cupti::CuptiAggregateActivity::Memset => AggregateActivity::Memset,
         },
         name: group.name,
+        name_complete: group.name_complete,
         device_id: group.device_id,
         memcpy_kind: group.memcpy_kind,
         start_selector_hint,
@@ -2607,9 +2608,14 @@ fn aggregate_selector_hints(group: &cupti::CuptiAggregateGroup) -> (String, Stri
         cupti::CuptiAggregateActivity::Kernel => {
             let name = group.name.as_deref().expect("kernel aggregate has a name");
             let escaped = escape_selector_regex(name);
+            let suffix = if group.name_complete == Some(true) {
+                "$"
+            } else {
+                ""
+            };
             (
-                format!("cuda:kernel_start:name~^{escaped}$"),
-                format!("cuda:kernel_end:name~^{escaped}$"),
+                format!("cuda:kernel_start:name~^{escaped}{suffix}"),
+                format!("cuda:kernel_end:name~^{escaped}{suffix}"),
             )
         }
         cupti::CuptiAggregateActivity::Memcpy => {
@@ -3569,9 +3575,9 @@ const fn schema_version(version: SchemaVersion) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use xprobe_collector::cupti::CuptiNameFilter;
+    use xprobe_collector::cupti::{CuptiAggregateActivity, CuptiAggregateGroup, CuptiNameFilter};
 
-    use super::{bounded_kernel_name_filter, regex_literal};
+    use super::{aggregate_selector_hints, bounded_kernel_name_filter, regex_literal};
 
     #[test]
     fn lowers_only_equivalent_bounded_kernel_patterns() {
@@ -3602,5 +3608,29 @@ mod tests {
         assert_eq!(regex_literal("kernel\\.v1"), Some("kernel.v1".to_owned()));
         assert_eq!(regex_literal("kernel\\d"), None);
         assert_eq!(regex_literal("kernel+"), None);
+    }
+
+    #[test]
+    fn aggregate_hints_use_prefixes_for_incomplete_kernel_names() {
+        let group = CuptiAggregateGroup {
+            activity: CuptiAggregateActivity::Kernel,
+            name: Some("long_kernel_prefix".to_owned()),
+            name_complete: Some(false),
+            device_id: Some(0),
+            memcpy_kind: None,
+            count: 1,
+            total_duration_ns: 10,
+            min_duration_ns: 10,
+            max_duration_ns: 10,
+            total_bytes: None,
+        };
+
+        assert_eq!(
+            aggregate_selector_hints(&group),
+            (
+                "cuda:kernel_start:name~^long_kernel_prefix".to_owned(),
+                "cuda:kernel_end:name~^long_kernel_prefix".to_owned(),
+            )
+        );
     }
 }

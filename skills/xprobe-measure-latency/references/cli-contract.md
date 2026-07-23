@@ -63,6 +63,9 @@ quality. It contains no event evidence, percentiles, or correlation confidence;
 `--samples`, `--input`, and `--events-out` are invalid in this mode.
 Kernel regex must be an exact, prefix, suffix, or contains shape that the Agent
 can apply before aggregation; other regex is rejected instead of widened.
+Kernel groups expose `name_complete`. When it is false, the observed name is a
+bounded prefix and the emitted selector hints deliberately remain prefix
+selectors that the Agent can apply before reserving exact events.
 
 Kernel and other GPU activity durations require separate start and end records,
 so `max-events` is record capacity rather than sample capacity. Sample completion
