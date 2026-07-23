@@ -2,8 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ErrorCode, EventType, MatchPolicy, MemcpyKind, ResolvedProbe, SchemaVersion, TargetIdentity,
-    Warning,
+    ErrorCode, EventType, HostProbeKind, MatchPolicy, MemcpyKind, ResolvedProbe, SchemaVersion,
+    TargetIdentity, Warning,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -33,12 +33,22 @@ pub struct ResolvedCudaSelector {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct ResolvedLinuxSelector {
+    pub event_type: EventType,
+    pub probe_kind: HostProbeKind,
+    pub category: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ValidatedEndpoint {
     pub selector: String,
     pub source: EndpointSource,
     pub event_type: EventType,
     pub collectable: bool,
     pub host: Option<ResolvedProbe>,
+    pub linux: Option<ResolvedLinuxSelector>,
     pub cuda: Option<ResolvedCudaSelector>,
 }
 

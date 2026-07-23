@@ -35,8 +35,8 @@ pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessRepo
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};
 pub use validate::{
     AgentActivation, EndpointSource, PolicyRecommendation, PolicyRecommendationReason,
-    ResolvedCudaSelector, ValidatedEndpoint, ValidationIssue, ValidationRequirements,
-    ValidationResult,
+    ResolvedCudaSelector, ResolvedLinuxSelector, ValidatedEndpoint, ValidationIssue,
+    ValidationRequirements, ValidationResult,
 };
 pub use version::SchemaVersion;
 
