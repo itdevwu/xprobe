@@ -14,10 +14,12 @@ as a candidate. Map GPU UUID and command/rank metadata to workload ownership.
 Measure multiple relevant workers one at a time. After a restart, rerun discovery
 and use PID plus procfs start time; never reuse an old PID-only choice.
 
-## Survey before selecting
+## Map broadly before selecting
 
-When kernel names are unknown, first validate and collect all kernel activity for
-a short window:
+When kernel names are unknown, first validate and collect all kernel activity.
+Choose `REPRESENTATIVE_WINDOW_MS` to cover one steady-state request, batch, or
+iteration cycle, not an arbitrarily short interval. The capture is always
+bounded; its duration must still preserve the behavior being diagnosed.
 
 ```bash
 xprobe validate --pid "$PID" \
@@ -26,18 +28,39 @@ xprobe validate --pid "$PID" \
 
 xprobe measure --pid "$PID" \
   --from cuda:kernel_start --to cuda:kernel_end --match exact \
-  --duration-ms 250 --timeout-ms 5000 --max-events 200000 \
-  --events-out survey.jsonl --format jsonl \
+  --duration-ms "$REPRESENTATIVE_WINDOW_MS" --timeout-ms "$TIMEOUT_MS" \
+  --max-events "$MAX_EVENTS" --events-out coarse-kernels.jsonl --format jsonl \
   --json --non-interactive --no-color
 
-skills/xprobe-measure-latency/scripts/analyze_trace.py survey.jsonl \
-  > survey-analysis.json
+skills/xprobe-measure-latency/scripts/analyze_trace.py coarse-kernels.jsonl \
+  > coarse-kernels-analysis.json
 ```
 
-Treat these numbers as starting bounds, not universal defaults. On
-`EVENT_RATE_TOO_HIGH`, inspect the written artifact and error counters. Shorten
-the duration or use a simple prefix/suffix/contains selector before raising
-capacity. Preserve the artifact as evidence for the change.
+Map copies and memsets in separate bounded captures when they could matter:
+
+```bash
+xprobe validate --pid "$PID" \
+  --from cuda:memcpy_start --to cuda:memcpy_end --match exact \
+  --json --non-interactive --no-color
+
+xprobe measure --pid "$PID" \
+  --from cuda:memcpy_start --to cuda:memcpy_end --match exact \
+  --duration-ms "$REPRESENTATIVE_WINDOW_MS" --timeout-ms "$TIMEOUT_MS" \
+  --max-events "$MAX_EVENTS" --events-out coarse-memcpy.jsonl --format jsonl \
+  --json --non-interactive --no-color
+```
+
+Do not guess a named kernel or host function in this stage. CUDA API selectors
+require a concrete Runtime or Driver API name, so inventory activity first and
+choose API boundaries from application, framework, or trace evidence later.
+Analyze each artifact separately; busy union only describes the capture window
+inside that artifact.
+
+Treat capacity as a consequence of observed event rate, not a universal default.
+On `EVENT_RATE_TOO_HIGH`, inspect the written artifact and error counters. First
+split event families or reduce selector scope while retaining a representative
+cycle; reduce duration only when the remaining window is still representative.
+Preserve the artifact as evidence for the change.
 
 ## Derive CUDA selectors
 
@@ -70,7 +93,7 @@ stripped or local code, derive a file offset with `readelf`/`objdump` and use
 `validate`; do not infer a runtime virtual address from one process and reuse it
 as a file offset.
 
-## Narrow one hypothesis
+## Measure one narrow hypothesis
 
 Choose one next boundary from evidence:
 
@@ -85,7 +108,7 @@ completed artifact with `measure --input` when only selectors or policy change;
 do not attach again merely to recompute pairing.
 
 ```bash
-xprobe measure --input survey.jsonl \
+xprobe measure --input coarse-kernels.jsonl \
   --from 'cuda:kernel_start:name~^selected_kernel$' \
   --to 'cuda:kernel_end:name~^selected_kernel$' \
   --match exact --samples 100 --max-events 200000 \

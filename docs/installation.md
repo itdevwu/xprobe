@@ -5,13 +5,30 @@ contains the CLI and separate CUDA 12 and CUDA 13 CUPTI Agents. A CUDA toolkit
 is not required to install xprobe; NVIDIA driver and CUPTI availability matter
 only when measuring GPU events.
 
-## User installation
+## Agent-managed installation
+
+For agent use, install the version-matched Skill and let the agent bootstrap or
+repair the CLI under a writable prefix. This is the only installation command a
+user needs to run:
+
+```bash
+npx skills@1 add \
+  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
+  --global
+```
+
+The Skill verifies `xprobe --version`, installs the matching release when needed,
+then runs `doctor` before it profiles. It has the live context needed to adjust
+PATH, prefix, permission, NVIDIA, CUDA, and CUPTI issues. Node.js is required
+only for Skill installation.
+
+## Direct CLI installation
 
 The versioned bootstrap installs to `~/.local` without root access:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.1/install.sh | sh
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.2/install.sh | sh
 ```
 
 The bootstrap downloads the release archive and its SHA256 file, verifies the
@@ -30,7 +47,7 @@ prefix, download the script and pass `--prefix`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSLO \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.1/install.sh
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.2/install.sh
 sh install.sh --prefix /opt/xprobe
 ```
 
@@ -42,7 +59,7 @@ script with `sudo`. The installer never elevates privileges itself.
 For a fully explicit archive workflow:
 
 ```bash
-version=0.3.1
+version=0.3.2
 base=https://github.com/itdevwu/xprobe/releases/download/v$version
 archive=xprobe-$version-linux-x86_64.tar.gz
 
@@ -68,15 +85,14 @@ sh install.sh --prefix "$HOME/.local" --uninstall
 The uninstall operation removes only xprobe-owned files below `bin/xprobe`,
 `lib/xprobe`, `include/xprobe`, and `share/xprobe`.
 
-## Agent Skill
+## Manual Skill repair
 
-The xprobe CLI works independently of an AI agent. To let an Agent discover,
-validate, and run bounded measurements using the released contract, install the
-version-matched Skill:
+The xprobe CLI works independently of an AI agent. When a Skill installation is
+missing or damaged, manually install the complete version-matched directory:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -84,8 +100,8 @@ The command interactively selects among detected agents. A non-interactive
 installation names the target explicitly:
 
 ```bash
-DISABLE_TELEMETRY=1 npx --yes skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.1/skills/xprobe-measure-latency \
+npx --yes skills@1 add \
+  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
   --agent codex --global --copy --yes
 ```
 

@@ -5,7 +5,9 @@ description: Investigate unknown Linux CPU/CUDA latency with bounded xprobe capt
 
 # Investigate latency with xprobe
 
-Use JSON mode and move from a short survey to a narrow measurement. Read
+Use JSON mode to make a wide, coarse workload inventory before measuring one
+boundary narrowly and finely. Read [references/setup.md](references/setup.md)
+to install or repair the CLI and this Skill. Read
 [references/investigation.md](references/investigation.md) before profiling an
 unknown workload. Read [references/result-quality.md](references/result-quality.md)
 before interpreting correlation, clocks, concurrency, or overhead. The exact
@@ -13,9 +15,11 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
 
 ## Workflow
 
-1. Run `xprobe --version`. Require a version-matched xprobe 0.3.x CLI at 0.3.1
-   or later and confirm every JSON response has `schema_version: "2.0"`; do not
-   assume a pre-0.3 or future protocol is compatible with this Skill.
+1. Run `xprobe --version`. When the command is absent or not 0.3.2, read
+   [references/setup.md](references/setup.md) and install or repair the CLI
+   yourself; do not ask the user to perform a separate CLI installation.
+   Confirm every JSON response has `schema_version: "2.0"`; do not assume a
+   pre-0.3 or future protocol is compatible with this Skill.
 2. Establish an application-level latency baseline. Wait for process readiness,
    CUDA context creation, JIT compilation, and warmup before discovery. Keep a
    repeatable request or batch trigger ready for the measurement window.
@@ -25,13 +29,14 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
    --no-color`. It returns NVML-confirmed CUDA context holders under that process
    tree. Choose a worker from workload, PID/start-time, command line, and GPU
    UUID evidence. Measure workers separately when several ranks are relevant.
-5. If selectors are unknown, validate broad activity endpoints, then make one
-   short duration-bounded survey with `--events-out survey.jsonl`. For a kernel
-   inventory, use `cuda:kernel_start` to `cuda:kernel_end` with `exact`; keep the
-   survey short and give `--max-events` headroom.
-6. Run `scripts/analyze_trace.py survey.jsonl`. Use its kernel names, selector
-   hints, duration aggregates, launch variants, stream distribution, busy union,
-   overlap factor, and adjacent gaps to form one narrow hypothesis. Read
+5. Map the workload before choosing a name. Validate broad kernel, memcpy, or
+   memset activity endpoints, then collect one bounded, representative coarse
+   inventory per event family with `--events-out`. Scope breadth and collection
+   duration are independent: keep the selector broad, but choose a duration that
+   covers the workload cycle being diagnosed. Give `--max-events` headroom.
+6. Run `scripts/analyze_trace.py` on each coarse artifact. Use kernel names,
+   selector hints, duration aggregates, launch variants, stream distribution,
+   busy union, overlap factor, and adjacent gaps to form one narrow hypothesis. Read
    [references/trace-analysis.md](references/trace-analysis.md) when interpreting
    the report.
 7. Run `xprobe validate --pid WORKER_PID --from SELECTOR --to SELECTOR --match
@@ -45,12 +50,15 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
 9. Check `status`, matched/unmatched/ambiguous/dropped counts, collection
    completeness, buffer utilization, clock alignment, estimated error,
    correlation method/confidence/score, warnings, and every evidence pair.
-10. Repeat only with a stated reason: narrow the selector, select another worker
-    or stream, change an explicitly compatible policy, or test the next boundary.
+10. Repeat only with a stated reason: select another event family, narrow the
+    selector, select another worker or stream, change an explicitly compatible
+    policy, or test the next boundary.
     Recheck application latency after profiling and report observed overhead.
 
 For completed captures, replace `--pid` with one or more `--input` arguments.
-Use the [kernel duration](examples/kernel-duration.json),
+Begin with the [coarse kernel inventory](examples/coarse-kernel-inventory.json)
+or [coarse memcpy inventory](examples/coarse-memcpy-inventory.json), then use the
+[kernel duration](examples/kernel-duration.json),
 [same-stream gap](examples/same-stream-kernel-gap.json),
 [host span](examples/host-function-span.json), and
 [memcpy duration](examples/memcpy-duration.json) specs, plus the
@@ -69,4 +77,5 @@ hypothesis; orchestration remains the agent framework's responsibility.
   duration cannot explain warp stalls, cache misses, occupancy, instruction mix,
   or Tensor Core utilization; hand that question to NCU or PC sampling.
 - Avoid continuous or repeated exploratory capture in one production process.
-  Use short surveys, narrow formal measurements, and a post-profile baseline.
+  Use representative bounded inventories, narrow formal measurements, and a
+  post-profile baseline.

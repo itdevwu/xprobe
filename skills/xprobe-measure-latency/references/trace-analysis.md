@@ -28,7 +28,9 @@ Read the report in this order:
 
 `selector_hint` is exact for names shorter than the CUPTI filter bound. For long
 names it may be a prefix or suffix unique only among names observed in that
-capture; validate it and repeat a narrow survey before treating it as stable.
+capture; validate it and repeat a narrow measurement before treating it as
+stable. Analyze every broad inventory separately; the report never establishes
+wall-clock relationships between distinct capture windows.
 
 The analyzer reports descriptive activity timing. It does not assign work to a
 request, calculate kernel hardware efficiency, or turn temporal proximity into

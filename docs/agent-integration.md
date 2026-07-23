@@ -11,13 +11,13 @@ sequences or correlation rules.
 ## Install the Skill
 
 The canonical directory follows the open Agent Skills format and is shared by
-Codex, Claude Code, Cursor, and other compatible clients. Install the released
-version through the `skills` CLI so client-specific discovery paths remain the
-installer's responsibility:
+Codex, Claude Code, Cursor, and other compatible clients. The user installs the
+released Skill through the `skills` CLI; the activated Skill then bootstraps or
+repairs the matching xprobe CLI itself:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -26,8 +26,9 @@ For automation, add `--agent codex|claude-code|cursor --copy --yes`. Omit
 install its whole directory so its references, examples, and analysis script
 remain available.
 
-The Skill moves from a short survey artifact to evidence-based selector
-narrowing and includes `scripts/analyze_trace.py` for deterministic kernel,
+The Skill checks, installs, and verifies the CLI before it first runs `doctor`.
+It then maps a representative workload broadly, uses artifact evidence to narrow
+selectors, and includes `scripts/analyze_trace.py` for deterministic kernel,
 copy, overlap, stream, and gap summaries. The xprobe repository tests
 installation with `skills` CLI 1.5.20 in isolated
 home directories. This pinned test protects released behavior while the
@@ -45,8 +46,8 @@ The test requires the visible command set to be exactly `doctor`, `discover`,
 checks injection requirements, verifies schemas, exercises the bundled trace
 analyzer, and checks that the Skill uses only the four-command bounded workflow
 and inspects result quality/evidence.
-The installation test uses the real third-party CLI with telemetry disabled and
-verifies byte-for-byte copies for Codex, Claude Code, and Cursor.
+The installation test uses the real third-party CLI in isolated home directories
+and verifies byte-for-byte copies for Codex, Claude Code, and Cursor.
 
 This is interface conformance, not model evaluation. External harnesses may
 evaluate task success, command count, cleanup, mutation disclosure, and result
