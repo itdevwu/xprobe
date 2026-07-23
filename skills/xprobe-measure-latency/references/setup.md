@@ -7,7 +7,7 @@ command unless their environment prevents the agent from writing a usable prefix
 
 ## Check and bootstrap xprobe
 
-Check the executable first. Continue only when it reports 0.3.2; otherwise run
+Check the executable first. Continue only when it reports 0.3.3; otherwise run
 the bootstrap below:
 
 ```bash
@@ -21,7 +21,7 @@ installing under `~/.local`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.2/install.sh \
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.3/install.sh \
   -o /tmp/xprobe-install.sh
 sh /tmp/xprobe-install.sh
 export PATH="$HOME/.local/bin:$PATH"
@@ -44,7 +44,7 @@ host glibc instead. This is a local-use fallback, not permission to weaken the
 release package's `GLIBC_2.34` ceiling.
 
 ```bash
-git clone --depth 1 --branch v0.3.2 https://github.com/itdevwu/xprobe.git
+git clone --depth 1 --branch v0.3.3 https://github.com/itdevwu/xprobe.git
 cd xprobe
 mamba env create --file environment.yml
 mamba run -n xprobe-dev just build
@@ -74,12 +74,12 @@ version check.
 ## Repair the Skill only when needed
 
 The user normally installed this Skill before invoking the agent. When its files
-are missing or the version is not 0.3.2, install the complete version-matched
+are missing or the version is not 0.3.3, install the complete version-matched
 directory through the Agent Skills CLI:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.3/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -87,7 +87,7 @@ For non-interactive automation, select the host explicitly:
 
 ```bash
 npx --yes skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.3/skills/xprobe-measure-latency \
   --agent codex --global --copy --yes
 ```
 

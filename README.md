@@ -21,7 +21,7 @@ only installation action required from the user:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.3/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -83,7 +83,7 @@ for safe reactivation.
 
 ## Support
 
-| Surface | 0.3.2 support |
+| Surface | 0.3.3 support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.34 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |

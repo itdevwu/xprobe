@@ -2,7 +2,7 @@
 set -eu
 
 repository=${XPROBE_REPOSITORY:-itdevwu/xprobe}
-version=${XPROBE_VERSION:-0.3.2}
+version=${XPROBE_VERSION:-0.3.3}
 if [ -n "${XPROBE_PREFIX:-}" ]; then
   prefix=$XPROBE_PREFIX
 elif [ -n "${HOME:-}" ]; then
@@ -19,7 +19,7 @@ Install a released xprobe binary and its CUDA Agents.
 Usage: install.sh [--version VERSION] [--prefix DIR] [--uninstall]
 
 Options:
-  --version VERSION  Release to install (default: 0.3.2)
+  --version VERSION  Release to install (default: 0.3.3)
   --prefix DIR       Installation prefix (default: $HOME/.local)
   --uninstall        Remove xprobe from the selected prefix
   -h, --help         Show this help
