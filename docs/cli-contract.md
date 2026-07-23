@@ -1,7 +1,7 @@
 # CLI contract
 
-xprobe 0.3.3 exposes exactly four public commands: `doctor`, `discover`,
-`validate`, and `measure`.
+xprobe exposes exactly four public commands: `doctor`, `discover`, `validate`,
+and `measure`.
 
 ## Common behavior
 
@@ -66,7 +66,17 @@ uprobe:<binary>:<symbol>:entry
 uprobe:<binary>:<symbol>:return
 uprobe:<binary>:+0x<file-offset>:entry
 uprobe:<binary>:+0x<file-offset>:return
+syscall:<name>:entry
+syscall:<name>:exit
+tracepoint:<category>:<name>
 ```
+
+Named syscall selectors are Linux x86_64 endpoints resolved by `validate`.
+Their eBPF path filters PID and syscall number before reserving an event,
+records the six scalar syscall ABI registers on entry, and records the scalar
+return value on exit. It never dereferences pointer arguments. Named
+tracepoints record identity and timestamp only; they do not copy the tracepoint
+payload. Unsupported syscall names and unavailable tracepoints fail explicitly.
 
 CUDA forms include Runtime/Driver API entry/exit and kernel, memcpy, or memset
 activity start/end. Kernel selectors accept `name~REGEX`; memcpy selectors
@@ -86,9 +96,10 @@ parses CUDA filters, and checks collection and correlation requirements.
 Results conform to `schemas/validate.schema.json`.
 
 Supported policies are `exact`, `first-after`, `nearest`, `stack-nested`, and
-`stream-order`. Exact requires deterministic CUPTI correlation IDs. Nested
-requires entry/return of the same host function. Stream order requires GPU
-activity endpoints. Temporal policies always warn that they are heuristic.
+`stream-order`. Exact uses deterministic CUPTI correlation IDs or one named
+syscall's per-thread entry/exit lifecycle. Nested requires entry/return of the
+same host function. Stream order requires GPU activity endpoints. Temporal
+policies always warn that they are heuristic.
 `policy_recommendation` reports the strongest compatible policy, a stable
 machine-readable reason, and all compatible alternatives. The caller still
 chooses the policy; xprobe does not silently replace or retry it.
@@ -113,6 +124,15 @@ xprobe measure --pid 4242 \
   --to 'cuda:kernel_start:name~flash.*' \
   --match exact --samples 100 --timeout-ms 30000 \
   --events-out /tmp/xprobe-events.jsonl \
+  --json --non-interactive --no-color
+```
+
+Linux syscall duration:
+
+```bash
+xprobe measure --pid 4242 \
+  --from 'syscall:mmap:entry' --to 'syscall:mmap:exit' \
+  --match exact --samples 100 --max-events 1000 \
   --json --non-interactive --no-color
 ```
 
@@ -154,8 +174,13 @@ duration, optional transferred bytes, table occupancy, and drop completeness.
 Aggregate kernel regex must be reducible to an exact, prefix, suffix, or
 contains filter because this mode intentionally has no Rust-side event pass.
 
-Live host endpoints attach PID-scoped eBPF probes. CUDA endpoints automatically
-activate the CUPTI agent. If it is absent, `--agent` or
+Live host endpoints attach PID-scoped eBPF probes. Linux syscall endpoints use
+raw tracepoints so they do not depend on tracingfs event IDs; ordinary named
+tracepoints use their kernel category and name. A samples-bound Linux capture
+allows bounded startup slack for a target already inside an event boundary. A
+duration capture that fills `--max-events` returns `EVENT_RATE_TOO_HIGH` rather
+than reporting partial success. CUDA endpoints automatically activate the CUPTI
+agent. If it is absent, `--agent` or
 `XPROBE_CUPTI_AGENT_PATH` selects the shared object; otherwise xprobe searches
 `../lib/xprobe/cuda12` or `../lib/xprobe/cuda13` according to the target and
 then the matching development build path. An unobservable target major is

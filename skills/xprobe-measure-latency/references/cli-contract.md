@@ -20,6 +20,14 @@ uprobe:<binary>:+0x<file-offset>:entry
 uprobe:<binary>:+0x<file-offset>:return
 ```
 
+Linux selectors use `syscall:<name>:entry|exit` and
+`tracepoint:<category>:<name>`. Syscall entry/exit for one name supports
+`exact` per-thread lifecycle matching. Entry evidence contains scalar ABI
+register values and exit evidence contains the scalar return value; xprobe
+does not dereference pointers. Named tracepoints contain no payload fields.
+Always let `validate` resolve the named syscall or tracepoint on the current
+host before measurement.
+
 CUDA selectors cover Runtime and Driver API entry/exit plus kernel, memcpy, and
 memset activity start/end. Kernel activity accepts `name~REGEX`; memcpy accepts
 `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`. `validate` must accept the complete selector
@@ -27,12 +35,12 @@ and policy before measurement.
 
 ## Correlation
 
-Use `exact` for CUDA events with the same CUPTI correlation ID,
-`stack-nested` for entry/return of the same host function, and `stream-order`
-for activity events on one CUDA stream. `first-after` and `nearest` are temporal
-heuristics and cannot establish causality. Read `policy_recommendation.policy`,
-its machine-readable `reason`, and `compatible_policies`; xprobe never silently
-changes the requested policy.
+Use `exact` for CUDA events with the same CUPTI correlation ID or entry/exit of
+one named syscall, `stack-nested` for entry/return of the same host function,
+and `stream-order` for activity events on one CUDA stream. `first-after` and
+`nearest` are temporal heuristics and cannot establish causality. Read
+`policy_recommendation.policy`, its machine-readable `reason`, and
+`compatible_policies`; xprobe never silently changes the requested policy.
 
 ## Bounds and failures
 
@@ -56,6 +64,11 @@ buffer. `duration-ms` limits correlation from the first selected event and also
 sets a live stop from ARM completion; either samples or duration may complete a
 call when both are present. Timeout bounds the complete foreground operation and
 cleanup.
+
+Linux syscall filtering runs in BPF before event reservation. A duration-bound
+host capture that reaches `max-events` fails with `EVENT_RATE_TOO_HIGH`; narrow
+the selector or increase the explicit bound. Do not replace it with partial
+evidence.
 
 `--events-out PATH` atomically writes the bounded capture with mode `0600`, not
 only matched evidence. Collection completeness and CUPTI capacity, observed,

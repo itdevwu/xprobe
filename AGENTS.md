@@ -19,6 +19,9 @@
 - Do not add a daemon or persistent session service without a concrete workflow
   that cannot be expressed by the four bounded commands.
 - Keep eBPF and CUPTI callback hot paths bounded and free of blocking I/O.
+- Resolve architecture-specific syscall names in core. In BPF, filter process
+  identity and syscall number before reading scalar registers or reserving a
+  record. Arm multi-link collectors only after every link is attached.
 
 ## Failures and safety
 
@@ -31,7 +34,9 @@
   reports `injection_required`; log the mutation and include a JSON warning.
 - Stop CUPTI logically after collection. Do not `dlclose` the injected agent.
 - Never collect pointer-referenced payloads, environments, or GPU buffer data by
-  default, and never describe temporal correlation as exact causality.
+  default. Named tracepoints retain identity and timestamps unless a versioned
+  scalar payload is explicitly designed. Never describe temporal correlation
+  as exact causality.
 
 ## Agent workflow
 

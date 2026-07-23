@@ -10,9 +10,10 @@
 </div>
 
 `xprobe` is an AI harness for measuring latency between two observable events
-in a process, on the CPU, NVIDIA GPU, or across both. Its bounded native profiler
-combines eBPF uprobes and NVIDIA CUPTI with an agent-friendly CLI, strict JSON
-contracts, explicit correlation quality, and no daemon or server lifecycle.
+in a process, on the CPU, NVIDIA GPU, or across both. Its bounded native
+profiler combines eBPF function, syscall, and tracepoint evidence with NVIDIA
+CUPTI, an agent-friendly CLI, strict JSON contracts, explicit correlation
+quality, and no daemon or server lifecycle.
 
 ## Install
 
@@ -62,10 +63,11 @@ xprobe measure --pid 4242 \
 ```
 
 Kernel launch latency is only one event pair. The same workflow measures host
-function spans, CUDA API calls, GPU operation durations, transfers, and paths
-across CPU and GPU events after selecting the correct CUDA worker. Aggregate
-mode provides a bounded coarse inventory of GPU operations before an exact
-evidence measurement narrows the question.
+function spans, syscall latency, named Linux events, CUDA API calls, GPU
+operation durations, transfers, and paths across CPU and GPU events after
+selecting the correct process. Aggregate mode provides a bounded coarse
+inventory of GPU operations before an exact evidence measurement narrows the
+question.
 
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
@@ -90,10 +92,10 @@ for safe reactivation.
 
 ## Support
 
-| Surface | 0.3.3 support |
+| Surface | Current support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.34 or newer |
-| Host events | ELF function entry/return through PID-scoped uprobes |
+| Host events | PID-scoped ELF function, named syscall, and tracepoint boundaries |
 | CUDA callbacks | Runtime and Driver API entry/exit |
 | GPU activity | Kernel, memcpy, and memset start/end |
 | CUDA/CUPTI | 12.x and 13.x with automatic major selection |

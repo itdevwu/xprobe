@@ -1,10 +1,11 @@
 # Result quality
 
-Prefer `exact` when CUDA endpoints carry the same CUPTI correlation ID. Prefer
-`stack-nested` for entry/return pairs of the same host function. Use
-`stream-order` only for GPU activity endpoints on the same device, context, and
-stream. Treat `first-after` and `nearest` as temporal heuristics, never request
-causality.
+Prefer `exact` when CUDA endpoints carry the same CUPTI correlation ID or when
+one named syscall has entry/exit records from the same thread and process
+identity. Prefer `stack-nested` for entry/return pairs of the same host
+function. Use `stream-order` only for GPU activity endpoints on the same device,
+context, and stream. Treat `first-after` and `nearest` as temporal heuristics,
+never request causality.
 
 Inspect every evidence pair for selector scope, process identity, correlation
 IDs, device/context/stream, timestamps, and clock domains. A result is not

@@ -74,9 +74,10 @@ generated source, or application logs. xprobe does not read JIT cache contents
 and cannot select by grid/block. Long mangled names should be narrowed to a
 short, observed-unique literal instead of copied wholesale.
 
-## Derive host selectors
+## Derive CPU selectors
 
-Resolve the mapped object in the target, then inspect its symbols:
+Choose the narrowest observable boundary supported by existing evidence. For a
+function, resolve the mapped object in the target and inspect its symbols:
 
 ```bash
 readlink -f "/proc/$PID/exe"
@@ -91,6 +92,13 @@ stripped or local code, derive a file offset with `readelf`/`objdump` and use
 `validate`; do not infer a runtime virtual address from one process and reuse it
 as a file offset.
 
+For kernel-facing latency, first use application logs, `/proc` state, or a
+bounded syscall summary to identify a candidate. Then validate
+`syscall:NAME:entry` to `syscall:NAME:exit` with `exact`. Use
+`tracepoint:CATEGORY:NAME` only when the kernel event itself is the intended
+boundary. Do not start an unknown high-rate workload with unfiltered raw
+syscall tracepoints: select first, then collect detailed evidence.
+
 ## Measure one narrow hypothesis
 
 Choose one next boundary from evidence:
@@ -99,6 +107,7 @@ Choose one next boundary from evidence:
 - CUDA API exit to kernel start with `exact` for launch delay;
 - kernel end to next activity start with `stream-order` for one-stream gaps;
 - host function entry to return with `stack-nested` for CPU span;
+- named syscall entry to exit with `exact` for kernel-facing latency;
 - host marker to GPU activity with `first-after` only as a disclosed heuristic.
 
 After capture, analyze the artifact and all result quality fields. An aggregate
