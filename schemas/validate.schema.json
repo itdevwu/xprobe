@@ -274,6 +274,14 @@
         },
         "probe_kind": {
           "$ref": "#/$defs/HostProbeKind"
+        },
+        "syscall_number": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false,

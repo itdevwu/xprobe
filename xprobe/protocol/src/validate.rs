@@ -38,6 +38,7 @@ pub struct ResolvedLinuxSelector {
     pub probe_kind: HostProbeKind,
     pub category: String,
     pub name: String,
+    pub syscall_number: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

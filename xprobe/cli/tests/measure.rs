@@ -112,6 +112,7 @@ fn write_host_capture(path: &PathBuf, timestamp_ns: u64) {
         captured: 1,
         dropped: 2,
         timed_out: false,
+        record_limit_reached: false,
         events: vec![event],
     };
     fs::write(path, serde_json::to_vec_pretty(&capture).unwrap())

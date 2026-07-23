@@ -325,6 +325,16 @@ fn parse_linux_selector(
     let fields = selector.split(':').collect::<Vec<_>>();
     match fields.as_slice() {
         ["syscall", name, boundary] if valid_tracepoint_component(name) => {
+            if !cfg!(target_arch = "x86_64") {
+                return Err(ValidateError::InvalidSelector(
+                    "syscall selectors currently require x86_64".to_owned(),
+                ));
+            }
+            let syscall_number = syscall_number(name).ok_or_else(|| {
+                ValidateError::InvalidSelector(format!(
+                    "syscall {name:?} is not supported on x86_64"
+                ))
+            })?;
             let (event_type, kind) = match *boundary {
                 "entry" => (
                     EventType::SyscallEntry,
@@ -350,6 +360,7 @@ fn parse_linux_selector(
                     probe_kind: HostProbeKind::Syscall,
                     category: "syscalls".to_owned(),
                     name: (*name).to_owned(),
+                    syscall_number: Some(syscall_number),
                 },
                 kind,
             ))
@@ -366,6 +377,7 @@ fn parse_linux_selector(
                     probe_kind: HostProbeKind::Tracepoint,
                     category: (*category).to_owned(),
                     name: (*name).to_owned(),
+                    syscall_number: None,
                 },
                 EndpointKind::Tracepoint,
             ))
@@ -377,6 +389,108 @@ fn parse_linux_selector(
             "expected uprobe:, syscall:, tracepoint:, or cuda: prefix".to_owned(),
         )),
     }
+}
+
+fn syscall_number(name: &str) -> Option<u32> {
+    Some(match name {
+        "read" => 0,
+        "write" => 1,
+        "close" => 3,
+        "fstat" => 5,
+        "poll" => 7,
+        "lseek" => 8,
+        "mmap" => 9,
+        "mprotect" => 10,
+        "munmap" => 11,
+        "brk" => 12,
+        "ioctl" => 16,
+        "pread64" => 17,
+        "pwrite64" => 18,
+        "readv" => 19,
+        "writev" => 20,
+        "sched_yield" => 24,
+        "mremap" => 25,
+        "msync" => 26,
+        "mincore" => 27,
+        "madvise" => 28,
+        "nanosleep" => 35,
+        "getpid" => 39,
+        "socket" => 41,
+        "connect" => 42,
+        "accept" => 43,
+        "sendto" => 44,
+        "recvfrom" => 45,
+        "sendmsg" => 46,
+        "recvmsg" => 47,
+        "clone" => 56,
+        "fork" => 57,
+        "vfork" => 58,
+        "execve" => 59,
+        "exit" => 60,
+        "wait4" => 61,
+        "fcntl" => 72,
+        "flock" => 73,
+        "fsync" => 74,
+        "fdatasync" => 75,
+        "getdents" => 78,
+        "futex" => 202,
+        "sched_setaffinity" => 203,
+        "sched_getaffinity" => 204,
+        "gettid" => 186,
+        "epoll_wait" => 232,
+        "epoll_ctl" => 233,
+        "tgkill" => 234,
+        "openat" => 257,
+        "newfstatat" => 262,
+        "pselect6" => 270,
+        "ppoll" => 271,
+        "unshare" => 272,
+        "splice" => 275,
+        "epoll_pwait" => 281,
+        "accept4" => 288,
+        "eventfd2" => 290,
+        "epoll_create1" => 291,
+        "dup3" => 292,
+        "pipe2" => 293,
+        "preadv" => 295,
+        "pwritev" => 296,
+        "perf_event_open" => 298,
+        "recvmmsg" => 299,
+        "prlimit64" => 302,
+        "sendmmsg" => 307,
+        "getcpu" => 309,
+        "process_vm_readv" => 310,
+        "process_vm_writev" => 311,
+        "sched_setattr" => 314,
+        "sched_getattr" => 315,
+        "seccomp" => 317,
+        "getrandom" => 318,
+        "memfd_create" => 319,
+        "bpf" => 321,
+        "execveat" => 322,
+        "userfaultfd" => 323,
+        "membarrier" => 324,
+        "mlock2" => 325,
+        "copy_file_range" => 326,
+        "preadv2" => 327,
+        "pwritev2" => 328,
+        "statx" => 332,
+        "rseq" => 334,
+        "pidfd_send_signal" => 424,
+        "io_uring_setup" => 425,
+        "io_uring_enter" => 426,
+        "io_uring_register" => 427,
+        "pidfd_open" => 434,
+        "clone3" => 435,
+        "close_range" => 436,
+        "openat2" => 437,
+        "pidfd_getfd" => 438,
+        "faccessat2" => 439,
+        "process_madvise" => 440,
+        "epoll_pwait2" => 441,
+        "futex_waitv" => 449,
+        _ => return None,
+    })
 }
 
 fn valid_tracepoint_component(value: &str) -> bool {
@@ -845,6 +959,7 @@ mod tests {
                 probe_kind: HostProbeKind::Syscall,
                 category: "syscalls".to_owned(),
                 name: "mmap".to_owned(),
+                syscall_number: Some(9),
             },
         );
         let end = endpoint(
@@ -858,6 +973,7 @@ mod tests {
                 probe_kind: HostProbeKind::Syscall,
                 category: "syscalls".to_owned(),
                 name: "mmap".to_owned(),
+                syscall_number: Some(9),
             },
         );
 

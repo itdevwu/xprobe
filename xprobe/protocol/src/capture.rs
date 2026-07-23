@@ -14,5 +14,7 @@ pub struct HostCaptureResult {
     pub captured: u64,
     pub dropped: u64,
     pub timed_out: bool,
+    #[serde(default)]
+    pub record_limit_reached: bool,
     pub events: Vec<Event>,
 }

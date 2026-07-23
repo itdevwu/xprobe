@@ -208,6 +208,7 @@ pub fn capture(request: &UprobeRequest) -> Result<HostCaptureResult, UprobeError
         captured: events.len() as u64,
         dropped,
         timed_out: events.len() < request.samples,
+        record_limit_reached: false,
         events,
     })
 }
