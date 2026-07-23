@@ -74,14 +74,31 @@ _Static_assert(sizeof(struct xprobe_cupti_output_header) == 88U,
                "unexpected CUPTI output header layout");
 _Static_assert(sizeof(struct xprobe_cupti_record) == 200U,
                "unexpected CUPTI record layout");
+_Static_assert(sizeof(struct xprobe_cupti_aggregate_record) == 200U,
+               "unexpected CUPTI aggregate record layout");
 _Static_assert(sizeof(struct xprobe_cupti_filter) == 144U,
                "unexpected CUPTI filter layout");
-_Static_assert(sizeof(struct xprobe_cupti_control_request) == 320U,
+_Static_assert(sizeof(struct xprobe_cupti_control_request) == 328U,
                "unexpected CUPTI control request layout");
+
+struct xprobe_cupti_aggregate_slot {
+    _Atomic uint64_t state;
+    _Atomic uint64_t count;
+    _Atomic uint64_t total_duration_ns;
+    _Atomic uint64_t min_duration_ns;
+    _Atomic uint64_t max_duration_ns;
+    _Atomic uint64_t total_bytes;
+    uint32_t kind;
+    uint32_t device_id;
+    uint32_t memcpy_kind;
+    char name[XPROBE_CUPTI_NAME_LENGTH];
+};
 
 static struct xprobe_cupti_record *records;
 static _Atomic unsigned char *record_ready;
+static struct xprobe_cupti_aggregate_slot *aggregate_slots;
 static uint64_t record_capacity;
+static uint32_t capture_mode;
 static _Atomic uint64_t record_count;
 static _Atomic uint64_t committed_record_count;
 static _Atomic uint64_t agent_dropped_records;
@@ -122,6 +139,7 @@ static int allocate_capture(uint64_t capacity)
 {
     struct xprobe_cupti_record *new_records;
     _Atomic unsigned char *new_ready;
+    struct xprobe_cupti_aggregate_slot *new_aggregate_slots;
 
     if (capacity == 0U || capacity > SIZE_MAX / sizeof(*records) ||
         capacity > SIZE_MAX / sizeof(*record_ready)) {
@@ -129,22 +147,41 @@ static int allocate_capture(uint64_t capacity)
                 (unsigned long long)capacity);
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
-    new_records = calloc((size_t)capacity, sizeof(*new_records));
-    new_ready = malloc((size_t)capacity * sizeof(*new_ready));
-    if (new_records == NULL || new_ready == NULL) {
+    new_records = NULL;
+    new_ready = NULL;
+    new_aggregate_slots = NULL;
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
+        if (capacity > SIZE_MAX / sizeof(*aggregate_slots)) {
+            fprintf(stderr, "xprobe CUPTI: aggregate capacity exceeds size_t\n");
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+        new_aggregate_slots = calloc((size_t)capacity, sizeof(*new_aggregate_slots));
+    } else {
+        new_records = calloc((size_t)capacity, sizeof(*new_records));
+        new_ready = malloc((size_t)capacity * sizeof(*new_ready));
+    }
+    if ((capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
+         new_aggregate_slots == NULL) ||
+        (capture_mode == XPROBE_CUPTI_CAPTURE_EXACT &&
+         (new_records == NULL || new_ready == NULL))) {
         fprintf(stderr, "xprobe CUPTI: failed to allocate %llu capture records\n",
                 (unsigned long long)capacity);
         free(new_records);
         free(new_ready);
+        free(new_aggregate_slots);
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
-    for (uint64_t index = 0U; index < capacity; ++index) {
-        atomic_init(&new_ready[index], 0U);
+    if (new_ready != NULL) {
+        for (uint64_t index = 0U; index < capacity; ++index) {
+            atomic_init(&new_ready[index], 0U);
+        }
     }
     free(records);
     free(record_ready);
+    free(aggregate_slots);
     records = new_records;
     record_ready = new_ready;
+    aggregate_slots = new_aggregate_slots;
     record_capacity = capacity;
     return XPROBE_CUPTI_AGENT_READY;
 }
@@ -153,8 +190,15 @@ static void reset_capture(void)
 {
     uint64_t index;
 
-    for (index = 0U; index < record_capacity; ++index) {
-        atomic_store_explicit(&record_ready[index], 0U, memory_order_relaxed);
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
+        for (index = 0U; index < record_capacity; ++index) {
+            atomic_store_explicit(&aggregate_slots[index].state, 0U,
+                                  memory_order_relaxed);
+        }
+    } else {
+        for (index = 0U; index < record_capacity; ++index) {
+            atomic_store_explicit(&record_ready[index], 0U, memory_order_relaxed);
+        }
     }
     atomic_store_explicit(&record_count, 0U, memory_order_relaxed);
     atomic_store_explicit(&committed_record_count, 0U, memory_order_relaxed);
@@ -477,6 +521,154 @@ static void enqueue_record(const struct xprobe_cupti_record *record)
     }
 }
 
+static uint64_t aggregate_hash(uint32_t kind, uint32_t device_id,
+                               uint32_t memcpy_kind, const char *name)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    const unsigned char *bytes = (const unsigned char *)name;
+    uint32_t values[] = {kind, device_id, memcpy_kind};
+
+    for (size_t index = 0U; index < sizeof(values); ++index) {
+        hash ^= ((const unsigned char *)values)[index];
+        hash *= 1099511628211ULL;
+    }
+    if (bytes != NULL) {
+        for (size_t index = 0U;
+             index + 1U < XPROBE_CUPTI_NAME_LENGTH && bytes[index] != '\0';
+             ++index) {
+            hash ^= bytes[index];
+            hash *= 1099511628211ULL;
+        }
+    }
+    if (hash < 2U) {
+        hash += 2U;
+    }
+    return hash;
+}
+
+static int aggregate_key_matches(
+    const struct xprobe_cupti_aggregate_slot *slot, uint32_t kind,
+    uint32_t device_id, uint32_t memcpy_kind, const char *name)
+{
+    const char *key_name = name == NULL ? "" : name;
+
+    return slot->kind == kind && slot->device_id == device_id &&
+           slot->memcpy_kind == memcpy_kind &&
+           strncmp(slot->name, key_name, XPROBE_CUPTI_NAME_LENGTH - 1U) == 0;
+}
+
+static int atomic_add_checked(_Atomic uint64_t *value, uint64_t addend)
+{
+    uint64_t current = atomic_load_explicit(value, memory_order_relaxed);
+
+    for (;;) {
+        if (UINT64_MAX - current < addend) {
+            remember_output_error();
+            return 0;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                value, &current, current + addend, memory_order_relaxed,
+                memory_order_relaxed)) {
+            return 1;
+        }
+    }
+}
+
+static void atomic_min(_Atomic uint64_t *value, uint64_t candidate)
+{
+    uint64_t current = atomic_load_explicit(value, memory_order_relaxed);
+
+    while (candidate < current &&
+           !atomic_compare_exchange_weak_explicit(
+               value, &current, candidate, memory_order_relaxed,
+               memory_order_relaxed)) {
+    }
+}
+
+static void atomic_max(_Atomic uint64_t *value, uint64_t candidate)
+{
+    uint64_t current = atomic_load_explicit(value, memory_order_relaxed);
+
+    while (candidate > current &&
+           !atomic_compare_exchange_weak_explicit(
+               value, &current, candidate, memory_order_relaxed,
+               memory_order_relaxed)) {
+    }
+}
+
+static void update_aggregate_slot(struct xprobe_cupti_aggregate_slot *slot,
+                                  uint64_t duration_ns, uint64_t bytes)
+{
+    if (atomic_add_checked(&slot->total_duration_ns, duration_ns) == 0 ||
+        atomic_add_checked(&slot->total_bytes, bytes) == 0 ||
+        atomic_add_checked(&slot->count, 1U) == 0) {
+        return;
+    }
+    atomic_min(&slot->min_duration_ns, duration_ns);
+    atomic_max(&slot->max_duration_ns, duration_ns);
+}
+
+static void aggregate_activity(uint32_t kind, uint32_t device_id,
+                               uint32_t memcpy_kind, const char *name,
+                               uint64_t start_ns, uint64_t end_ns, uint64_t bytes)
+{
+    uint64_t hash;
+    uint64_t first;
+
+    if (atomic_load_explicit(&capture_state, memory_order_relaxed) !=
+        XPROBE_CUPTI_CAPTURE_ACTIVE) {
+        return;
+    }
+    if (start_ns == 0U || end_ns < start_ns) {
+        remember_output_error();
+        return;
+    }
+    atomic_fetch_add_explicit(&record_count, 1U, memory_order_relaxed);
+    hash = aggregate_hash(kind, device_id, memcpy_kind, name);
+    first = hash % record_capacity;
+    for (uint64_t probe = 0U; probe < record_capacity; ++probe) {
+        uint64_t index = (first + probe) % record_capacity;
+        struct xprobe_cupti_aggregate_slot *slot = &aggregate_slots[index];
+        uint64_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
+
+        if (state == hash &&
+            aggregate_key_matches(slot, kind, device_id, memcpy_kind, name) != 0) {
+            update_aggregate_slot(slot, end_ns - start_ns, bytes);
+            return;
+        }
+        if (state == 0U) {
+            uint64_t expected = 0U;
+            if (!atomic_compare_exchange_strong_explicit(
+                    &slot->state, &expected, 1U, memory_order_acq_rel,
+                    memory_order_acquire)) {
+                continue;
+            }
+            slot->kind = kind;
+            slot->device_id = device_id;
+            slot->memcpy_kind = memcpy_kind;
+            copy_name(slot->name, name);
+            atomic_store_explicit(&slot->count, 0U, memory_order_relaxed);
+            atomic_store_explicit(&slot->total_duration_ns, 0U,
+                                  memory_order_relaxed);
+            atomic_store_explicit(&slot->min_duration_ns, UINT64_MAX,
+                                  memory_order_relaxed);
+            atomic_store_explicit(&slot->max_duration_ns, 0U,
+                                  memory_order_relaxed);
+            atomic_store_explicit(&slot->total_bytes, 0U, memory_order_relaxed);
+            atomic_store_explicit(&slot->state, hash, memory_order_release);
+            atomic_fetch_add_explicit(&committed_record_count, 1U,
+                                      memory_order_relaxed);
+            update_aggregate_slot(slot, end_ns - start_ns, bytes);
+            return;
+        }
+    }
+    atomic_fetch_add_explicit(&agent_dropped_records, 1U, memory_order_relaxed);
+    atomic_store_explicit(&stop_reason, XPROBE_CUPTI_STOP_RECORD_LIMIT,
+                          memory_order_relaxed);
+    atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_LIMIT_REACHED,
+                          memory_order_release);
+}
+
 static void initialize_record(struct xprobe_cupti_record *record, uint32_t kind,
                               uint64_t timestamp_ns)
 {
@@ -590,6 +782,13 @@ static int activity_started_during_capture(uint64_t timestamp_ns)
         if (values_match_capture(XPROBE_CUPTI_GPU_KERNEL_START,                    \
                                  XPROBE_CUPTI_GPU_KERNEL_END, 0U, 0U,               \
                                  (kernel)->name) == 0) {                             \
+            return;                                                                \
+        }                                                                          \
+        if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {                       \
+            aggregate_activity(                                                     \
+                XPROBE_CUPTI_GPU_KERNEL_START, (kernel)->deviceId, 0U,              \
+                (kernel)->name, normalize_activity_timestamp((kernel)->start),      \
+                normalize_activity_timestamp((kernel)->end), 0U);                   \
             return;                                                                \
         }                                                                          \
         enqueue_kernel_record(                                                     \
@@ -707,6 +906,15 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
                     NULL) == 0) {
                 continue;
             }
+            if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
+                aggregate_activity(
+                    XPROBE_CUPTI_GPU_MEMCPY_START, memcpy_record->deviceId,
+                    semantic_memcpy_kind((uint32_t)memcpy_record->copyKind), NULL,
+                    normalize_activity_timestamp(memcpy_record->start),
+                    normalize_activity_timestamp(memcpy_record->end),
+                    memcpy_record->bytes);
+                continue;
+            }
             enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_START,
                                   memcpy_record->start);
             enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_END,
@@ -720,6 +928,14 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
             if (values_match_capture(XPROBE_CUPTI_GPU_MEMSET_START,
                                      XPROBE_CUPTI_GPU_MEMSET_END, 0U, 0U,
                                      NULL) == 0) {
+                continue;
+            }
+            if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
+                aggregate_activity(
+                    XPROBE_CUPTI_GPU_MEMSET_START, memset_record->deviceId, 0U,
+                    NULL, normalize_activity_timestamp(memset_record->start),
+                    normalize_activity_timestamp(memset_record->end),
+                    memset_record->bytes);
                 continue;
             }
             enqueue_memset_record(memset_record, XPROBE_CUPTI_GPU_MEMSET_START,
@@ -919,7 +1135,9 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
     header->header_size = sizeof(*header);
     header->record_size = sizeof(records[0]);
     header->feature_flags = XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS;
-    if (activity_timestamps_are_host_monotonic(available) != 0) {
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
+        header->feature_flags |= XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS;
+    } else if (activity_timestamps_are_host_monotonic(available) != 0) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS;
     }
     header->capture_state =
@@ -939,6 +1157,38 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
     header->record_offset = record_offset;
 }
 
+static int write_aggregate_records(int descriptor,
+                                   int (*write_function)(int, const void *, size_t))
+{
+    for (uint64_t index = 0U; index < record_capacity; ++index) {
+        const struct xprobe_cupti_aggregate_slot *slot = &aggregate_slots[index];
+        struct xprobe_cupti_aggregate_record output;
+        uint64_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
+
+        if (state < 2U) {
+            continue;
+        }
+        memset(&output, 0, sizeof(output));
+        output.count = atomic_load_explicit(&slot->count, memory_order_relaxed);
+        output.total_duration_ns =
+            atomic_load_explicit(&slot->total_duration_ns, memory_order_relaxed);
+        output.min_duration_ns =
+            atomic_load_explicit(&slot->min_duration_ns, memory_order_relaxed);
+        output.max_duration_ns =
+            atomic_load_explicit(&slot->max_duration_ns, memory_order_relaxed);
+        output.total_bytes =
+            atomic_load_explicit(&slot->total_bytes, memory_order_relaxed);
+        output.kind = slot->kind;
+        output.device_id = slot->device_id;
+        output.memcpy_kind = slot->memcpy_kind;
+        memcpy(output.name, slot->name, sizeof(output.name));
+        if (write_function(descriptor, &output, sizeof(output)) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
 {
     struct xprobe_cupti_output_header header;
@@ -948,7 +1198,9 @@ static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
         is_socket != 0 ? send_all : write_all;
     int result;
 
-    if (record_offset > available) {
+    if ((capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
+         record_offset != 0U) ||
+        record_offset > available) {
         fprintf(stderr,
                 "xprobe CUPTI: requested record offset %llu exceeds committed "
                 "record count %llu\n",
@@ -958,7 +1210,9 @@ static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
     }
     initialize_output_header(&header, available, record_offset);
     result = write_function(descriptor, &header, sizeof(header));
-    if (result == 0) {
+    if (result == 0 && capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
+        result = write_aggregate_records(descriptor, write_function);
+    } else if (result == 0) {
         result = write_function(descriptor, records + record_offset,
                                 (available - record_offset) * sizeof(records[0]));
     }
@@ -1035,6 +1289,27 @@ static int valid_filter(const struct xprobe_cupti_filter *filter)
            bounded_name_length(filter->name) < XPROBE_CUPTI_NAME_LENGTH;
 }
 
+static int valid_aggregate_filters(
+    const struct xprobe_cupti_filter filters[XPROBE_CUPTI_FILTER_COUNT])
+{
+    uint32_t start = filters[0].record_kind;
+    uint32_t end = filters[1].record_kind;
+
+    if (!((start == XPROBE_CUPTI_GPU_KERNEL_START &&
+           end == XPROBE_CUPTI_GPU_KERNEL_END) ||
+          (start == XPROBE_CUPTI_GPU_MEMCPY_START &&
+           end == XPROBE_CUPTI_GPU_MEMCPY_END) ||
+          (start == XPROBE_CUPTI_GPU_MEMSET_START &&
+           end == XPROBE_CUPTI_GPU_MEMSET_END))) {
+        return 0;
+    }
+    return filters[0].api_domain == filters[1].api_domain &&
+           filters[0].memcpy_kind == filters[1].memcpy_kind &&
+           filters[0].name_match == filters[1].name_match &&
+           memcmp(filters[0].name, filters[1].name,
+                  XPROBE_CUPTI_NAME_LENGTH) == 0;
+}
+
 static int arm_capture(const struct xprobe_cupti_control_request *request)
 {
     int status;
@@ -1046,12 +1321,21 @@ static int arm_capture(const struct xprobe_cupti_control_request *request)
             return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
         }
     }
+    if (request->capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
+        valid_aggregate_filters(request->filters) == 0) {
+        fprintf(stderr,
+                "xprobe CUPTI: aggregate capture requires one matching "
+                "activity start/end pair\n");
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
     if (subscriber_active != 0 || enabled_activity_mask != 0U) {
         status = shutdown_agent();
         if (status != XPROBE_CUPTI_AGENT_READY) {
             return status;
         }
     }
+    capture_mode = request->capture_mode;
     if (allocate_capture(request->record_capacity) != XPROBE_CUPTI_AGENT_READY) {
         remember_output_error();
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
@@ -1127,7 +1411,9 @@ static void *serve_snapshots(void *unused)
                    sizeof(request.magic)) != 0 ||
             request.version != XPROBE_CUPTI_CONTROL_VERSION ||
             (request.command < XPROBE_CUPTI_CONTROL_ARM ||
-             request.command > XPROBE_CUPTI_CONTROL_CLOSE)) {
+             request.command > XPROBE_CUPTI_CONTROL_CLOSE) ||
+            request.capture_mode > XPROBE_CUPTI_CAPTURE_AGGREGATE ||
+            request.reserved != 0U) {
             fprintf(stderr, "xprobe CUPTI: invalid snapshot control request\n");
         } else if (pthread_mutex_lock(&flush_mutex) != 0) {
             fprintf(stderr, "xprobe CUPTI: failed to lock snapshot flush mutex\n");

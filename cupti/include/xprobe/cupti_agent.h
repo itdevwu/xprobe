@@ -7,17 +7,23 @@
 extern "C" {
 #endif
 
-#define XPROBE_CUPTI_AGENT_ABI_VERSION 3U
+#define XPROBE_CUPTI_AGENT_ABI_VERSION 4U
 #define XPROBE_CUPTI_OUTPUT_MAGIC "XPCUPTI"
 #define XPROBE_CUPTI_CONTROL_MAGIC "XPCTRL\0"
-#define XPROBE_CUPTI_CONTROL_VERSION 3U
+#define XPROBE_CUPTI_CONTROL_VERSION 4U
 #define XPROBE_CUPTI_NAME_LENGTH 128U
 #define XPROBE_CUPTI_FILTER_COUNT 2U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
 
 enum xprobe_cupti_feature {
     XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS = 1U << 0,
-    XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS = 1U << 1
+    XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS = 1U << 1,
+    XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS = 1U << 2
+};
+
+enum xprobe_cupti_capture_mode {
+    XPROBE_CUPTI_CAPTURE_EXACT = 0,
+    XPROBE_CUPTI_CAPTURE_AGGREGATE = 1
 };
 
 enum xprobe_cupti_agent_status {
@@ -72,6 +78,8 @@ struct xprobe_cupti_control_request {
     uint32_t command;
     uint64_t record_capacity;
     uint64_t record_offset;
+    uint32_t capture_mode;
+    uint32_t reserved;
     struct xprobe_cupti_filter filters[XPROBE_CUPTI_FILTER_COUNT];
 };
 
@@ -121,6 +129,19 @@ struct xprobe_cupti_record {
     uint32_t block_y;
     uint32_t block_z;
     uint32_t runtime_correlation_id;
+    char name[XPROBE_CUPTI_NAME_LENGTH];
+};
+
+struct xprobe_cupti_aggregate_record {
+    uint64_t count;
+    uint64_t total_duration_ns;
+    uint64_t min_duration_ns;
+    uint64_t max_duration_ns;
+    uint64_t total_bytes;
+    uint32_t kind;
+    uint32_t device_id;
+    uint32_t memcpy_kind;
+    uint32_t reserved[5];
     char name[XPROBE_CUPTI_NAME_LENGTH];
 };
 

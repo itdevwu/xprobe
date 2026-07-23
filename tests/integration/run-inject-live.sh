@@ -56,8 +56,8 @@ run_measure() {
   "${xprobe_bin}" measure \
     --pid "${target_pid}" \
     "${agent_args[@]}" \
-    --from 'cuda:kernel_start:name~xprobe_multisource_kernel.*' \
-    --to 'cuda:kernel_end:name~xprobe_multisource_kernel.*' \
+    --from 'cuda:kernel_start:name~.*xprobe_multisource_kernel.*' \
+    --to 'cuda:kernel_end:name~.*xprobe_multisource_kernel.*' \
     --match exact \
     --samples 3 \
     --max-events 32 \
@@ -88,9 +88,52 @@ run_api_measure() {
     >"$1.json" 2>"$1.stderr"
 }
 
+run_aggregate_measure() {
+  agent_args=()
+  if [[ ${auto_agent} != 1 ]]; then
+    agent_args=(--agent "${agent}")
+  fi
+  "${xprobe_bin}" measure \
+    --pid "${target_pid}" \
+    "${agent_args[@]}" \
+    --from 'cuda:kernel_start:name~.*xprobe_multisource_kernel.*' \
+    --to 'cuda:kernel_end:name~.*xprobe_multisource_kernel.*' \
+    --match exact \
+    --aggregate \
+    --duration-ms 200 \
+    --max-groups 1 \
+    --timeout-ms 10000 \
+    --json --non-interactive --no-color \
+    >"$1.json" 2>"$1.stderr"
+}
+
+run_aggregate_limit() {
+  agent_args=()
+  if [[ ${auto_agent} != 1 ]]; then
+    agent_args=(--agent "${agent}")
+  fi
+  if "${xprobe_bin}" measure \
+    --pid "${target_pid}" \
+    "${agent_args[@]}" \
+    --from 'cuda:kernel_start' \
+    --to 'cuda:kernel_end' \
+    --match exact \
+    --aggregate \
+    --duration-ms 200 \
+    --max-groups 1 \
+    --timeout-ms 10000 \
+    --json --non-interactive --no-color \
+    >"$1.json" 2>"$1.stderr"; then
+    echo "aggregate capacity test unexpectedly succeeded" >&2
+    return 1
+  fi
+}
+
 run_measure "$1/first"
 run_measure "$1/second"
 run_api_measure "$1/api"
+run_aggregate_measure "$1/aggregate"
+run_aggregate_limit "$1/aggregate-limit"
 
 if [[ ${auto_agent} == 1 ]]; then
   mapped_agents=$(awk '$0 ~ /lib\/xprobe\/cuda(12|13)\/libxprobe-cupti.so/ {print $NF}' "/proc/${target_pid}/maps" | sort -u | wc -l)

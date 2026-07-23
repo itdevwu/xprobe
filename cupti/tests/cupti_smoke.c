@@ -13,30 +13,34 @@ int main(void)
     if (sizeof(struct xprobe_cupti_record) != 200U) {
         return 3;
     }
-    if (offsetof(struct xprobe_cupti_output_header, feature_flags) != 20U) {
+    if (sizeof(struct xprobe_cupti_aggregate_record) != 200U) {
         return 4;
+    }
+    if (offsetof(struct xprobe_cupti_output_header, feature_flags) != 20U) {
+        return 5;
     }
     if (offsetof(struct xprobe_cupti_output_header, record_count) != 32U ||
         offsetof(struct xprobe_cupti_output_header, unknown_records) != 72U ||
         offsetof(struct xprobe_cupti_output_header, record_offset) != 80U) {
-        return 5;
+        return 6;
     }
     if (offsetof(struct xprobe_cupti_record, grid_x) != 44U ||
         offsetof(struct xprobe_cupti_record, grid_z) != 52U ||
         offsetof(struct xprobe_cupti_record, block_x) != 56U ||
         offsetof(struct xprobe_cupti_record, runtime_correlation_id) != 68U ||
         offsetof(struct xprobe_cupti_record, name) != 72U) {
-        return 6;
+        return 7;
     }
     if (sizeof(struct xprobe_cupti_filter) != 144U ||
-        sizeof(struct xprobe_cupti_control_request) != 320U) {
-        return 7;
+        sizeof(struct xprobe_cupti_control_request) != 328U) {
+        return 8;
     }
     if (offsetof(struct xprobe_cupti_control_request, record_capacity) != 16U ||
         offsetof(struct xprobe_cupti_control_request, record_offset) != 24U ||
-        offsetof(struct xprobe_cupti_control_request, filters) != 32U ||
+        offsetof(struct xprobe_cupti_control_request, capture_mode) != 32U ||
+        offsetof(struct xprobe_cupti_control_request, filters) != 40U ||
         offsetof(struct xprobe_cupti_filter, name) != 16U) {
-        return 8;
+        return 9;
     }
     return 0;
 }

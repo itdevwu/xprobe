@@ -17,19 +17,21 @@ use xprobe_protocol::{
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
-const CONTROL_VERSION: u32 = 3;
-const ABI_VERSION: u32 = 3;
+const CONTROL_VERSION: u32 = 4;
+const ABI_VERSION: u32 = 4;
 const HEADER_SIZE: usize = 88;
 const HEADER_SIZE_U32: u32 = 88;
 const RECORD_SIZE: usize = 200;
 const RECORD_SIZE_U32: u32 = 200;
-const CONTROL_SIZE: usize = 320;
+const CONTROL_SIZE: usize = 328;
 const FILTER_SIZE: usize = 144;
 const FILTER_COUNT: usize = 2;
 const FILTER_NAME_SIZE: usize = 128;
 const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
 const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
-const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS | FEATURE_TRANSFER_RECORDS;
+const FEATURE_AGGREGATE_RECORDS: u32 = 1 << 2;
+const SUPPORTED_FEATURES: u32 =
+    FEATURE_HOST_MONOTONIC_TIMESTAMPS | FEATURE_TRANSFER_RECORDS | FEATURE_AGGREGATE_RECORDS;
 const UNKNOWN_U32: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +66,13 @@ pub enum CuptiMemcpyKind {
     PeerToPeer = 5,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum CuptiCaptureMode {
+    Exact = 0,
+    Aggregate = 1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CuptiNameFilter {
     Any,
@@ -84,7 +93,28 @@ pub struct CuptiEventFilter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CuptiArmConfig {
     pub record_capacity: u64,
+    pub capture_mode: CuptiCaptureMode,
     pub filters: Vec<CuptiEventFilter>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CuptiAggregateActivity {
+    Kernel,
+    Memcpy,
+    Memset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CuptiAggregateGroup {
+    pub activity: CuptiAggregateActivity,
+    pub name: Option<String>,
+    pub device_id: Option<u32>,
+    pub memcpy_kind: Option<MemcpyKind>,
+    pub count: u64,
+    pub total_duration_ns: u64,
+    pub min_duration_ns: u64,
+    pub max_duration_ns: u64,
+    pub total_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +129,7 @@ pub struct CuptiCapture {
     pub dropped_records: u64,
     pub unknown_records: u64,
     pub events: Vec<Event>,
+    pub aggregate_groups: Vec<CuptiAggregateGroup>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +179,10 @@ pub enum CuptiDecodeError {
     InvalidTimestamp {
         index: usize,
         kind: u32,
+    },
+    InvalidAggregateRecord {
+        index: usize,
+        message: &'static str,
     },
     InvalidCaptureState(u32),
     InvalidStopReason(u32),
@@ -210,6 +245,12 @@ impl fmt::Display for CuptiDecodeError {
                 write!(
                     formatter,
                     "CUPTI record {index} of kind {kind} has a zero timestamp"
+                )
+            }
+            Self::InvalidAggregateRecord { index, message } => {
+                write!(
+                    formatter,
+                    "CUPTI aggregate record {index} is invalid: {message}"
                 )
             }
             Self::InvalidCaptureState(state) => {
@@ -408,8 +449,9 @@ fn encode_control(
         ));
     }
     control[16..24].copy_from_slice(&config.record_capacity.to_ne_bytes());
+    control[32..36].copy_from_slice(&(config.capture_mode as u32).to_ne_bytes());
     for (index, filter) in config.filters.iter().enumerate() {
-        let offset = 32 + index * FILTER_SIZE;
+        let offset = 40 + index * FILTER_SIZE;
         control[offset..offset + 4].copy_from_slice(&(filter.record_kind as u32).to_ne_bytes());
         control[offset + 4..offset + 8].copy_from_slice(&(filter.api_domain as u32).to_ne_bytes());
         control[offset + 8..offset + 12]
@@ -516,19 +558,22 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         });
     }
 
-    let mut events = Vec::with_capacity(record_count);
-    for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
-        events.push(decode_record(record, index, session_id, feature_flags)?);
+    let aggregate = feature_flags & FEATURE_AGGREGATE_RECORDS != 0;
+    if aggregate && record_offset != 0 {
+        return Err(CuptiDecodeError::InvalidCounters {
+            offset: record_offset,
+            records: record_count_raw,
+            capacity: record_capacity,
+            observed: observed_records,
+        });
     }
-    events.sort_by_key(|event| event.timestamp_ns);
-    let mut sequence = record_offset;
-    for event in &mut events {
-        event.sequence = sequence;
-        event.event_id = format!("evt_{sequence}");
-        sequence = sequence
-            .checked_add(1)
-            .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
-    }
+    let (events, aggregate_groups) = decode_payload(
+        bytes,
+        record_count,
+        record_offset,
+        session_id,
+        feature_flags,
+    )?;
 
     let agent_dropped_records = read_u64(bytes, 56);
     let cupti_dropped_records = read_u64(bytes, 64);
@@ -546,6 +591,101 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         dropped_records,
         unknown_records: read_u64(bytes, 72),
         events,
+        aggregate_groups,
+    })
+}
+
+fn decode_payload(
+    bytes: &[u8],
+    record_count: usize,
+    record_offset: u64,
+    session_id: &str,
+    feature_flags: u32,
+) -> Result<(Vec<Event>, Vec<CuptiAggregateGroup>), CuptiDecodeError> {
+    if feature_flags & FEATURE_AGGREGATE_RECORDS != 0 {
+        let mut groups = Vec::with_capacity(record_count);
+        for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
+            groups.push(decode_aggregate_record(record, index)?);
+        }
+        return Ok((Vec::new(), groups));
+    }
+
+    let mut events = Vec::with_capacity(record_count);
+    for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
+        events.push(decode_record(record, index, session_id, feature_flags)?);
+    }
+    events.sort_by_key(|event| event.timestamp_ns);
+    let mut sequence = record_offset;
+    for event in &mut events {
+        event.sequence = sequence;
+        event.event_id = format!("evt_{sequence}");
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
+    }
+    Ok((events, Vec::new()))
+}
+
+fn decode_aggregate_record(
+    record: &[u8],
+    index: usize,
+) -> Result<CuptiAggregateGroup, CuptiDecodeError> {
+    let count = read_u64(record, 0);
+    let total_duration_ns = read_u64(record, 8);
+    let min_duration_ns = read_u64(record, 16);
+    let max_duration_ns = read_u64(record, 24);
+    if count == 0 {
+        return Err(CuptiDecodeError::InvalidAggregateRecord {
+            index,
+            message: "count is zero",
+        });
+    }
+    if min_duration_ns > max_duration_ns
+        || total_duration_ns / count < min_duration_ns
+        || total_duration_ns / count > max_duration_ns
+    {
+        return Err(CuptiDecodeError::InvalidAggregateRecord {
+            index,
+            message: "duration counters are inconsistent",
+        });
+    }
+    let kind = read_u32(record, 40);
+    let (activity, has_name, has_bytes) = match kind {
+        3 => (CuptiAggregateActivity::Kernel, true, false),
+        5 => (CuptiAggregateActivity::Memcpy, false, true),
+        7 => (CuptiAggregateActivity::Memset, false, true),
+        _ => {
+            return Err(CuptiDecodeError::InvalidAggregateRecord {
+                index,
+                message: "activity kind is unsupported",
+            });
+        }
+    };
+    let name_bytes = &record[72..200];
+    let name_length = name_bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(name_bytes.len());
+    let name = str::from_utf8(&name_bytes[..name_length])
+        .map_err(|_| CuptiDecodeError::InvalidName { index })?;
+    if has_name && name.is_empty() {
+        return Err(CuptiDecodeError::InvalidAggregateRecord {
+            index,
+            message: "kernel name is empty",
+        });
+    }
+    let memcpy_kind = (activity == CuptiAggregateActivity::Memcpy)
+        .then(|| decode_semantic_memcpy_kind(read_u32(record, 48)));
+    Ok(CuptiAggregateGroup {
+        activity,
+        name: has_name.then(|| name.to_owned()),
+        device_id: optional_unknown(read_u32(record, 44)),
+        memcpy_kind,
+        count,
+        total_duration_ns,
+        min_duration_ns,
+        max_duration_ns,
+        total_bytes: has_bytes.then(|| read_u64(record, 32)),
     })
 }
 
@@ -694,6 +834,17 @@ const fn decode_memcpy_kind(kind: u32) -> MemcpyKind {
     }
 }
 
+const fn decode_semantic_memcpy_kind(kind: u32) -> MemcpyKind {
+    match kind {
+        1 => MemcpyKind::HostToDevice,
+        2 => MemcpyKind::DeviceToHost,
+        3 => MemcpyKind::DeviceToDevice,
+        4 => MemcpyKind::HostToHost,
+        5 => MemcpyKind::PeerToPeer,
+        _ => MemcpyKind::Unknown,
+    }
+}
+
 fn decode_dim(record: &[u8], offset: usize) -> Option<Dim3> {
     let dimension = Dim3 {
         x: read_u32(record, offset),
@@ -736,9 +887,9 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        CuptiApiDomain, CuptiArmConfig, CuptiDecodeError, CuptiEventFilter, CuptiMemcpyKind,
-        CuptiNameFilter, CuptiRecordKind, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture,
-        encode_control, read_snapshot,
+        CuptiApiDomain, CuptiArmConfig, CuptiCaptureMode, CuptiDecodeError, CuptiEventFilter,
+        CuptiMemcpyKind, CuptiNameFilter, CuptiRecordKind, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE,
+        decode_capture, encode_control, read_snapshot,
     };
     use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind};
 
@@ -769,8 +920,38 @@ mod tests {
 
     fn transfer_capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
         let mut bytes = normalized_capture(records);
-        bytes[20..24].copy_from_slice(&super::SUPPORTED_FEATURES.to_le_bytes());
+        let features = super::FEATURE_HOST_MONOTONIC_TIMESTAMPS | super::FEATURE_TRANSFER_RECORDS;
+        bytes[20..24].copy_from_slice(&features.to_le_bytes());
         bytes
+    }
+
+    fn aggregate_capture(records: &[[u8; RECORD_SIZE]], observed: u64) -> Vec<u8> {
+        let mut bytes = capture(records);
+        let features = super::FEATURE_TRANSFER_RECORDS | super::FEATURE_AGGREGATE_RECORDS;
+        bytes[20..24].copy_from_slice(&features.to_le_bytes());
+        bytes[48..56].copy_from_slice(&observed.to_le_bytes());
+        bytes
+    }
+
+    fn aggregate_record(
+        kind: u32,
+        count: u64,
+        total_duration_ns: u64,
+        device_id: u32,
+        memcpy_kind: u32,
+        name: &str,
+    ) -> [u8; RECORD_SIZE] {
+        let mut record = [0_u8; RECORD_SIZE];
+        record[0..8].copy_from_slice(&count.to_le_bytes());
+        record[8..16].copy_from_slice(&total_duration_ns.to_le_bytes());
+        record[16..24].copy_from_slice(&(total_duration_ns / count).to_le_bytes());
+        record[24..32].copy_from_slice(&(total_duration_ns / count).to_le_bytes());
+        record[32..40].copy_from_slice(&4096_u64.to_le_bytes());
+        record[40..44].copy_from_slice(&kind.to_le_bytes());
+        record[44..48].copy_from_slice(&device_id.to_le_bytes());
+        record[48..52].copy_from_slice(&memcpy_kind.to_le_bytes());
+        record[72..72 + name.len()].copy_from_slice(name.as_bytes());
+        record
     }
 
     fn record(kind: u32, timestamp: u64, correlation: u32, name: &str) -> [u8; RECORD_SIZE] {
@@ -930,10 +1111,10 @@ mod tests {
     #[test]
     fn rejects_unknown_feature_flags() {
         let mut bytes = capture(&[]);
-        bytes[20..24].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&8_u32.to_le_bytes());
         assert_eq!(
             decode_capture(&bytes, "xp_test"),
-            Err(CuptiDecodeError::UnsupportedFeatureFlags(4))
+            Err(CuptiDecodeError::UnsupportedFeatureFlags(8))
         );
     }
 
@@ -1001,12 +1182,43 @@ mod tests {
     }
 
     #[test]
+    fn decodes_bounded_aggregate_groups() {
+        let bytes = aggregate_capture(
+            &[
+                aggregate_record(3, 4, 400, 0, 0, "vector_add"),
+                aggregate_record(5, 2, 80, 0, 1, ""),
+            ],
+            6,
+        );
+
+        let decoded = decode_capture(&bytes, "unused").expect("aggregate capture must decode");
+
+        assert!(decoded.events.is_empty());
+        assert_eq!(decoded.aggregate_groups.len(), 2);
+        assert_eq!(
+            decoded.aggregate_groups[0].activity,
+            super::CuptiAggregateActivity::Kernel
+        );
+        assert_eq!(
+            decoded.aggregate_groups[0].name.as_deref(),
+            Some("vector_add")
+        );
+        assert_eq!(decoded.aggregate_groups[0].count, 4);
+        assert_eq!(
+            decoded.aggregate_groups[1].memcpy_kind,
+            Some(MemcpyKind::HostToDevice)
+        );
+        assert_eq!(decoded.aggregate_groups[1].total_bytes, Some(4096));
+    }
+
+    #[test]
     fn encodes_bounded_arm_filters() {
         let control = encode_control(
             1,
             0,
             Some(&CuptiArmConfig {
                 record_capacity: 250_000,
+                capture_mode: CuptiCaptureMode::Exact,
                 filters: vec![CuptiEventFilter {
                     record_kind: CuptiRecordKind::GpuKernelStart,
                     api_domain: CuptiApiDomain::Any,
@@ -1017,7 +1229,7 @@ mod tests {
         )
         .expect("ARM request must encode");
 
-        assert_eq!(control.len(), 320);
+        assert_eq!(control.len(), 328);
         assert_eq!(&control[0..8], super::CONTROL_MAGIC);
         assert_eq!(u32::from_ne_bytes(control[12..16].try_into().unwrap()), 1);
         assert_eq!(
@@ -1025,10 +1237,42 @@ mod tests {
             250_000
         );
         assert_eq!(u64::from_ne_bytes(control[24..32].try_into().unwrap()), 0);
-        assert_eq!(u32::from_ne_bytes(control[32..36].try_into().unwrap()), 3);
-        assert_eq!(u32::from_ne_bytes(control[44..48].try_into().unwrap()), 2);
-        assert_eq!(&control[48..54], b"flash_");
-        assert!(control[176..].iter().all(|byte| *byte == 0));
+        assert_eq!(u32::from_ne_bytes(control[32..36].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(control[40..44].try_into().unwrap()), 3);
+        assert_eq!(u32::from_ne_bytes(control[52..56].try_into().unwrap()), 2);
+        assert_eq!(&control[56..62], b"flash_");
+        assert!(control[184..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn encodes_aggregate_arm_mode() {
+        let control = encode_control(
+            1,
+            0,
+            Some(&CuptiArmConfig {
+                record_capacity: 4096,
+                capture_mode: CuptiCaptureMode::Aggregate,
+                filters: vec![
+                    CuptiEventFilter {
+                        record_kind: CuptiRecordKind::GpuKernelStart,
+                        api_domain: CuptiApiDomain::Any,
+                        memcpy_kind: CuptiMemcpyKind::Any,
+                        name: CuptiNameFilter::Any,
+                    },
+                    CuptiEventFilter {
+                        record_kind: CuptiRecordKind::GpuKernelEnd,
+                        api_domain: CuptiApiDomain::Any,
+                        memcpy_kind: CuptiMemcpyKind::Any,
+                        name: CuptiNameFilter::Any,
+                    },
+                ],
+            }),
+        )
+        .expect("aggregate ARM request must encode");
+
+        assert_eq!(u32::from_ne_bytes(control[32..36].try_into().unwrap()), 1);
+        assert_eq!(u32::from_ne_bytes(control[40..44].try_into().unwrap()), 3);
+        assert_eq!(u32::from_ne_bytes(control[184..188].try_into().unwrap()), 4);
     }
 
     #[test]
@@ -1038,6 +1282,7 @@ mod tests {
             0,
             Some(&CuptiArmConfig {
                 record_capacity: 1,
+                capture_mode: CuptiCaptureMode::Exact,
                 filters: Vec::new(),
             }),
         )

@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AggregateInventoryResult",
+  "type": "object",
+  "properties": {
+    "collection": {
+      "$ref": "#/$defs/AggregateCollectionSummary"
+    },
+    "inventory": {
+      "$ref": "#/$defs/AggregateInventory"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "session_id",
+    "status",
+    "inventory",
+    "collection"
+  ],
+  "$defs": {
+    "AggregateActivity": {
+      "type": "string",
+      "enum": [
+        "kernel",
+        "memcpy",
+        "memset"
+      ]
+    },
+    "AggregateCollectionSummary": {
+      "type": "object",
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/CaptureCompleteness"
+        },
+        "dropped_activities": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "group_capacity": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "grouped_activities": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "groups": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "observed_activities": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "occupied_slots": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "table_utilization": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "completeness",
+        "observed_activities",
+        "grouped_activities",
+        "dropped_activities",
+        "group_capacity",
+        "groups",
+        "occupied_slots",
+        "table_utilization"
+      ]
+    },
+    "AggregateDuration": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mean": {
+          "type": "number",
+          "format": "double"
+        },
+        "min": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "mean",
+        "max",
+        "total"
+      ]
+    },
+    "AggregateGroup": {
+      "type": "object",
+      "properties": {
+        "activity": {
+          "$ref": "#/$defs/AggregateActivity"
+        },
+        "count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "device_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "duration_ns": {
+          "$ref": "#/$defs/AggregateDuration"
+        },
+        "end_selector_hint": {
+          "type": "string"
+        },
+        "memcpy_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemcpyKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start_selector_hint": {
+          "type": "string"
+        },
+        "total_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "activity",
+        "start_selector_hint",
+        "end_selector_hint",
+        "count",
+        "duration_ns"
+      ]
+    },
+    "AggregateInventory": {
+      "type": "object",
+      "properties": {
+        "end_selector": {
+          "type": "string"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AggregateGroup"
+          }
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start_selector": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start_selector",
+        "end_selector",
+        "groups"
+      ]
+    },
+    "CaptureCompleteness": {
+      "type": "string",
+      "enum": [
+        "complete"
+      ]
+    },
+    "MemcpyKind": {
+      "type": "string",
+      "enum": [
+        "HtoD",
+        "DtoH",
+        "DtoD",
+        "HtoH",
+        "PtoP",
+        "unknown"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "2.0"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "timed_out",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

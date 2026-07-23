@@ -25,8 +25,10 @@ use xprobe_core::{cupti_compat, discover, doctor, inject, inspect, resolve, vali
 use xprobe_correlator::{MeasureError, MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
-    CapabilityReport, CheckResult, ClockDomain, CuptiCollectionSummary, DiscoveryResult, ErrorCode,
-    ErrorResponse, Event, EventSource, EventType, ExportFormat, HostCaptureResult, MatchPolicy,
+    AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
+    AggregateInventory, AggregateInventoryResult, CapabilityReport, CaptureCompleteness,
+    CheckResult, ClockDomain, CuptiCollectionSummary, DiscoveryResult, ErrorCode, ErrorResponse,
+    Event, EventSource, EventType, ExportFormat, HostCaptureResult, MatchPolicy, MeasurementMode,
     MeasurementResult, MeasurementSpec, MemcpyKind, ProcessReport, ResolvedCudaSelector,
     ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity, TraceExportResult,
     ValidationResult, Warning, XprobeError,
@@ -54,7 +56,7 @@ enum Command {
     /// Validate two event selectors and their correlation policy.
     Validate(ValidateArgs),
     /// Measure latency between two events in files or a running process.
-    Measure(MeasureArgs),
+    Measure(Box<MeasureArgs>),
     /// Run a live measurement from a versioned specification.
     #[command(hide = true)]
     Trace(TraceArgs),
@@ -253,7 +255,7 @@ struct ValidateArgs {
 #[derive(Debug, Args)]
 struct MeasureArgs {
     /// Versioned `MeasurementSpec` JSON for a live target.
-    #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "samples", "duration_ms", "timeout_ms", "max_events", "name"])]
+    #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "samples", "duration_ms", "timeout_ms", "max_events", "aggregate", "max_groups", "name"])]
     spec: Option<PathBuf>,
 
     /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
@@ -308,10 +310,28 @@ struct MeasureArgs {
     #[arg(long, default_value_t = 100_000)]
     max_events: usize,
 
+    /// Return bounded activity aggregates instead of exact event evidence.
+    #[arg(long, conflicts_with_all = ["input", "samples", "events_out", "format"])]
+    aggregate: bool,
+
+    /// Bound distinct activity groups retained by --aggregate.
+    #[arg(
+        long,
+        requires = "aggregate",
+        default_value_if("aggregate", "true", "4096")
+    )]
+    max_groups: Option<usize>,
+
     /// Optional measurement name.
     #[arg(long)]
     name: Option<String>,
 
+    #[command(flatten)]
+    output: CommonOutputArgs,
+}
+
+#[derive(Debug, Clone, Copy, Args)]
+struct CommonOutputArgs {
     /// Emit only the versioned JSON result on stdout.
     #[arg(long)]
     json: bool,
@@ -417,7 +437,7 @@ fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::Resolve(args) => run_resolve(args),
         Command::Validate(args) => run_validate(args),
-        Command::Measure(args) => run_measure(args),
+        Command::Measure(args) => run_measure(*args),
         Command::Trace(args) => run_trace(args),
         Command::Export(args) => run_export(args),
         Command::Capture(args) | Command::Dev(args) => run_capture(args),
@@ -461,6 +481,14 @@ fn run_trace(args: TraceArgs) -> ExitCode {
             );
         }
     };
+    if spec.measurement_mode != MeasurementMode::Exact || spec.max_groups.is_some() {
+        return emit_error(
+            ErrorCode::InvalidEventSelector,
+            "legacy trace accepts only exact MeasurementSpec requests".to_owned(),
+            true,
+            json,
+        );
+    }
     let samples = match spec.samples.map(usize::try_from).transpose() {
         Ok(samples) => samples,
         Err(error) => {
@@ -472,7 +500,15 @@ fn run_trace(args: TraceArgs) -> ExitCode {
             );
         }
     };
-    let max_events = match usize::try_from(spec.max_events) {
+    let Some(max_events) = spec.max_events else {
+        return emit_error(
+            ErrorCode::SessionLimitExceeded,
+            "exact MeasurementSpec requires max_events".to_owned(),
+            true,
+            json,
+        );
+    };
+    let max_events = match usize::try_from(max_events) {
         Ok(max_events) => max_events,
         Err(error) => {
             return emit_error(
@@ -490,6 +526,7 @@ fn run_trace(args: TraceArgs) -> ExitCode {
         agent_path: None,
         timeout: Duration::from_millis(spec.timeout_ms),
         match_policy_text: match_policy_name(spec.match_policy),
+        mode: MeasurementMode::Exact,
         options: MeasureOptions {
             session_id: format!("xp_trace_{}", std::process::id()),
             name: spec.name,
@@ -676,10 +713,15 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         samples,
         duration_ms,
         max_events,
+        aggregate,
+        max_groups,
         name,
-        json,
-        no_color: _,
-        non_interactive: _,
+        output:
+            CommonOutputArgs {
+                json,
+                no_color: _,
+                non_interactive: _,
+            },
     } = args;
     if let Some(spec) = spec {
         return run_measure_spec(
@@ -710,13 +752,26 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         dropped_events: 0,
     };
 
-    if pid.is_some() && !input.is_empty() {
-        return emit_error(
-            ErrorCode::InvalidEventSelector,
-            "--pid and --input select different collection modes".to_owned(),
-            true,
-            json,
-        );
+    if let Err(error) = validate_measure_source(pid, &input) {
+        return emit_command_failure(error, json);
+    }
+    if aggregate {
+        let request = match direct_aggregate_request(
+            pid,
+            cupti_socket,
+            agent,
+            timeout_ms,
+            duration_ms,
+            max_groups,
+            options,
+        ) {
+            Ok(request) => request,
+            Err(error) => return emit_command_failure(error, json),
+        };
+        return match collect_live_aggregate(&request) {
+            Ok(result) => emit_aggregate_inventory(&result, json),
+            Err(error) => emit_command_failure(error, json),
+        };
     }
     if let Some(pid) = pid {
         let request = LiveMeasureRequest {
@@ -726,6 +781,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             agent_path: agent,
             timeout: Duration::from_millis(timeout_ms),
             match_policy_text: match_policy_name(match_policy),
+            mode: MeasurementMode::Exact,
             options,
         };
         return match collect_live_measurement(&request) {
@@ -742,6 +798,56 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         format,
         json,
     )
+}
+
+fn validate_measure_source(pid: Option<u32>, input: &[PathBuf]) -> Result<(), CommandFailure> {
+    if pid.is_some() && !input.is_empty() {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            "--pid and --input select different collection modes",
+            true,
+        ));
+    }
+    Ok(())
+}
+
+fn direct_aggregate_request(
+    pid: Option<u32>,
+    cupti_socket: Option<PathBuf>,
+    agent_path: Option<PathBuf>,
+    timeout_ms: u64,
+    duration_ms: Option<u64>,
+    max_groups: Option<usize>,
+    options: MeasureOptions,
+) -> Result<LiveMeasureRequest, CommandFailure> {
+    let pid = pid.ok_or_else(|| {
+        CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            "--aggregate requires --pid",
+            true,
+        )
+    })?;
+    let duration_ms = duration_ms.ok_or_else(|| {
+        CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            "--aggregate requires --duration-ms",
+            true,
+        )
+    })?;
+    Ok(LiveMeasureRequest {
+        pid,
+        expected_target: None,
+        cupti_socket,
+        agent_path,
+        timeout: Duration::from_millis(timeout_ms),
+        match_policy_text: match_policy_name(options.match_policy),
+        mode: MeasurementMode::Aggregate,
+        options: MeasureOptions {
+            duration: Some(Duration::from_millis(duration_ms)),
+            max_events: max_groups.expect("clap supplies aggregate group capacity"),
+            ..options
+        },
+    })
 }
 
 fn parse_measure_selection(
@@ -861,16 +967,9 @@ fn run_measure_spec(
             );
         }
     };
-    let max_events = match usize::try_from(spec.max_events) {
-        Ok(max_events) => max_events,
-        Err(error) => {
-            return emit_error(
-                ErrorCode::SessionLimitExceeded,
-                format!("MeasurementSpec max_events exceed this platform: {error}"),
-                true,
-                json,
-            );
-        }
+    let max_events = match measurement_spec_capacity(&spec) {
+        Ok(capacity) => capacity,
+        Err(error) => return emit_command_failure(error, json),
     };
     let request = LiveMeasureRequest {
         pid: spec.target.pid,
@@ -879,6 +978,7 @@ fn run_measure_spec(
         agent_path,
         timeout: Duration::from_millis(spec.timeout_ms),
         match_policy_text: match_policy_name(spec.match_policy),
+        mode: spec.measurement_mode,
         options: MeasureOptions {
             session_id: format!("xp_measure_{}", std::process::id()),
             name: spec.name,
@@ -891,10 +991,59 @@ fn run_measure_spec(
             dropped_events: 0,
         },
     };
-    match collect_live_measurement(&request) {
-        Ok(execution) => finish_measurement(&execution, events_out, format, json),
-        Err(error) => finish_measurement_failure(error, events_out, format, json),
+    match request.mode {
+        MeasurementMode::Exact => match collect_live_measurement(&request) {
+            Ok(execution) => finish_measurement(&execution, events_out, format, json),
+            Err(error) => finish_measurement_failure(error, events_out, format, json),
+        },
+        MeasurementMode::Aggregate => {
+            if events_out.is_some() || format.is_some() {
+                return emit_error(
+                    ErrorCode::TraceExportFailed,
+                    "aggregate measurement does not produce event evidence artifacts".to_owned(),
+                    true,
+                    json,
+                );
+            }
+            match collect_live_aggregate(&request) {
+                Ok(result) => emit_aggregate_inventory(&result, json),
+                Err(error) => emit_command_failure(error, json),
+            }
+        }
     }
+}
+
+fn measurement_spec_capacity(spec: &MeasurementSpec) -> Result<usize, CommandFailure> {
+    let capacity = match spec.measurement_mode {
+        MeasurementMode::Exact if spec.max_groups.is_some() => {
+            return Err(CommandFailure::new(
+                ErrorCode::SessionLimitExceeded,
+                "MeasurementSpec max_groups is only valid in aggregate mode",
+                true,
+            ));
+        }
+        MeasurementMode::Exact => spec.max_events.ok_or_else(|| {
+            CommandFailure::new(
+                ErrorCode::SessionLimitExceeded,
+                "exact MeasurementSpec requires max_events",
+                true,
+            )
+        })?,
+        MeasurementMode::Aggregate => spec.max_groups.ok_or_else(|| {
+            CommandFailure::new(
+                ErrorCode::SessionLimitExceeded,
+                "aggregate MeasurementSpec requires max_groups",
+                true,
+            )
+        })?,
+    };
+    usize::try_from(capacity).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            format!("MeasurementSpec capacity exceeds this platform: {error}"),
+            true,
+        )
+    })
 }
 
 fn finish_measurement(
@@ -1151,6 +1300,7 @@ struct LiveMeasureRequest {
     agent_path: Option<PathBuf>,
     timeout: Duration,
     match_policy_text: &'static str,
+    mode: MeasurementMode,
     options: MeasureOptions,
 }
 
@@ -1220,6 +1370,7 @@ struct LiveCollection {
 fn collect_live_measurement(
     request: &LiveMeasureRequest,
 ) -> Result<MeasurementExecution, CommandFailure> {
+    assert_eq!(request.mode, MeasurementMode::Exact);
     validate_live_limits(request)?;
     let mut collection = prepare_live_collection(request)?;
 
@@ -1317,6 +1468,62 @@ fn collect_live_measurement(
     Ok(execution)
 }
 
+fn collect_live_aggregate(
+    request: &LiveMeasureRequest,
+) -> Result<AggregateInventoryResult, CommandFailure> {
+    assert_eq!(request.mode, MeasurementMode::Aggregate);
+    validate_live_limits(request)?;
+    let mut collection = prepare_live_collection(request)?;
+    let collection_end = collection
+        .collection_end
+        .expect("aggregate validation requires duration");
+    if collection_end > collection.deadline {
+        return Err(CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            "aggregate duration must not exceed timeout",
+            true,
+        ));
+    }
+
+    while Instant::now() < collection_end {
+        let remaining = collection_end.saturating_duration_since(Instant::now());
+        thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+    let target_result = inspect::verify_target(&collection.report.target)
+        .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()));
+    let stop_result = stop_cupti_agent(&mut collection, request);
+    match (target_result, stop_result) {
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+        (Err(target), Err(cleanup)) => {
+            return Err(CommandFailure::new(
+                ErrorCode::CleanupFailed,
+                format!(
+                    "{}; target verification also failed: {}",
+                    cleanup.message, target.message
+                ),
+                cleanup.recoverable,
+            )
+            .with_detail("cleanup_phase", "stop_cupti")
+            .with_detail("target_error_code", target.code.to_string())
+            .with_hint("verify the target state before starting another measurement"));
+        }
+        (Ok(()), Ok(())) => {}
+    }
+
+    let capture = collection.latest_cuda.as_ref().ok_or_else(|| {
+        CommandFailure::new(
+            ErrorCode::CuptiNotAvailable,
+            "CUPTI Agent returned no aggregate capture",
+            false,
+        )
+    })?;
+    let mut result = aggregate_inventory_result(capture, request)?;
+    if collection.agent_injected {
+        result.warnings.push(injection_warning(&collection));
+    }
+    Ok(result)
+}
+
 fn validate_live_limits(request: &LiveMeasureRequest) -> Result<(), CommandFailure> {
     if request.timeout.is_zero() {
         return Err(CommandFailure::new(
@@ -1338,6 +1545,25 @@ fn validate_live_limits(request: &LiveMeasureRequest) -> Result<(), CommandFailu
             "live measurement requires positive samples or duration and max-events limits",
             true,
         ));
+    }
+    if request.mode == MeasurementMode::Aggregate {
+        if request.options.samples.is_some()
+            || request.options.duration.is_none()
+            || request.options.match_policy != MatchPolicy::Exact
+        {
+            return Err(CommandFailure::new(
+                ErrorCode::InvalidCorrelationPolicy,
+                "aggregate measurement requires duration, exact activity endpoints, and no samples limit",
+                true,
+            ));
+        }
+        if request.options.duration > Some(request.timeout) {
+            return Err(CommandFailure::new(
+                ErrorCode::SessionLimitExceeded,
+                "aggregate duration must not exceed timeout",
+                true,
+            ));
+        }
     }
     Ok(())
 }
@@ -1377,9 +1603,12 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
             )
             .with_hint("rerun validate with an explicitly compatible policy"));
     }
+    if request.mode == MeasurementMode::Aggregate {
+        validate_aggregate_selection(&validation)?;
+    }
 
     let activation = prepare_cupti_activation(&report, &validation, request)?;
-    let arm_config = cupti_arm_config(&validation, request.options.max_events)?;
+    let arm_config = cupti_arm_config(&validation, request.options.max_events, request.mode)?;
     let baseline = arm_cupti_capture(&activation, arm_config.as_ref(), request)?;
     let socket = activation.socket;
     let baseline_timestamp = baseline
@@ -1430,6 +1659,50 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
         agent_path: activation.agent_path,
         cupti_path: activation.cupti_path,
     })
+}
+
+fn validate_aggregate_selection(validation: &ValidationResult) -> Result<(), CommandFailure> {
+    let (Some(start), Some(end)) = (validation.start.cuda.as_ref(), validation.end.cuda.as_ref())
+    else {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            "aggregate measurement supports CUPTI activity endpoints only",
+            true,
+        ));
+    };
+    let paired = matches!(
+        (&start.event_type, &end.event_type),
+        (&EventType::GpuKernelStart, &EventType::GpuKernelEnd)
+            | (&EventType::GpuMemcpyStart, &EventType::GpuMemcpyEnd)
+            | (&EventType::GpuMemsetStart, &EventType::GpuMemsetEnd)
+    );
+    if !paired
+        || start.api_domain != end.api_domain
+        || start.api_name != end.api_name
+        || start.kernel_name_regex != end.kernel_name_regex
+        || start.memcpy_kind != end.memcpy_kind
+    {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            "aggregate measurement requires matching kernel, memcpy, or memset start/end selectors",
+            true,
+        ));
+    }
+    if let Some(pattern) = start.kernel_name_regex.as_deref()
+        && pattern != ".*"
+        && matches!(
+            bounded_kernel_name_filter(pattern),
+            cupti::CuptiNameFilter::Any
+        )
+    {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            "aggregate kernel regex must be an exact, prefix, suffix, or contains pattern that the CUPTI Agent can apply",
+            true,
+        )
+        .with_hint("use ^literal$, ^literal.*, .*literal$, or .*literal.*"));
+    }
+    Ok(())
 }
 
 fn arm_cupti_capture(
@@ -1494,6 +1767,7 @@ fn cleanup_failed_arm(
 fn cupti_arm_config(
     validation: &ValidationResult,
     max_events: usize,
+    mode: MeasurementMode,
 ) -> Result<Option<cupti::CuptiArmConfig>, CommandFailure> {
     if !validation.requirements.needs_cupti {
         return Ok(None);
@@ -1512,6 +1786,10 @@ fn cupti_arm_config(
     })?;
     Ok(Some(cupti::CuptiArmConfig {
         record_capacity,
+        capture_mode: match mode {
+            MeasurementMode::Exact => cupti::CuptiCaptureMode::Exact,
+            MeasurementMode::Aggregate => cupti::CuptiCaptureMode::Aggregate,
+        },
         filters,
     }))
 }
@@ -2031,6 +2309,307 @@ fn append_cuda_capture(
     Ok(())
 }
 
+fn aggregate_inventory_result(
+    capture: &cupti::CuptiCapture,
+    request: &LiveMeasureRequest,
+) -> Result<AggregateInventoryResult, CommandFailure> {
+    validate_aggregate_capture(capture)?;
+    let raw_groups = u64::try_from(capture.aggregate_groups.len()).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!("aggregate group count exceeds u64: {error}"),
+            false,
+        )
+    })?;
+    let groups = merge_aggregate_groups(capture.aggregate_groups.clone())?;
+    let grouped_activities = groups.iter().try_fold(0_u64, |total, group| {
+        total.checked_add(group.count).ok_or_else(|| {
+            CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                "aggregate activity count overflowed",
+                false,
+            )
+        })
+    })?;
+    if grouped_activities != capture.observed_records {
+        return Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!(
+                "aggregate activity counters are inconsistent: grouped={grouped_activities}, observed={}",
+                capture.observed_records
+            ),
+            false,
+        ));
+    }
+    let distinct_groups = u64::try_from(groups.len()).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!("distinct aggregate group count exceeds u64: {error}"),
+            false,
+        )
+    })?;
+    let groups = groups
+        .into_iter()
+        .map(protocol_aggregate_group)
+        .collect::<Vec<_>>();
+    Ok(AggregateInventoryResult {
+        schema_version: SchemaVersion::current(),
+        ok: true,
+        session_id: request.options.session_id.clone(),
+        status: SessionStatus::Completed,
+        inventory: AggregateInventory {
+            name: request.options.name.clone(),
+            start_selector: request.options.start_selector.clone(),
+            end_selector: request.options.end_selector.clone(),
+            groups,
+        },
+        collection: AggregateCollectionSummary {
+            completeness: CaptureCompleteness::Complete,
+            observed_activities: capture.observed_records,
+            grouped_activities,
+            dropped_activities: 0,
+            group_capacity: capture.record_capacity,
+            groups: distinct_groups,
+            occupied_slots: raw_groups,
+            table_utilization: utilization(raw_groups, capture.record_capacity),
+        },
+        warnings: Vec::new(),
+    })
+}
+
+fn validate_aggregate_capture(capture: &cupti::CuptiCapture) -> Result<(), CommandFailure> {
+    if capture.state == cupti::CuptiCaptureState::LimitReached {
+        return Err(CommandFailure::new(
+            ErrorCode::EventRateTooHigh,
+            "aggregate group table reached its configured capacity",
+            true,
+        )
+        .with_detail("group_capacity", capture.record_capacity)
+        .with_detail("observed_activities", capture.observed_records)
+        .with_hint("narrow the selector or explicitly increase max-groups"));
+    }
+    if capture.state != cupti::CuptiCaptureState::Stopped
+        || capture.stop_reason != cupti::CuptiStopReason::Requested
+    {
+        return Err(CommandFailure::new(
+            ErrorCode::CuptiNotAvailable,
+            format!(
+                "aggregate CUPTI capture ended in state {:?} with reason {:?}",
+                capture.state, capture.stop_reason
+            ),
+            true,
+        ));
+    }
+    if capture.dropped_records != 0 {
+        return Err(CommandFailure::new(
+            ErrorCode::EventsDropped,
+            "aggregate CUPTI capture dropped activities",
+            true,
+        )
+        .with_detail("dropped_activities", capture.dropped_records)
+        .with_hint("reduce capture duration or narrow the activity selector"));
+    }
+    if capture.unknown_records != 0 {
+        return Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            "aggregate CUPTI capture contains unknown activities",
+            false,
+        )
+        .with_detail("unknown_records", capture.unknown_records)
+        .with_hint("rebuild xprobe and the CUPTI Agent from the same release"));
+    }
+    if !capture.events.is_empty() {
+        return Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            "aggregate CUPTI capture unexpectedly contains exact events",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn merge_aggregate_groups(
+    mut groups: Vec<cupti::CuptiAggregateGroup>,
+) -> Result<Vec<cupti::CuptiAggregateGroup>, CommandFailure> {
+    groups.sort_by(|left, right| {
+        aggregate_activity_rank(left.activity)
+            .cmp(&aggregate_activity_rank(right.activity))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.device_id.cmp(&right.device_id))
+            .then_with(|| {
+                memcpy_kind_rank(left.memcpy_kind.as_ref())
+                    .cmp(&memcpy_kind_rank(right.memcpy_kind.as_ref()))
+            })
+    });
+    let mut merged: Vec<cupti::CuptiAggregateGroup> = Vec::with_capacity(groups.len());
+    for group in groups {
+        let Some(previous) = merged.last_mut() else {
+            merged.push(group);
+            continue;
+        };
+        if previous.activity != group.activity
+            || previous.name != group.name
+            || previous.device_id != group.device_id
+            || previous.memcpy_kind != group.memcpy_kind
+        {
+            merged.push(group);
+            continue;
+        }
+        previous.count = previous.count.checked_add(group.count).ok_or_else(|| {
+            CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                "aggregate group count overflowed while merging",
+                false,
+            )
+        })?;
+        previous.total_duration_ns = previous
+            .total_duration_ns
+            .checked_add(group.total_duration_ns)
+            .ok_or_else(|| {
+                CommandFailure::new(
+                    ErrorCode::TraceExportFailed,
+                    "aggregate duration overflowed while merging",
+                    false,
+                )
+            })?;
+        previous.min_duration_ns = previous.min_duration_ns.min(group.min_duration_ns);
+        previous.max_duration_ns = previous.max_duration_ns.max(group.max_duration_ns);
+        previous.total_bytes = match (previous.total_bytes, group.total_bytes) {
+            (Some(left), Some(right)) => Some(left.checked_add(right).ok_or_else(|| {
+                CommandFailure::new(
+                    ErrorCode::TraceExportFailed,
+                    "aggregate byte count overflowed while merging",
+                    false,
+                )
+            })?),
+            (None, None) => None,
+            _ => {
+                return Err(CommandFailure::new(
+                    ErrorCode::TraceExportFailed,
+                    "aggregate byte counters are inconsistent",
+                    false,
+                ));
+            }
+        };
+    }
+    Ok(merged)
+}
+
+const fn aggregate_activity_rank(activity: cupti::CuptiAggregateActivity) -> u8 {
+    match activity {
+        cupti::CuptiAggregateActivity::Kernel => 0,
+        cupti::CuptiAggregateActivity::Memcpy => 1,
+        cupti::CuptiAggregateActivity::Memset => 2,
+    }
+}
+
+const fn memcpy_kind_rank(kind: Option<&MemcpyKind>) -> u8 {
+    match kind {
+        None => 0,
+        Some(&MemcpyKind::Unknown) => 1,
+        Some(&MemcpyKind::HostToDevice) => 2,
+        Some(&MemcpyKind::DeviceToHost) => 3,
+        Some(&MemcpyKind::DeviceToDevice) => 4,
+        Some(&MemcpyKind::HostToHost) => 5,
+        Some(&MemcpyKind::PeerToPeer) => 6,
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn protocol_aggregate_group(group: cupti::CuptiAggregateGroup) -> AggregateGroup {
+    let (start_selector_hint, end_selector_hint) = aggregate_selector_hints(&group);
+    AggregateGroup {
+        activity: match group.activity {
+            cupti::CuptiAggregateActivity::Kernel => AggregateActivity::Kernel,
+            cupti::CuptiAggregateActivity::Memcpy => AggregateActivity::Memcpy,
+            cupti::CuptiAggregateActivity::Memset => AggregateActivity::Memset,
+        },
+        name: group.name,
+        device_id: group.device_id,
+        memcpy_kind: group.memcpy_kind,
+        start_selector_hint,
+        end_selector_hint,
+        count: group.count,
+        duration_ns: AggregateDuration {
+            min: group.min_duration_ns,
+            mean: group.total_duration_ns as f64 / group.count as f64,
+            max: group.max_duration_ns,
+            total: group.total_duration_ns,
+        },
+        total_bytes: group.total_bytes,
+    }
+}
+
+fn aggregate_selector_hints(group: &cupti::CuptiAggregateGroup) -> (String, String) {
+    match group.activity {
+        cupti::CuptiAggregateActivity::Kernel => {
+            let name = group.name.as_deref().expect("kernel aggregate has a name");
+            let escaped = escape_selector_regex(name);
+            (
+                format!("cuda:kernel_start:name~^{escaped}$"),
+                format!("cuda:kernel_end:name~^{escaped}$"),
+            )
+        }
+        cupti::CuptiAggregateActivity::Memcpy => {
+            let kind = match group.memcpy_kind.as_ref() {
+                Some(MemcpyKind::HostToDevice) => Some("HtoD"),
+                Some(MemcpyKind::DeviceToHost) => Some("DtoH"),
+                Some(MemcpyKind::DeviceToDevice) => Some("DtoD"),
+                Some(MemcpyKind::HostToHost) => Some("HtoH"),
+                Some(MemcpyKind::PeerToPeer) => Some("PtoP"),
+                Some(MemcpyKind::Unknown) | None => None,
+            };
+            kind.map_or_else(
+                || ("cuda:memcpy_start".to_owned(), "cuda:memcpy_end".to_owned()),
+                |kind| {
+                    (
+                        format!("cuda:memcpy_start:kind={kind}"),
+                        format!("cuda:memcpy_end:kind={kind}"),
+                    )
+                },
+            )
+        }
+        cupti::CuptiAggregateActivity::Memset => {
+            ("cuda:memset_start".to_owned(), "cuda:memset_end".to_owned())
+        }
+    }
+}
+
+fn escape_selector_regex(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len());
+    for character in name.chars() {
+        if "\\.^$|?*+()[]{}".contains(character) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+fn injection_warning(collection: &LiveCollection) -> Warning {
+    let mut details = BTreeMap::new();
+    if let Some(major) = collection.agent_major {
+        details.insert("cuda_major".to_owned(), serde_json::Value::from(major));
+    }
+    if let Some(path) = collection.agent_path.as_deref() {
+        details.insert(
+            "agent_path".to_owned(),
+            serde_json::Value::from(path.display().to_string()),
+        );
+    }
+    if let Some(path) = collection.cupti_path.as_deref() {
+        details.insert(
+            "cupti_path".to_owned(),
+            serde_json::Value::from(path.display().to_string()),
+        );
+    }
+    Warning {
+        code: "CUPTI_AGENT_INJECTED".to_owned(),
+        message: "xprobe injected the CUPTI agent and left the shared object mapped".to_owned(),
+        details,
+    }
+}
+
 fn evaluate_live_result(
     collection: &LiveCollection,
     request: &LiveMeasureRequest,
@@ -2319,6 +2898,32 @@ fn emit_measurement(result: &MeasurementResult, json: bool) -> ExitCode {
         );
     } else {
         print_measurement_result(result);
+    }
+    ExitCode::SUCCESS
+}
+
+fn emit_aggregate_inventory(result: &AggregateInventoryResult, json: bool) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(result)
+                .expect("aggregate inventory result must serialize")
+        );
+    } else {
+        println!(
+            "aggregate inventory: {} activities in {} groups",
+            result.collection.grouped_activities, result.collection.groups
+        );
+        for group in &result.inventory.groups {
+            let label = group
+                .name
+                .as_deref()
+                .map_or_else(|| format!("{:?}", group.activity), str::to_owned);
+            println!(
+                "  {label}: count={} mean={:.0}ns min={}ns max={}ns",
+                group.count, group.duration_ns.mean, group.duration_ns.min, group.duration_ns.max
+            );
+        }
     }
     ExitCode::SUCCESS
 }
@@ -2915,6 +3520,10 @@ mod tests {
         assert_eq!(
             bounded_kernel_name_filter("cudaLaunch"),
             CuptiNameFilter::Contains("cudaLaunch".to_owned())
+        );
+        assert_eq!(
+            bounded_kernel_name_filter(".*xprobe_multisource_kernel.*"),
+            CuptiNameFilter::Contains("xprobe_multisource_kernel".to_owned())
         );
         assert_eq!(
             bounded_kernel_name_filter("^(flash|attention)$"),

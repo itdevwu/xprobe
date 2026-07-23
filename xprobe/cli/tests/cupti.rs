@@ -12,7 +12,7 @@ fn capture_path(name: &str) -> PathBuf {
 fn write_capture(path: &PathBuf) {
     let mut bytes = vec![0_u8; HEADER_SIZE + RECORD_SIZE];
     bytes[0..8].copy_from_slice(b"XPCUPTI\0");
-    bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&4_u32.to_le_bytes());
     bytes[12..16].copy_from_slice(&88_u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&200_u32.to_le_bytes());
     bytes[24..28].copy_from_slice(&3_u32.to_le_bytes());

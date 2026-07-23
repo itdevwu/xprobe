@@ -3,9 +3,9 @@ use std::{fs, path::PathBuf};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
-    CapabilityReport, DiscoveryResult, ErrorResponse, Event, HostCaptureResult, MeasurementResult,
-    MeasurementSpec, ProcessReport, ResolvedProbe, TraceExportResult, ValidationResult,
-    schema::generated_schemas,
+    AggregateInventoryResult, CapabilityReport, DiscoveryResult, ErrorResponse, Event,
+    HostCaptureResult, MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe,
+    TraceExportResult, ValidationResult, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -172,7 +172,51 @@ fn measurement_spec_contract_round_trips() {
         "samples": 100,
         "duration_ms": null,
         "timeout_ms": 30_000,
-        "max_events": 100_000
+        "max_events": 100_000,
+        "measurement_mode": "exact",
+        "max_groups": null
+    }));
+}
+
+#[test]
+fn aggregate_inventory_contract_round_trips() {
+    assert_round_trip::<AggregateInventoryResult>(&json!({
+        "schema_version": "2.0",
+        "ok": true,
+        "session_id": "xp_inventory",
+        "status": "completed",
+        "inventory": {
+            "name": "kernel_inventory",
+            "start_selector": "cuda:kernel_start",
+            "end_selector": "cuda:kernel_end",
+            "groups": [{
+                "activity": "kernel",
+                "name": "vector_add",
+                "device_id": 0,
+                "memcpy_kind": null,
+                "start_selector_hint": "cuda:kernel_start:name~^vector_add$",
+                "end_selector_hint": "cuda:kernel_end:name~^vector_add$",
+                "count": 10,
+                "duration_ns": {
+                    "min": 1000,
+                    "mean": 1500.0,
+                    "max": 2000,
+                    "total": 15000
+                },
+                "total_bytes": null
+            }]
+        },
+        "collection": {
+            "completeness": "complete",
+            "observed_activities": 10,
+            "grouped_activities": 10,
+            "dropped_activities": 0,
+            "group_capacity": 4096,
+            "groups": 1,
+            "occupied_slots": 1,
+            "table_utilization": 0.000_244_140_625
+        },
+        "warnings": []
     }));
 }
 

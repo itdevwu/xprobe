@@ -35,7 +35,7 @@ fn record(kind: u32, timestamp: u64, correlation_id: u32, name: &str) -> [u8; RE
 fn write_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
     let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
     bytes[0..8].copy_from_slice(b"XPCUPTI\0");
-    bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&4_u32.to_le_bytes());
     bytes[12..16].copy_from_slice(&88_u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&200_u32.to_le_bytes());
     bytes[24..28].copy_from_slice(&3_u32.to_le_bytes());
@@ -54,7 +54,7 @@ fn write_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
 fn write_normalized_capture(path: &PathBuf, records: &[[u8; RECORD_SIZE]]) {
     let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
     bytes[0..8].copy_from_slice(b"XPCUPTI\0");
-    bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&4_u32.to_le_bytes());
     bytes[12..16].copy_from_slice(&88_u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&200_u32.to_le_bytes());
     bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
@@ -582,4 +582,60 @@ fn requires_exactly_one_measurement_source_mode() {
     assert_eq!(both.status.code(), Some(1));
     let error: ErrorResponse = serde_json::from_slice(&both.stdout).expect("error JSON");
     assert_eq!(error.error.code, ErrorCode::InvalidEventSelector);
+}
+
+#[test]
+fn aggregate_requires_a_duration_bound() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--pid",
+            &std::process::id().to_string(),
+            "--from",
+            "cuda:kernel_start",
+            "--to",
+            "cuda:kernel_end",
+            "--match",
+            "exact",
+            "--aggregate",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let error: ErrorResponse =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain error JSON");
+    assert_eq!(error.error.code, ErrorCode::SessionLimitExceeded);
+    assert!(error.error.message.contains("--duration-ms"));
+}
+
+#[test]
+fn aggregate_rejects_kernel_regex_that_cannot_run_in_the_agent() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--pid",
+            &std::process::id().to_string(),
+            "--from",
+            "cuda:kernel_start:name~^(flash|attention)$",
+            "--to",
+            "cuda:kernel_end:name~^(flash|attention)$",
+            "--match",
+            "exact",
+            "--aggregate",
+            "--duration-ms",
+            "1",
+            "--max-groups",
+            "8",
+            "--json",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let error: ErrorResponse =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain error JSON");
+    assert_eq!(error.error.code, ErrorCode::InvalidEventSelector);
+    assert!(error.error.message.contains("CUPTI Agent can apply"));
 }
