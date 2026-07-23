@@ -28,12 +28,9 @@ xprobe validate --pid "$PID" \
 
 xprobe measure --pid "$PID" \
   --from cuda:kernel_start --to cuda:kernel_end --match exact \
-  --duration-ms "$REPRESENTATIVE_WINDOW_MS" --timeout-ms "$TIMEOUT_MS" \
-  --max-events "$MAX_EVENTS" --events-out coarse-kernels.jsonl --format jsonl \
-  --json --non-interactive --no-color
-
-skills/xprobe-measure-latency/scripts/analyze_trace.py coarse-kernels.jsonl \
-  > coarse-kernels-analysis.json
+  --aggregate --duration-ms "$REPRESENTATIVE_WINDOW_MS" \
+  --timeout-ms "$TIMEOUT_MS" --max-groups "$MAX_GROUPS" \
+  --json --non-interactive --no-color > coarse-kernels.json
 ```
 
 Map copies and memsets in separate bounded captures when they could matter:
@@ -45,22 +42,21 @@ xprobe validate --pid "$PID" \
 
 xprobe measure --pid "$PID" \
   --from cuda:memcpy_start --to cuda:memcpy_end --match exact \
-  --duration-ms "$REPRESENTATIVE_WINDOW_MS" --timeout-ms "$TIMEOUT_MS" \
-  --max-events "$MAX_EVENTS" --events-out coarse-memcpy.jsonl --format jsonl \
-  --json --non-interactive --no-color
+  --aggregate --duration-ms "$REPRESENTATIVE_WINDOW_MS" \
+  --timeout-ms "$TIMEOUT_MS" --max-groups "$MAX_GROUPS" \
+  --json --non-interactive --no-color > coarse-memcpy.json
 ```
 
 Do not guess a named kernel or host function in this stage. CUDA API selectors
 require a concrete Runtime or Driver API name, so inventory activity first and
 choose API boundaries from application, framework, or trace evidence later.
-Analyze each artifact separately; busy union only describes the capture window
-inside that artifact.
+Read each inventory separately. Use its selector hints to start the next exact
+measurement; device-specific groups may still need workload-level GPU routing.
 
-Treat capacity as a consequence of observed event rate, not a universal default.
-On `EVENT_RATE_TOO_HIGH`, inspect the written artifact and error counters. First
-split event families or reduce selector scope while retaining a representative
-cycle; reduce duration only when the remaining window is still representative.
-Preserve the artifact as evidence for the change.
+Treat group capacity as a consequence of workload diversity, not event rate.
+On `EVENT_RATE_TOO_HIGH`, split event families or reduce selector scope while
+retaining a representative cycle; reduce duration only when the remaining
+window is still representative. Aggregate mode never returns partial output.
 
 ## Derive CUDA selectors
 
@@ -103,16 +99,21 @@ Choose one next boundary from evidence:
 - host function entry to return with `stack-nested` for CPU span;
 - host marker to GPU activity with `first-after` only as a disclosed heuristic.
 
-After capture, analyze the artifact and all result quality fields. Re-correlate a
-completed artifact with `measure --input` when only selectors or policy change;
-do not attach again merely to recompute pairing.
+After capture, analyze the artifact and all result quality fields. An aggregate
+inventory cannot be re-correlated because it intentionally contains no events.
+Collect one exact artifact for the selected hypothesis, then use
+`measure --input` when only selectors or policy change.
 
 ```bash
-xprobe measure --input coarse-kernels.jsonl \
+xprobe measure --pid "$PID" \
   --from 'cuda:kernel_start:name~^selected_kernel$' \
   --to 'cuda:kernel_end:name~^selected_kernel$' \
   --match exact --samples 100 --max-events 200000 \
+  --events-out selected-kernel.jsonl --format jsonl \
   --json --non-interactive --no-color
+
+skills/xprobe-measure-latency/scripts/analyze_trace.py selected-kernel.jsonl \
+  > selected-kernel-analysis.json
 ```
 
 ## Escalate at the right boundary

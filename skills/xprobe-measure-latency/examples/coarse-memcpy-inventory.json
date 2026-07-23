@@ -11,5 +11,7 @@
   "samples": null,
   "duration_ms": 1000,
   "timeout_ms": 30000,
-  "max_events": 200000
+  "max_events": null,
+  "measurement_mode": "aggregate",
+  "max_groups": 64
 }

@@ -13,6 +13,12 @@ changed, collection was incomplete, or clock alignment failed. Report unmatched
 and ambiguous counts with matched samples. `estimated_error_ns: null` means no
 quantified interpolation error bound.
 
+Aggregate inventory is a different contract. Require `completeness: complete`,
+zero dropped activities, equal observed and grouped activity counts, and
+reasonable table utilization before using its group names or selector hints.
+Its min/max/mean come from exact integer totals, but it has no event ordering,
+percentiles, stream overlap, or correlation evidence.
+
 ## Concurrency
 
 Group GPU evidence by device, context, and stream before interpreting order.
@@ -41,11 +47,10 @@ minimum_records = samples * (start_records_per_sample + end_records_per_sample)
 max_events >= minimum_records + expected_unmatched_records
 ```
 
-Use at least 2x headroom for stable narrow selectors and 4-10x for high-rate or
-broad inventories. For a duration inventory, size from a pilot artifact's
-observed records per second. Keep enough duration to cover a representative
-cycle; increasing max-events without narrowing a noisy selector only increases
-profiler work.
+Use at least 2x headroom for stable narrow selectors. For broad activity
+inventory, use aggregate mode and size `max-groups` from expected operation
+diversity rather than event rate. Keep enough duration to cover a representative
+cycle; table saturation is an explicit failure.
 
 `duration-ms` limits correlation to a window beginning at the first selected
 event. In live mode it also sets a collection stop from ARM completion, so finish

@@ -49,6 +49,11 @@ xprobe validate --pid 4242 \
   --match exact --json --non-interactive --no-color
 
 xprobe measure --pid 4242 \
+  --from 'cuda:kernel_start' --to 'cuda:kernel_end' \
+  --match exact --aggregate --duration-ms 1000 --max-groups 4096 \
+  --json --non-interactive --no-color
+
+xprobe measure --pid 4242 \
   --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
   --match exact --samples 100 --timeout-ms 30000 \
@@ -58,7 +63,9 @@ xprobe measure --pid 4242 \
 
 Kernel launch latency is only one event pair. The same workflow measures host
 function spans, CUDA API calls, GPU operation durations, transfers, and paths
-across CPU and GPU events after selecting the correct CUDA worker.
+across CPU and GPU events after selecting the correct CUDA worker. Aggregate
+mode provides a bounded coarse inventory of GPU operations before an exact
+evidence measurement narrows the question.
 
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results

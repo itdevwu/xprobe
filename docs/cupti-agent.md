@@ -25,6 +25,13 @@ directions, and simple kernel-name exact/prefix/suffix/contains patterns are
 filtered before they consume capture capacity. Complex kernel regular
 expressions use a wider Agent filter and retain exact Rust-side matching.
 
+An aggregate ARM uses a fixed-capacity hash table instead of event records.
+Kernel activity is grouped by name and device, memcpy by direction and device,
+and memset by device. The activity callback updates count, total/min/max
+duration, and transfer bytes without materializing start/end events. Aggregate
+collection uses one final CLI read instead of incremental snapshots, and table
+saturation fails instead of returning a sampled inventory.
+
 `SNAPSHOT` flushes pending activity and returns records after the caller's
 checked record offset. The CLI accumulates only contiguous deltas rather than
 retransferring and decoding the growing capture. `STOP` returns the final delta
@@ -45,22 +52,27 @@ paths.
 
 ## Control and capture ABI
 
-Control version 3 uses one fixed 320-byte native-endian request defined by
+Control version 4 uses one fixed 328-byte native-endian request defined by
 `cupti/include/xprobe/cupti_agent.h`. It contains magic, version, command,
-record capacity, record offset, and two fixed endpoint filters. Commands are
-`ARM`, `SNAPSHOT`, `STOP`, and `CLOSE`. ARM requires offset zero; later commands
-return records at or after the requested offset followed by EOF.
+capacity, record offset, capture mode, and two fixed endpoint filters. Commands
+are `ARM`, `SNAPSHOT`, `STOP`, and `CLOSE`. Exact ARM requires offset zero;
+later exact commands return records at or after the requested offset followed
+by EOF. Aggregate mode requires offset zero for every command.
 
-Capture ABI v3 starts with an 88-byte header and zero or more 200-byte records.
+Capture ABI v4 starts with an 88-byte header and zero or more 200-byte records.
 The header reports capture state and stop reason, configured capacity, observed
 and retained counts, Agent and CUPTI drops, unknown activity, record sizes, and
 feature flags. It also reports the payload record offset so the caller can
-reject gaps, replays, and counter rollback. Capacity comes from `--max-events`;
-there is no special 2^16 limit. Reaching the configured limit freezes capture
-and causes measurement to fail explicitly instead of returning partial success.
+reject gaps, replays, and counter rollback. Exact capacity comes from
+`--max-events` and aggregate table capacity from `--max-groups`; there is no
+special 2^16 limit. Reaching either configured limit freezes capture and causes
+measurement to fail explicitly instead of returning partial success.
 
-Records preserve process/thread, device/context/stream, correlation IDs,
+Exact records preserve process/thread, device/context/stream, correlation IDs,
 callback domain/ID, dimensions or transfer metadata, and one bounded name.
+Aggregate records contain a bounded group key and exact integer counters, not
+event evidence or a latency distribution; they therefore do not report
+percentiles or correlation confidence.
 Activity timestamps are normalized to `CLOCK_MONOTONIC` through the CUPTI
 timestamp callback or CUDA 12 clock calibration. If alignment cannot be
 established, GPU durations remain usable in the CUPTI domain but host/GPU
