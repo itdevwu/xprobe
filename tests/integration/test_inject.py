@@ -61,7 +61,7 @@ def main() -> None:
             raise SystemExit(completed.returncode)
 
         output = pathlib.Path(output_dir)
-        for name in ("first", "second"):
+        for name in ("first", "second", "api"):
             result = json.loads((output / f"{name}.json").read_text())
             assert result["ok"] is True
             assert result["status"] == "completed"
@@ -75,8 +75,10 @@ def main() -> None:
             assert "activating the CUPTI agent modifies target PID" in stderr
         first = json.loads((output / "first.json").read_text())
         second = json.loads((output / "second.json").read_text())
+        api = json.loads((output / "api.json").read_text())
         assert any(warning["code"] == "CUPTI_AGENT_INJECTED" for warning in first["warnings"])
         assert all(warning["code"] != "CUPTI_AGENT_INJECTED" for warning in second["warnings"])
+        assert all(warning["code"] != "CUPTI_AGENT_INJECTED" for warning in api["warnings"])
         assert int((output / "mapped-agents.txt").read_text()) == 1
         if package is not None:
             expected_major = 12 if ":12." in sys.argv[1] else 13
@@ -94,7 +96,7 @@ def main() -> None:
                     "schema_version": "2.0",
                     "ok": True,
                     "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
-                    "measurements": 2,
+                    "measurements": 3,
                 },
                 sort_keys=True,
             )
