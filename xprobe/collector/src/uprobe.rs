@@ -430,6 +430,7 @@ fn normalize_event(
             arguments: Vec::new(),
         }),
         cuda: None,
+        nvtx: None,
         attributes: BTreeMap::new(),
     }
 }

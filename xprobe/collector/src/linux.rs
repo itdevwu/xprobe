@@ -529,6 +529,7 @@ fn normalize_event(
             arguments,
         }),
         cuda: None,
+        nvtx: None,
         attributes,
     })
 }

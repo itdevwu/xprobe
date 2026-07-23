@@ -45,6 +45,17 @@
         }
       ]
     },
+    "nvtx": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NvtxEvent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "pid": {
       "type": "integer",
       "format": "uint32",
@@ -326,6 +337,8 @@
         "gpu_memcpy_end",
         "gpu_memset_start",
         "gpu_memset_end",
+        "nvtx_range_start",
+        "nvtx_range_end",
         "marker"
       ]
     },
@@ -409,6 +422,45 @@
         "HtoH",
         "PtoP",
         "unknown"
+      ]
+    },
+    "NvtxEvent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "name_complete": {
+          "type": "boolean"
+        },
+        "range_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "range_kind": {
+          "$ref": "#/$defs/NvtxRangeKind"
+        },
+        "start_tid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "name_complete",
+        "range_kind",
+        "range_id",
+        "start_tid"
+      ]
+    },
+    "NvtxRangeKind": {
+      "type": "string",
+      "enum": [
+        "thread",
+        "process"
       ]
     },
     "SchemaVersion": {

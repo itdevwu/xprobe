@@ -33,6 +33,8 @@ pub enum EventType {
     GpuMemcpyEnd,
     GpuMemsetStart,
     GpuMemsetEnd,
+    NvtxRangeStart,
+    NvtxRangeEnd,
     Marker,
 }
 
@@ -63,6 +65,8 @@ pub struct Event {
     pub process_start_time: Option<u64>,
     pub host: Option<HostEvent>,
     pub cuda: Option<CudaEvent>,
+    #[serde(default)]
+    pub nvtx: Option<NvtxEvent>,
     #[serde(default)]
     pub attributes: BTreeMap<String, Value>,
 }
@@ -121,6 +125,25 @@ pub struct CudaEvent {
     pub block: Option<Dim3>,
     pub bytes: Option<u64>,
     pub memcpy_kind: Option<MemcpyKind>,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NvtxRangeKind {
+    Thread,
+    Process,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NvtxEvent {
+    pub name: String,
+    pub name_complete: bool,
+    pub range_kind: NvtxRangeKind,
+    pub range_id: u64,
+    pub start_tid: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

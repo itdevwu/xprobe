@@ -102,6 +102,7 @@ fn write_host_capture(path: &PathBuf, timestamp_ns: u64) {
             arguments: Vec::new(),
         }),
         cuda: None,
+        nvtx: None,
         attributes: BTreeMap::new(),
     };
     let capture = HostCaptureResult {

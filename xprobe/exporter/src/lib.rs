@@ -52,6 +52,7 @@ fn chrome_event(event: &Event) -> Value {
             "correlation_id": cuda.and_then(|payload| payload.correlation_id),
             "context_id": cuda.and_then(|payload| payload.context_id),
             "stream_id": cuda.and_then(|payload| payload.stream_id),
+            "nvtx": event.nvtx,
             "attributes": event.attributes,
         }
     })
@@ -74,6 +75,7 @@ fn event_name(event: &Event) -> &str {
                 .as_ref()
                 .and_then(|cuda| cuda.kernel_name.as_deref())
         })
+        .or_else(|| event.nvtx.as_ref().map(|nvtx| nvtx.name.as_str()))
         .unwrap_or_else(|| event_type_name(&event.event_type))
 }
 
@@ -103,6 +105,8 @@ const fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::GpuMemcpyEnd => "gpu_memcpy_end",
         EventType::GpuMemsetStart => "gpu_memset_start",
         EventType::GpuMemsetEnd => "gpu_memset_end",
+        EventType::NvtxRangeStart => "nvtx_range_start",
+        EventType::NvtxRangeEnd => "nvtx_range_end",
         EventType::Marker => "marker",
     }
 }
@@ -134,6 +138,7 @@ mod tests {
             process_start_time: None,
             host: None,
             cuda: None,
+            nvtx: None,
             attributes: BTreeMap::new(),
         };
 
@@ -163,6 +168,7 @@ mod tests {
             process_start_time: None,
             host: None,
             cuda: None,
+            nvtx: None,
             attributes: BTreeMap::new(),
         };
 
