@@ -66,6 +66,11 @@ def main() -> None:
             assert result["ok"] is True
             assert result["status"] == "completed"
             assert result["measurement"]["samples"]["matched"] == 3
+            assert result["collection"]["cuda_events"] >= 6
+            assert result["collection"]["cuda_events"] % 2 == 0
+            cupti = result["collection"]["cupti"]
+            assert cupti["observed_records"] == cupti["retained_records"]
+            assert cupti["retained_records"] == result["collection"]["cuda_events"]
             stderr = (output / f"{name}.stderr").read_text()
             assert "activating the CUPTI agent modifies target PID" in stderr
         first = json.loads((output / "first.json").read_text())

@@ -99,7 +99,7 @@ static _Atomic int clock_alignment_warning_emitted;
 static CUpti_SubscriberHandle subscriber;
 static int subscriber_active;
 static int agent_initialized;
-static size_t enabled_activity_count;
+static uint32_t enabled_activity_mask;
 static char output_path[PATH_MAX];
 static char snapshot_socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 static pthread_mutex_t flush_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -109,14 +109,12 @@ static _Atomic int snapshot_listener = -1;
 static int snapshot_thread_started;
 static struct xprobe_cupti_filter capture_filters[XPROBE_CUPTI_FILTER_COUNT];
 static _Atomic int capture_filter_enabled;
-static const CUpti_ActivityKind enabled_activity_kinds[] = {
-    CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
-    CUPTI_ACTIVITY_KIND_MEMCPY,
-    CUPTI_ACTIVITY_KIND_MEMSET,
-};
+#define XPROBE_CUPTI_ACTIVITY_KERNEL (1U << 0)
+#define XPROBE_CUPTI_ACTIVITY_MEMCPY (1U << 1)
+#define XPROBE_CUPTI_ACTIVITY_MEMSET (1U << 2)
 
 static int shutdown_agent(void);
-static int initialize_agent(void);
+static int activate_capture(void);
 
 static int allocate_capture(uint64_t capacity)
 {
@@ -303,10 +301,13 @@ static void copy_name(char destination[XPROBE_CUPTI_NAME_LENGTH],
     destination[index] = '\0';
 }
 
-static size_t bounded_name_length(const char name[XPROBE_CUPTI_NAME_LENGTH])
+static size_t bounded_name_length(const char *name)
 {
     size_t length = 0U;
 
+    if (name == NULL) {
+        return 0U;
+    }
     while (length < XPROBE_CUPTI_NAME_LENGTH && name[length] != '\0') {
         ++length;
     }
@@ -314,13 +315,16 @@ static size_t bounded_name_length(const char name[XPROBE_CUPTI_NAME_LENGTH])
 }
 
 static int name_matches(const struct xprobe_cupti_filter *filter,
-                        const char record_name[XPROBE_CUPTI_NAME_LENGTH])
+                        const char *record_name)
 {
     size_t filter_length;
     size_t record_length;
 
     if (filter->name_match == XPROBE_CUPTI_NAME_ANY) {
         return 1;
+    }
+    if (record_name == NULL) {
+        record_name = "";
     }
     filter_length = bounded_name_length(filter->name);
     record_length = bounded_name_length(record_name);
@@ -378,21 +382,49 @@ static uint32_t semantic_memcpy_kind(uint32_t cupti_kind)
     }
 }
 
+static int filter_matches_values(const struct xprobe_cupti_filter *filter,
+                                 uint32_t record_kind, uint32_t api_domain,
+                                 uint32_t memcpy_kind, const char *name)
+{
+    if (filter->record_kind == 0U || filter->record_kind != record_kind) {
+        return 0;
+    }
+    if (filter->api_domain != 0U && filter->api_domain != api_domain) {
+        return 0;
+    }
+    if (filter->memcpy_kind != 0U && filter->memcpy_kind != memcpy_kind) {
+        return 0;
+    }
+    return name_matches(filter, name);
+}
+
 static int record_matches_filter(const struct xprobe_cupti_record *record,
                                  const struct xprobe_cupti_filter *filter)
 {
-    if (filter->record_kind == 0U || filter->record_kind != record->kind) {
-        return 0;
+    return filter_matches_values(filter, record->kind, record->callback_domain,
+                                 semantic_memcpy_kind(record->grid_z),
+                                 record->name);
+}
+
+static int values_match_capture(uint32_t first_kind, uint32_t second_kind,
+                                uint32_t api_domain, uint32_t memcpy_kind,
+                                const char *name)
+{
+    if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
+        return 1;
     }
-    if (filter->api_domain != 0U &&
-        filter->api_domain != record->callback_domain) {
-        return 0;
+    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+        const struct xprobe_cupti_filter *filter = &capture_filters[index];
+
+        if (filter_matches_values(filter, first_kind, api_domain, memcpy_kind,
+                                  name) != 0 ||
+            (second_kind != 0U &&
+             filter_matches_values(filter, second_kind, api_domain, memcpy_kind,
+                                   name) != 0)) {
+            return 1;
+        }
     }
-    if (filter->memcpy_kind != 0U &&
-        filter->memcpy_kind != semantic_memcpy_kind(record->grid_z)) {
-        return 0;
-    }
-    return name_matches(filter, record->name);
+    return 0;
 }
 
 static int capture_filter_matches(const struct xprobe_cupti_record *record)
@@ -478,6 +510,7 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
                                   const void *callback_data)
 {
     const CUpti_CallbackData *data = callback_data;
+    uint32_t kind;
     uint64_t timestamp_ns;
 
     (void)userdata;
@@ -485,17 +518,17 @@ static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
         domain != CUPTI_CB_DOMAIN_DRIVER_API) {
         return;
     }
+    kind = data->callbackSite == CUPTI_API_ENTER ? XPROBE_CUPTI_CUDA_API_ENTRY
+                                                : XPROBE_CUPTI_CUDA_API_EXIT;
+    if (values_match_capture(kind, 0U, (uint32_t)domain, 0U,
+                             data->functionName) == 0) {
+        return;
+    }
 
     if (monotonic_timestamp_ns(&timestamp_ns) != XPROBE_CUPTI_AGENT_READY) {
         return;
     }
-    if (data->callbackSite == CUPTI_API_ENTER) {
-        enqueue_api_record(data, domain, callback_id,
-                           XPROBE_CUPTI_CUDA_API_ENTRY, timestamp_ns);
-    } else {
-        enqueue_api_record(data, domain, callback_id,
-                           XPROBE_CUPTI_CUDA_API_EXIT, timestamp_ns);
-    }
+    enqueue_api_record(data, domain, callback_id, kind, timestamp_ns);
 }
 
 static void CUPTIAPI activity_buffer_requested(uint8_t **buffer, size_t *size,
@@ -550,6 +583,11 @@ static int activity_started_during_capture(uint64_t timestamp_ns)
 #define ENQUEUE_KERNEL_RECORDS(kernel)                                             \
     do {                                                                           \
         if (activity_started_during_capture((kernel)->start) == 0) {               \
+            return;                                                                \
+        }                                                                          \
+        if (values_match_capture(XPROBE_CUPTI_GPU_KERNEL_START,                    \
+                                 XPROBE_CUPTI_GPU_KERNEL_END, 0U, 0U,               \
+                                 (kernel)->name) == 0) {                             \
             return;                                                                \
         }                                                                          \
         enqueue_kernel_record(                                                     \
@@ -648,12 +686,23 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
             remember_cupti_error(result);
             break;
         }
+        if (atomic_load_explicit(&capture_state, memory_order_relaxed) !=
+            XPROBE_CUPTI_CAPTURE_ACTIVE) {
+            continue;
+        }
         if (activity->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
             enqueue_kernel_activity(activity);
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
             const CUpti_ActivityMemcpy6 *memcpy_record =
                 (const CUpti_ActivityMemcpy6 *)activity;
             if (activity_started_during_capture(memcpy_record->start) == 0) {
+                continue;
+            }
+            if (values_match_capture(
+                    XPROBE_CUPTI_GPU_MEMCPY_START,
+                    XPROBE_CUPTI_GPU_MEMCPY_END, 0U,
+                    semantic_memcpy_kind((uint32_t)memcpy_record->copyKind),
+                    NULL) == 0) {
                 continue;
             }
             enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_START,
@@ -664,6 +713,11 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
             const CUpti_ActivityMemset4 *memset_record =
                 (const CUpti_ActivityMemset4 *)activity;
             if (activity_started_during_capture(memset_record->start) == 0) {
+                continue;
+            }
+            if (values_match_capture(XPROBE_CUPTI_GPU_MEMSET_START,
+                                     XPROBE_CUPTI_GPU_MEMSET_END, 0U, 0U,
+                                     NULL) == 0) {
                 continue;
             }
             enqueue_memset_record(memset_record, XPROBE_CUPTI_GPU_MEMSET_START,
@@ -981,7 +1035,7 @@ static int arm_capture(const struct xprobe_cupti_control_request *request)
             return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
         }
     }
-    if (subscriber_active != 0 || enabled_activity_count != 0U) {
+    if (subscriber_active != 0 || enabled_activity_mask != 0U) {
         status = shutdown_agent();
         if (status != XPROBE_CUPTI_AGENT_READY) {
             return status;
@@ -994,18 +1048,19 @@ static int arm_capture(const struct xprobe_cupti_control_request *request)
     reset_capture();
     memcpy(capture_filters, request->filters, sizeof(capture_filters));
     atomic_store_explicit(&capture_filter_enabled, 1, memory_order_release);
-    return initialize_agent();
+    return activate_capture();
 }
 
 static int stop_capture(void)
 {
     int status = XPROBE_CUPTI_AGENT_READY;
 
-    if (subscriber_active != 0 || enabled_activity_count != 0U) {
+    if (enabled_activity_mask != 0U) {
         status = flush_activity_buffers(1);
-        if (status == XPROBE_CUPTI_AGENT_READY) {
-            status = shutdown_agent();
-        }
+    }
+    if (status == XPROBE_CUPTI_AGENT_READY &&
+        (subscriber_active != 0 || enabled_activity_mask != 0U)) {
+        status = shutdown_agent();
     }
     if (status == XPROBE_CUPTI_AGENT_READY &&
         atomic_load_explicit(&capture_state, memory_order_acquire) ==
@@ -1181,17 +1236,30 @@ static void stop_snapshot_server(void)
 static int disable_activities(void)
 {
     CUptiResult result;
+    int status = XPROBE_CUPTI_AGENT_READY;
+    static const struct {
+        uint32_t bit;
+        CUpti_ActivityKind kind;
+    } activities[] = {
+        {XPROBE_CUPTI_ACTIVITY_MEMSET, CUPTI_ACTIVITY_KIND_MEMSET},
+        {XPROBE_CUPTI_ACTIVITY_MEMCPY, CUPTI_ACTIVITY_KIND_MEMCPY},
+        {XPROBE_CUPTI_ACTIVITY_KERNEL, CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL},
+    };
 
-    while (enabled_activity_count > 0U) {
-        CUpti_ActivityKind kind = enabled_activity_kinds[enabled_activity_count - 1U];
-        result = cuptiActivityDisable(kind);
+    for (size_t index = 0U; index < sizeof(activities) / sizeof(activities[0]);
+         ++index) {
+        if ((enabled_activity_mask & activities[index].bit) == 0U) {
+            continue;
+        }
+        result = cuptiActivityDisable(activities[index].kind);
         if (result != CUPTI_SUCCESS) {
             report_cupti_error("cuptiActivityDisable", result);
-            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+            status = XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        } else {
+            enabled_activity_mask &= ~activities[index].bit;
         }
-        --enabled_activity_count;
     }
-    return XPROBE_CUPTI_AGENT_READY;
+    return status;
 }
 
 static int shutdown_agent(void)
@@ -1210,12 +1278,73 @@ static int shutdown_agent(void)
     return status;
 }
 
-static int initialize_agent(void)
+static int capture_needs_record_kind(uint32_t first_kind, uint32_t second_kind)
+{
+    if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
+        return 1;
+    }
+    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+        uint32_t kind = capture_filters[index].record_kind;
+
+        if (kind == first_kind || kind == second_kind) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int capture_needs_api_domain(uint32_t domain)
+{
+    if (capture_needs_record_kind(XPROBE_CUPTI_CUDA_API_ENTRY,
+                                  XPROBE_CUPTI_CUDA_API_EXIT) == 0) {
+        return 0;
+    }
+    if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
+        return 1;
+    }
+    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+        const struct xprobe_cupti_filter *filter = &capture_filters[index];
+
+        if ((filter->record_kind == XPROBE_CUPTI_CUDA_API_ENTRY ||
+             filter->record_kind == XPROBE_CUPTI_CUDA_API_EXIT) &&
+            (filter->api_domain == 0U || filter->api_domain == domain)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int enable_activity(uint32_t bit, CUpti_ActivityKind kind)
+{
+    CUptiResult result = cuptiActivityEnable(kind);
+
+    if (result != CUPTI_SUCCESS) {
+        report_cupti_error("cuptiActivityEnable", result);
+        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+    }
+    enabled_activity_mask |= bit;
+    return XPROBE_CUPTI_AGENT_READY;
+}
+
+static int activate_capture(void)
 {
 #if CUPTI_API_VERSION >= 130000
     CUpti_TimestampCallbackFunc timestamp_callback = activity_timestamp;
 #endif
     CUptiResult result;
+    int needs_kernel =
+        capture_needs_record_kind(XPROBE_CUPTI_GPU_KERNEL_START,
+                                  XPROBE_CUPTI_GPU_KERNEL_END);
+    int needs_memcpy =
+        capture_needs_record_kind(XPROBE_CUPTI_GPU_MEMCPY_START,
+                                  XPROBE_CUPTI_GPU_MEMCPY_END);
+    int needs_memset =
+        capture_needs_record_kind(XPROBE_CUPTI_GPU_MEMSET_START,
+                                  XPROBE_CUPTI_GPU_MEMSET_END);
+    int needs_activities = needs_kernel != 0 || needs_memcpy != 0 ||
+                           needs_memset != 0;
+    int needs_runtime = capture_needs_api_domain(CUPTI_CB_DOMAIN_RUNTIME_API);
+    int needs_driver = capture_needs_api_domain(CUPTI_CB_DOMAIN_DRIVER_API);
 
     result = cuptiGetVersion(&runtime_cupti_version);
     if (result != CUPTI_SUCCESS) {
@@ -1226,52 +1355,73 @@ static int initialize_agent(void)
         XPROBE_CUPTI_AGENT_READY) {
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
-    result = cuptiSubscribe(&subscriber, api_callback, NULL);
-    if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiSubscribe", result);
-        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
-    }
-    subscriber_active = 1;
-#if CUPTI_API_VERSION < 130000
-    int calibration_status = calibrate_activity_timestamp();
-    if (calibration_status != XPROBE_CUPTI_AGENT_READY) {
-        shutdown_agent();
-        return calibration_status;
-    }
-#else
-    result = cuptiActivityRegisterTimestampCallback(timestamp_callback);
-    if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiActivityRegisterTimestampCallback", result);
-        shutdown_agent();
-        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
-    }
-#endif
-    result = cuptiActivityRegisterCallbacks(activity_buffer_requested,
-                                            activity_buffer_completed);
-    if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiActivityRegisterCallbacks", result);
-        shutdown_agent();
-        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
-    }
-    for (size_t index = 0U;
-         index < sizeof(enabled_activity_kinds) / sizeof(enabled_activity_kinds[0]);
-         ++index) {
-        result = cuptiActivityEnable(enabled_activity_kinds[index]);
+    if (needs_runtime != 0 || needs_driver != 0) {
+        result = cuptiSubscribe(&subscriber, api_callback, NULL);
         if (result != CUPTI_SUCCESS) {
-            report_cupti_error("cuptiActivityEnable", result);
+            report_cupti_error("cuptiSubscribe", result);
+            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        }
+        subscriber_active = 1;
+    }
+    if (needs_activities != 0) {
+#if CUPTI_API_VERSION < 130000
+        int calibration_status = calibrate_activity_timestamp();
+        if (calibration_status != XPROBE_CUPTI_AGENT_READY) {
+            shutdown_agent();
+            return calibration_status;
+        }
+#else
+        result = cuptiActivityRegisterTimestampCallback(timestamp_callback);
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiActivityRegisterTimestampCallback", result);
             shutdown_agent();
             return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
         }
-        ++enabled_activity_count;
+#endif
+        result = cuptiActivityRegisterCallbacks(activity_buffer_requested,
+                                                activity_buffer_completed);
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiActivityRegisterCallbacks", result);
+            shutdown_agent();
+            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        }
     }
-    result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_RUNTIME_API);
-    if (result == CUPTI_SUCCESS) {
-        result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_DRIVER_API);
-    }
-    if (result != CUPTI_SUCCESS) {
-        report_cupti_error("cuptiEnableDomain", result);
+    if (needs_kernel != 0 &&
+        enable_activity(XPROBE_CUPTI_ACTIVITY_KERNEL,
+                        CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) !=
+            XPROBE_CUPTI_AGENT_READY) {
         shutdown_agent();
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+    }
+    if (needs_memcpy != 0 &&
+        enable_activity(XPROBE_CUPTI_ACTIVITY_MEMCPY,
+                        CUPTI_ACTIVITY_KIND_MEMCPY) !=
+            XPROBE_CUPTI_AGENT_READY) {
+        shutdown_agent();
+        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+    }
+    if (needs_memset != 0 &&
+        enable_activity(XPROBE_CUPTI_ACTIVITY_MEMSET,
+                        CUPTI_ACTIVITY_KIND_MEMSET) !=
+            XPROBE_CUPTI_AGENT_READY) {
+        shutdown_agent();
+        return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+    }
+    if (needs_runtime != 0) {
+        result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_RUNTIME_API);
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiEnableDomain", result);
+            shutdown_agent();
+            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        }
+    }
+    if (needs_driver != 0) {
+        result = cuptiEnableDomain(1U, subscriber, CUPTI_CB_DOMAIN_DRIVER_API);
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiEnableDomain", result);
+            shutdown_agent();
+            return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        }
     }
     atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_READY,
                           memory_order_relaxed);
@@ -1336,7 +1486,7 @@ int xprobe_cupti_agent_start(const char *configured_socket, uint64_t capacity)
         }
     } else {
         atomic_store_explicit(&capture_filter_enabled, 0, memory_order_release);
-        if (initialize_agent() != XPROBE_CUPTI_AGENT_READY) {
+        if (activate_capture() != XPROBE_CUPTI_AGENT_READY) {
             return xprobe_cupti_agent_status();
         }
     }
