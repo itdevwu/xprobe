@@ -83,6 +83,12 @@ Driver callbacks plus kernel, memcpy, and memset activity are filtered before
 fixed records consume capacity. Callback hot paths do not perform blocking I/O
 or allocation.
 
+Broad GPU inventory uses the same `measure` primitive with aggregate mode. The
+Agent updates a `--max-groups`-bounded table for matching kernel, memcpy, or
+memset activity and returns only final count/duration/byte summaries. Exact
+measurement remains the evidence path; aggregate output has a separate result
+contract and cannot be exported as event JSONL.
+
 CUPTI activity timestamps are normalized to `CLOCK_MONOTONIC` through its
 timestamp callback or an explicit CUDA 12 clock calibration. Activity that
 began before the ARM epoch is excluded. The Agent verifies the retained window

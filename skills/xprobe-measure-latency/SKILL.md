@@ -35,14 +35,16 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
    the selected process PID.
 5. Map GPU or mixed work before choosing a name. Validate broad kernel, memcpy,
    or memset activity endpoints, then collect one bounded, representative coarse
-   inventory per event family with `--events-out`. For CPU-only work, resolve and
-   validate the intended host-function boundary directly; do not require CUDA or
-   CUPTI. Scope breadth and collection duration are independent: keep the
-   selector broad where an activity inventory exists, but choose a duration that
-   covers the workload cycle being diagnosed. Give `--max-events` headroom.
-6. For GPU artifacts, run `scripts/analyze_trace.py`. Use kernel names, selector
-   hints, duration aggregates, launch variants, stream distribution, busy union,
-   overlap factor, and adjacent gaps to form one narrow hypothesis. Read
+   inventory per event family with `measure --aggregate --duration-ms ...`.
+   For CPU-only work, resolve and validate the intended host-function boundary
+   directly; do not require CUDA or CUPTI. Scope breadth and collection duration
+   are independent: keep the selector broad where an activity inventory exists,
+   choose a duration that covers the workload cycle being diagnosed, and give
+   `--max-groups` headroom.
+6. Use aggregate names, selector hints, counts, duration totals and bounds, and
+   transfer bytes to form one narrow hypothesis. For an exact GPU artifact, run
+   `scripts/analyze_trace.py` and use launch variants, stream distribution, busy
+   union, overlap factor, and adjacent gaps. Read
    [references/trace-analysis.md](references/trace-analysis.md) when interpreting
    the report. For CPU-only work, use resolved host selectors and result evidence
    to form the hypothesis instead.

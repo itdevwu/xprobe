@@ -133,9 +133,26 @@ xprobe measure --spec measurement.json \
   --json --non-interactive --no-color
 ```
 
+Broad GPU activity inventory:
+
+```bash
+xprobe measure --pid 4242 \
+  --from 'cuda:kernel_start' --to 'cuda:kernel_end' \
+  --match exact --aggregate --duration-ms 1000 --max-groups 4096 \
+  --json --non-interactive --no-color
+```
+
 Exactly one source mode is used: `--pid`, one or more `--input`, or `--spec`.
 At least one positive `--samples` or `--duration-ms` bound is required in direct
 mode. `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000.
+`--aggregate` is live-only, duration-bounded, and accepts one matching kernel,
+memcpy, or memset activity start/end pair. It uses `--max-groups` (default
+4,096), does not accept `--samples` or `--events-out`, and emits
+`schemas/aggregate-inventory-result.schema.json`. The result is a coarse
+inventory, not exact event evidence: it reports count, total/min/max/mean
+duration, optional transferred bytes, table occupancy, and drop completeness.
+Aggregate kernel regex must be reducible to an exact, prefix, suffix, or
+contains filter because this mode intentionally has no Rust-side event pass.
 
 Live host endpoints attach PID-scoped eBPF probes. CUDA endpoints automatically
 activate the CUPTI agent. If it is absent, `--agent` or

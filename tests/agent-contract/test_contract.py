@@ -101,11 +101,19 @@ def check_skill(workspace: pathlib.Path) -> None:
     examples = sorted((skill_root / "examples").glob("*.json"))
     assert len(examples) >= 5
     policies = set()
+    modes = set()
     for example in examples:
         specification = json.loads(example.read_text())
         assert specification["schema_version"] == "2.0", example
-        assert specification["max_events"] > 0, example
+        mode = specification.get("measurement_mode", "exact")
+        modes.add(mode)
+        if mode == "aggregate":
+            assert specification["max_events"] is None, example
+            assert specification["max_groups"] > 0, example
+        else:
+            assert specification["max_events"] > 0, example
         policies.add(specification["match_policy"])
+    assert modes == {"exact", "aggregate"}
     assert {"exact", "first_after", "stack_nested", "stream_order"} <= policies
 
     investigation = (skill_root / "references/investigation.md").read_text()
@@ -131,7 +139,8 @@ def check_skill(workspace: pathlib.Path) -> None:
         "first selected event",
         "ARM completion",
         "Summed kernel",
-        "profiler",
+        "Aggregate inventory",
+        "max-groups",
     ):
         assert required in normalized_quality
     for required in (

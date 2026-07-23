@@ -40,6 +40,15 @@ Direct `measure` calls require a positive `--samples` or `--duration-ms` bound.
 `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000. Use exactly
 one source mode: `--pid`, one or more `--input` files, or `--spec`.
 
+Use `measure --aggregate --duration-ms ... --max-groups ...` for a live, coarse
+kernel, memcpy, or memset inventory. Aggregate endpoints must be one matching
+activity start/end pair with `--match exact`. The result contains bounded group
+counts, total/min/max/mean duration, transfer bytes, selector hints, and table
+quality. It contains no event evidence, percentiles, or correlation confidence;
+`--samples`, `--input`, and `--events-out` are invalid in this mode.
+Kernel regex must be an exact, prefix, suffix, or contains shape that the Agent
+can apply before aggregation; other regex is rejected instead of widened.
+
 Kernel and other GPU activity durations require separate start and end records,
 so `max-events` is record capacity rather than sample capacity. Sample completion
 is checked after bounded snapshots and does not reserve space in the CUPTI
