@@ -84,13 +84,31 @@ readlink -f "/proc/$PID/exe"
 cat "/proc/$PID/maps"
 readelf -Ws /path/to/object
 nm -D --defined-only /path/to/object
+nm -D --defined-only --demangle /path/to/cpp-object
 ```
 
 Use `uprobe:<binary>:<symbol>:entry|return` when a symbol is available. For
-stripped or local code, derive a file offset with `readelf`/`objdump` and use
+an exact C++ signature containing `::`, use
+`uprobe:<binary>:symbol=<full-demangled-signature>:entry|return`; validation
+returns both the mangled attach name and readable signature. For stripped or
+local code, derive a file offset with `readelf`/`objdump` and use
 `uprobe:<binary>:+0xOFFSET:entry|return`. Always pass the exact candidate to
 `validate`; do not infer a runtime virtual address from one process and reuse it
 as a file offset.
+
+For eager PyTorch, inspect the mapped CPython executable, `torch._C`, and the
+loaded libtorch objects. Prefer an exported dispatcher or native operator
+signature observed in that exact installed build, such as an
+`at::_ops::<operator>::call(...)` boundary, and validate both entry and return
+before measuring with `stack-nested`. Treat `_PyEval_EvalFrameDefault` only as a
+broad interpreter boundary; xprobe does not turn it into Python function names.
+
+After `torch.compile` or Triton warmup, do not assume an eager operator boundary
+still encloses the fused work. Inventory CUDA kernels first and narrow using
+the emitted kernel names. Generated CPU code without a stable file-backed ELF
+symbol is not a valid uprobe target. Never reuse a C++ signature, mangled name,
+file offset, or generated kernel name across PyTorch builds without resolving
+and validating it again.
 
 For kernel-facing latency, first use application logs, `/proc` state, or a
 bounded syscall summary to identify a candidate. Then validate

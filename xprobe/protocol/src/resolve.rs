@@ -31,6 +31,7 @@ pub struct ResolvedProbe {
     pub object_kind: ElfObjectKind,
     pub probe_kind: HostProbeKind,
     pub symbol: Option<String>,
+    pub symbol_demangled: Option<String>,
     pub symbol_virtual_address: Option<u64>,
     pub symbol_size: Option<u64>,
     pub file_offset: u64,

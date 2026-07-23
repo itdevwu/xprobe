@@ -522,6 +522,7 @@ fn normalize_event(
             binary_path: None,
             build_id: None,
             symbol: Some(probe.name.clone()),
+            symbol_demangled: None,
             offset: None,
             return_value: (probe.event_type == EventType::SyscallExit)
                 .then_some(i64::from_ne_bytes(raw.values[0].to_ne_bytes())),

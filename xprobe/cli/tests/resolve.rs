@@ -155,6 +155,22 @@ fn resolves_pie_shared_library_symbol_and_file_offset() {
     assert_eq!(library.probe_kind, HostProbeKind::Uretprobe);
     assert!(library.build_id.is_some());
 
+    let cpp = resolve(
+        pid,
+        &format!(
+            "uprobe:{}:symbol=xprobe_fixture::native_operator(long):entry",
+            target.library.display()
+        ),
+    );
+    assert_eq!(
+        cpp.symbol.as_deref(),
+        Some("_ZN14xprobe_fixture15native_operatorEl")
+    );
+    assert_eq!(
+        cpp.symbol_demangled.as_deref(),
+        Some("xprobe_fixture::native_operator(long)")
+    );
+
     let by_offset = resolve(
         pid,
         &format!(

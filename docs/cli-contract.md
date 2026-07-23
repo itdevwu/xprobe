@@ -64,12 +64,20 @@ attachment. Host selector forms are:
 ```text
 uprobe:<binary>:<symbol>:entry
 uprobe:<binary>:<symbol>:return
+uprobe:<binary>:symbol=<full-demangled-c++-signature>:entry
+uprobe:<binary>:symbol=<full-demangled-c++-signature>:return
 uprobe:<binary>:+0x<file-offset>:entry
 uprobe:<binary>:+0x<file-offset>:return
 syscall:<name>:entry
 syscall:<name>:exit
 tracepoint:<category>:<name>
 ```
+
+The `symbol=` form allows `::` and other punctuation in a full C++ signature.
+Resolution returns the attachable mangled ELF name in `symbol` and its readable
+signature in `symbol_demangled`; captured host events retain both. It works for
+mapped CPython, native extension, and framework libraries, but does not resolve
+Python frames or `module.qualname` names.
 
 Named syscall selectors are Linux x86_64 endpoints resolved by `validate`.
 Their eBPF path filters PID and syscall number before reserving an event,

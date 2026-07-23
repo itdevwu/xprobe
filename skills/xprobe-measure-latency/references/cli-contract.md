@@ -16,9 +16,16 @@ Host function selectors use:
 ```text
 uprobe:<binary>:<symbol>:entry
 uprobe:<binary>:<symbol>:return
+uprobe:<binary>:symbol=<full-demangled-c++-signature>:entry
+uprobe:<binary>:symbol=<full-demangled-c++-signature>:return
 uprobe:<binary>:+0x<file-offset>:entry
 uprobe:<binary>:+0x<file-offset>:return
 ```
+
+Use the `symbol=` form for a C++ name containing `::`; pass the complete
+demangled signature. Validation returns the actual mangled ELF symbol and the
+readable signature. This resolves native code mapped by a Python process, not
+Python frame or `module.qualname` names.
 
 Linux selectors use `syscall:<name>:entry|exit` and
 `tracepoint:<category>:<name>`. Syscall entry/exit for one name supports

@@ -69,6 +69,12 @@ test-multisource-live: build
 test-multisource-live-cuda12: build
     python3 tests/integration/test_multisource.py "{{cuda12_devel_image}}" target/debug/xprobe
 
+test-pytorch-symbols: build
+    python3 tests/integration/test_pytorch_symbols.py --python "${PYTORCH_PYTHON:?set PYTORCH_PYTHON to a Python with torch}"
+
+test-pytorch-live: build
+    python3 tests/integration/test_pytorch.py "{{cuda_smoke_image}}" "${PYTORCH_ENV:?set PYTORCH_ENV to a Mamba environment with torch}"
+
 benchmark-gpu:
     python3 benchmarks/cuda-callback/run.py "{{cuda13_devel_image}}"
 

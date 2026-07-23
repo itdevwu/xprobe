@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use cpp_demangle::{DemangleOptions, Symbol as CppSymbol};
 use object::{Object, ObjectKind, ObjectSegment, ObjectSymbol, SymbolKind};
 use xprobe_protocol::{
     ElfObjectKind, ErrorCode, HostProbeKind, ProcessMapping, ProcessReport, ResolvedProbe,
@@ -216,27 +217,8 @@ pub fn run(report: &ProcessReport, selector_text: &str) -> Result<ResolvedProbe,
         })?
         .map(hex_encode);
 
-    let (symbol, symbol_virtual_address, symbol_size, file_offset) = match &selector.target {
-        ProbeTarget::Symbol(name) => {
-            let (address, size) = resolve_symbol(&file, name, &binary)?;
-            let offset = virtual_address_to_file_offset(&file, address).ok_or_else(|| {
-                ResolveError::OffsetNotLoadable {
-                    offset: address,
-                    path: binary.clone(),
-                }
-            })?;
-            (Some(name.clone()), Some(address), Some(size), offset)
-        }
-        ProbeTarget::FileOffset(offset) => {
-            if file_offset_to_virtual_address(&file, *offset).is_none() {
-                return Err(ResolveError::OffsetNotLoadable {
-                    offset: *offset,
-                    path: binary,
-                });
-            }
-            (None, None, None, *offset)
-        }
-    };
+    let (symbol, symbol_demangled, symbol_virtual_address, symbol_size, file_offset) =
+        resolve_probe_target(&file, &selector.target, &binary)?;
     let map = binary_maps
         .into_iter()
         .find(|region| region_contains_offset(region, file_offset))
@@ -261,6 +243,7 @@ pub fn run(report: &ProcessReport, selector_text: &str) -> Result<ResolvedProbe,
         object_kind,
         probe_kind,
         symbol,
+        symbol_demangled,
         symbol_virtual_address,
         symbol_size,
         file_offset,
@@ -289,9 +272,13 @@ fn parse_selector(text: &str) -> Result<Selector, ResolveError> {
             ));
         }
     };
-    let (binary, target) = binary_and_target.rsplit_once(':').ok_or_else(|| {
-        ResolveError::InvalidSelector("expected binary path and symbol or offset".to_owned())
-    })?;
+    let (binary, target) = if let Some(parts) = binary_and_target.split_once(":symbol=") {
+        parts
+    } else {
+        binary_and_target.rsplit_once(':').ok_or_else(|| {
+            ResolveError::InvalidSelector("expected binary path and symbol or offset".to_owned())
+        })?
+    };
     if binary.is_empty() || target.is_empty() {
         return Err(ResolveError::InvalidSelector(
             "binary path and probe target must not be empty".to_owned(),
@@ -395,34 +382,148 @@ fn classify_object(
     }
 }
 
+#[derive(Debug)]
+struct ResolvedSymbol {
+    mangled: String,
+    demangled: Option<String>,
+    address: u64,
+    size: u64,
+}
+
+type ResolvedProbeTarget = (
+    Option<String>,
+    Option<String>,
+    Option<u64>,
+    Option<u64>,
+    u64,
+);
+
+fn resolve_probe_target(
+    file: &object::File<'_>,
+    target: &ProbeTarget,
+    path: &Path,
+) -> Result<ResolvedProbeTarget, ResolveError> {
+    match target {
+        ProbeTarget::Symbol(name) => {
+            let resolved = resolve_symbol(file, name, path)?;
+            let offset =
+                virtual_address_to_file_offset(file, resolved.address).ok_or_else(|| {
+                    ResolveError::OffsetNotLoadable {
+                        offset: resolved.address,
+                        path: path.to_owned(),
+                    }
+                })?;
+            Ok((
+                Some(resolved.mangled),
+                resolved.demangled,
+                Some(resolved.address),
+                Some(resolved.size),
+                offset,
+            ))
+        }
+        ProbeTarget::FileOffset(offset) => {
+            if file_offset_to_virtual_address(file, *offset).is_none() {
+                return Err(ResolveError::OffsetNotLoadable {
+                    offset: *offset,
+                    path: path.to_owned(),
+                });
+            }
+            Ok((None, None, None, None, *offset))
+        }
+    }
+}
+
 fn resolve_symbol(
     file: &object::File<'_>,
     name: &str,
     path: &Path,
-) -> Result<(u64, u64), ResolveError> {
+) -> Result<ResolvedSymbol, ResolveError> {
     let mut matches = BTreeMap::new();
-    for symbol in file.symbols().chain(file.dynamic_symbols()) {
-        if symbol.is_definition()
-            && symbol.kind() == SymbolKind::Text
-            && symbol.name().ok() == Some(name)
-        {
-            matches
-                .entry(symbol.address())
-                .and_modify(|size: &mut u64| *size = (*size).max(symbol.size()))
-                .or_insert(symbol.size());
-        }
+    collect_symbol_matches(
+        file.dynamic_symbols().chain(file.symbols()),
+        name,
+        false,
+        &mut matches,
+    );
+    if let Some(resolved) = select_symbol_match(matches, name, path)? {
+        return Ok(resolved);
     }
+
+    let mut matches = BTreeMap::new();
+    collect_symbol_matches(file.dynamic_symbols(), name, true, &mut matches);
+    if let Some(resolved) = select_symbol_match(matches, name, path)? {
+        return Ok(resolved);
+    }
+
+    let mut matches = BTreeMap::new();
+    collect_symbol_matches(file.symbols(), name, true, &mut matches);
+    select_symbol_match(matches, name, path)?.ok_or_else(|| ResolveError::SymbolNotFound {
+        symbol: name.to_owned(),
+        path: path.to_owned(),
+    })
+}
+
+fn collect_symbol_matches<'data>(
+    symbols: impl Iterator<Item = impl ObjectSymbol<'data>>,
+    name: &str,
+    match_demangled: bool,
+    matches: &mut BTreeMap<u64, ResolvedSymbol>,
+) {
+    for symbol in symbols {
+        if !symbol.is_definition() || symbol.kind() != SymbolKind::Text {
+            continue;
+        }
+        let Ok(mangled) = symbol.name() else {
+            continue;
+        };
+        let demangled = if match_demangled {
+            demangle_cpp(mangled)
+        } else {
+            None
+        };
+        let is_match = if match_demangled {
+            demangled.as_deref() == Some(name)
+        } else {
+            mangled == name
+        };
+        if !is_match {
+            continue;
+        }
+        matches
+            .entry(symbol.address())
+            .and_modify(|resolved: &mut ResolvedSymbol| {
+                resolved.size = resolved.size.max(symbol.size());
+            })
+            .or_insert_with(|| ResolvedSymbol {
+                mangled: mangled.to_owned(),
+                demangled: demangled.or_else(|| demangle_cpp(mangled)),
+                address: symbol.address(),
+                size: symbol.size(),
+            });
+    }
+}
+
+fn select_symbol_match(
+    matches: BTreeMap<u64, ResolvedSymbol>,
+    name: &str,
+    path: &Path,
+) -> Result<Option<ResolvedSymbol>, ResolveError> {
     match matches.len() {
-        0 => Err(ResolveError::SymbolNotFound {
-            symbol: name.to_owned(),
-            path: path.to_owned(),
-        }),
-        1 => Ok(matches.into_iter().next().expect("one symbol match")),
+        0 => Ok(None),
+        1 => Ok(matches.into_values().next()),
         _ => Err(ResolveError::AmbiguousSymbol {
             symbol: name.to_owned(),
             path: path.to_owned(),
         }),
     }
+}
+
+fn demangle_cpp(name: &str) -> Option<String> {
+    if !name.starts_with("_Z") {
+        return None;
+    }
+    let symbol = CppSymbol::new(name).ok()?;
+    symbol.demangle(&DemangleOptions::default()).ok()
 }
 
 fn virtual_address_to_file_offset(file: &object::File<'_>, address: u64) -> Option<u64> {
@@ -475,6 +576,15 @@ mod tests {
         let offset = parse_selector("uprobe:/srv/app:+0x1234:entry").unwrap();
         assert_eq!(offset.target, ProbeTarget::FileOffset(0x1234));
         assert_eq!(offset.boundary, Boundary::Entry);
+
+        let demangled = parse_selector(
+            "uprobe:/srv/libtorch_cpu.so:symbol=at::native::mm(at::Tensor const&):entry",
+        )
+        .unwrap();
+        assert_eq!(
+            demangled.target,
+            ProbeTarget::Symbol("at::native::mm(at::Tensor const&)".to_owned())
+        );
     }
 
     #[test]

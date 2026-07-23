@@ -65,6 +65,20 @@ requires Docker daemon access and grants the container `BPF`,
 syscalls. It does not use `--privileged`, does not require GPU access, mounts the
 workspace read-only, and removes the container after the test.
 
+Resolve real CPython, native extension, and libtorch C++ symbols with a Mamba
+environment containing PyTorch:
+
+```bash
+PYTORCH_PYTHON=/path/to/env/bin/python just test-pytorch-symbols
+```
+
+Run the corresponding live `torch.mm` entry/return measurement in the pinned
+BPF container:
+
+```bash
+PYTORCH_ENV=/path/to/env just test-pytorch-live
+```
+
 ## GPU checks
 
 Run host diagnostics outside restricted sandboxes when GPU device access is

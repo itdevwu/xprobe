@@ -86,6 +86,8 @@ pub struct HostEvent {
     pub binary_path: Option<String>,
     pub build_id: Option<String>,
     pub symbol: Option<String>,
+    #[serde(default)]
+    pub symbol_demangled: Option<String>,
     pub offset: Option<u64>,
     pub return_value: Option<i64>,
     #[serde(default)]

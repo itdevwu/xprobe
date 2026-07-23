@@ -96,6 +96,7 @@ fn write_host_capture(path: &PathBuf, timestamp_ns: u64) {
             binary_path: Some("/srv/libserver.so".to_owned()),
             build_id: None,
             symbol: Some("handle_request".to_owned()),
+            symbol_demangled: None,
             offset: None,
             return_value: None,
             arguments: Vec::new(),
