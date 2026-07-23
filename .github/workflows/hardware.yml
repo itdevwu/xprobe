@@ -24,3 +24,4 @@ jobs:
       - run: just test-injection-live
       - run: just test-multisource-live
       - run: just benchmark-gpu
+      - run: just benchmark-aggregate

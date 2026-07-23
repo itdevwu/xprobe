@@ -71,4 +71,6 @@
 - Test bundled Skill scripts with deterministic fixtures and include them in
   `just test-agent-contract`.
 - Run `just benchmark-gpu` for callback hot-path changes.
+- Run `just benchmark-aggregate` for aggregate inventory hot-path or capacity
+  changes.
 - Use emoji conventional commits, for example `🐛 fix: restore target registers`.

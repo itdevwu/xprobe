@@ -69,6 +69,9 @@ test-multisource-live-cuda12: build
 benchmark-gpu:
     python3 benchmarks/cuda-callback/run.py "{{cuda13_devel_image}}"
 
+benchmark-aggregate:
+    python3 benchmarks/cuda-aggregate/run.py "{{cuda13_devel_image}}"
+
 fmt:
     cargo fmt --all
 

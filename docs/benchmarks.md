@@ -24,3 +24,22 @@ The output records the GPU name, driver, compute capability, workload shape,
 reference and CUPTI durations, error, baseline and instrumented medians, overhead
 ratio, ABI metadata, and drop counters. Keep complete JSON output with benchmark
 results; do not label a run by a GPU model inferred from machine documentation.
+
+For aggregate inventory changes, run:
+
+```bash
+just benchmark-aggregate
+```
+
+This benchmark keeps a two-kernel CUDA workload at a high event rate and
+captures it once as raw exact events and once into a four-slot aggregate table.
+It fails unless both captures are complete and drop-free, the aggregate count
+exceeds table capacity without saturation, and exactly two groups are retained.
+It also requires aggregate capture to use less collector CPU, collector peak
+RSS, target-process RSS growth, and artifact space than raw broad capture.
+
+The resource comparison uses `wait4` for collector CPU and peak RSS and samples
+target RSS from procfs while the command runs. It deliberately does not gate on
+short GPU throughput windows: device clock changes can make those samples move
+opposite to profiler overhead. The JSON output includes every asserted resource
+and collection value so regressions remain diagnosable.
