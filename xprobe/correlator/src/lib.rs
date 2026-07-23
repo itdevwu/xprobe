@@ -97,6 +97,14 @@ enum Selector {
         binary_path: String,
         target: HostTarget,
     },
+    Syscall {
+        event_type: EventType,
+        name: String,
+    },
+    Tracepoint {
+        category: String,
+        name: String,
+    },
     Api {
         event_type: EventType,
         domain: String,
@@ -126,10 +134,17 @@ impl Selector {
         if text.starts_with("uprobe:") {
             return Self::parse_host(text);
         }
+        if text.starts_with("syscall:") {
+            return Self::parse_syscall(text);
+        }
+        if text.starts_with("tracepoint:") {
+            return Self::parse_tracepoint(text);
+        }
         let fields: Vec<&str> = text.splitn(3, ':').collect();
         if fields.first() != Some(&"cuda") || fields.len() < 2 {
             return Err(MeasureError::InvalidSelector(
-                "completed captures require a uprobe: or cuda: selector".to_owned(),
+                "completed captures require a uprobe:, syscall:, tracepoint:, or cuda: selector"
+                    .to_owned(),
             ));
         }
         match fields[1] {
@@ -212,6 +227,52 @@ impl Selector {
             event_type,
             domain: fields[1].to_owned(),
             name: fields[2].to_owned(),
+        })
+    }
+
+    fn parse_syscall(text: &str) -> Result<Self, MeasureError> {
+        let fields = text.split(':').collect::<Vec<_>>();
+        let ["syscall", name, boundary] = fields.as_slice() else {
+            return Err(MeasureError::InvalidSelector(
+                "syscall selector must be syscall:<name>:<entry|exit>".to_owned(),
+            ));
+        };
+        if !valid_linux_component(name) {
+            return Err(MeasureError::InvalidSelector(
+                "syscall name must contain only letters, digits, and underscores".to_owned(),
+            ));
+        }
+        let event_type = match *boundary {
+            "entry" => EventType::SyscallEntry,
+            "exit" => EventType::SyscallExit,
+            _ => {
+                return Err(MeasureError::InvalidSelector(
+                    "syscall boundary must be entry or exit".to_owned(),
+                ));
+            }
+        };
+        Ok(Self::Syscall {
+            event_type,
+            name: (*name).to_owned(),
+        })
+    }
+
+    fn parse_tracepoint(text: &str) -> Result<Self, MeasureError> {
+        let fields = text.split(':').collect::<Vec<_>>();
+        let ["tracepoint", category, name] = fields.as_slice() else {
+            return Err(MeasureError::InvalidSelector(
+                "tracepoint selector must be tracepoint:<category>:<name>".to_owned(),
+            ));
+        };
+        if !valid_linux_component(category) || !valid_linux_component(name) {
+            return Err(MeasureError::InvalidSelector(
+                "tracepoint category and name must contain only letters, digits, and underscores"
+                    .to_owned(),
+            ));
+        }
+        Ok(Self::Tracepoint {
+            category: (*category).to_owned(),
+            name: (*name).to_owned(),
         })
     }
 
@@ -336,6 +397,25 @@ impl Selector {
                             .is_some_and(|kernel| pattern.is_match(kernel))
                     })
             }
+            Self::Syscall { event_type, name } => {
+                event.event_type == *event_type
+                    && event.host.as_ref().is_some_and(|host| {
+                        host.probe_kind == HostProbeKind::Syscall
+                            && host.symbol.as_deref() == Some(name.as_str())
+                    })
+            }
+            Self::Tracepoint { category, name } => {
+                event.event_type == EventType::Tracepoint
+                    && event.host.as_ref().is_some_and(|host| {
+                        host.probe_kind == HostProbeKind::Tracepoint
+                            && host.symbol.as_deref() == Some(name.as_str())
+                    })
+                    && event
+                        .attributes
+                        .get("tracepoint_category")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(category.as_str())
+            }
             Self::Memcpy { event_type, kind } => {
                 event.event_type == *event_type
                     && kind.as_ref().is_none_or(|kind| {
@@ -350,8 +430,38 @@ impl Selector {
         }
     }
 
-    const fn supports_exact(&self) -> bool {
-        !matches!(self, Self::Host { .. })
+    fn supports_exact(&self, end: &Self) -> bool {
+        match (self, end) {
+            (
+                Self::Syscall {
+                    event_type: EventType::SyscallEntry,
+                    name: start_name,
+                },
+                Self::Syscall {
+                    event_type: EventType::SyscallExit,
+                    name: end_name,
+                },
+            ) => start_name == end_name,
+            (Self::Host { .. } | Self::Tracepoint { .. }, _)
+            | (_, Self::Host { .. } | Self::Tracepoint { .. }) => false,
+            _ => true,
+        }
+    }
+
+    fn is_syscall_lifecycle(&self, end: &Self) -> bool {
+        matches!(
+            (self, end),
+            (
+                Self::Syscall {
+                    event_type: EventType::SyscallEntry,
+                    name: start_name,
+                },
+                Self::Syscall {
+                    event_type: EventType::SyscallExit,
+                    name: end_name,
+                },
+            ) if start_name == end_name
+        )
     }
 
     fn supports_stack_nested(&self, end: &Self) -> bool {
@@ -380,6 +490,13 @@ impl Selector {
             Self::Kernel { .. } | Self::Memcpy { .. } | Self::Memset { .. }
         )
     }
+}
+
+fn valid_linux_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 #[derive(Debug)]
@@ -435,13 +552,14 @@ pub fn measure(
     let clock_domain = common_clock_domain(&starts, &ends)?;
     apply_duration_window(&mut starts, &mut ends, options.duration)?;
 
-    let outcome = match options.match_policy {
-        MatchPolicy::Exact => correlate_exact(&starts, &ends, options.samples),
-        MatchPolicy::FirstAfter => correlate_first_after(&starts, &ends, options.samples),
-        MatchPolicy::Nearest => correlate_nearest(&starts, &ends, options.samples),
-        MatchPolicy::StackNested => correlate_stack_nested(&starts, &ends, options.samples),
-        MatchPolicy::StreamOrder => correlate_stream_order(&starts, &ends, options.samples),
-    };
+    let syscall_lifecycle = start_selector.is_syscall_lifecycle(&end_selector);
+    let outcome = correlate_selected(
+        &starts,
+        &ends,
+        options.match_policy,
+        options.samples,
+        syscall_lifecycle,
+    );
     if outcome.pairs.is_empty() {
         return Err(MeasureError::NoMatchedSamples);
     }
@@ -453,7 +571,7 @@ pub fn measure(
         .map(|pair| pair.latency_ns)
         .collect::<Vec<_>>();
     let denominator = matched + outcome.unmatched_start + outcome.unmatched_end + outcome.ambiguous;
-    let (method, confidence) = correlation_metadata(options.match_policy);
+    let (method, confidence) = correlation_metadata(options.match_policy, syscall_lifecycle);
     let warnings = measurement_warnings(options, &starts, &ends);
 
     let host_events = events
@@ -511,14 +629,31 @@ pub fn measure(
     })
 }
 
+fn correlate_selected<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    policy: MatchPolicy,
+    limit: Option<usize>,
+    syscall_lifecycle: bool,
+) -> Outcome<'a> {
+    match policy {
+        MatchPolicy::Exact if syscall_lifecycle => correlate_syscall_lifecycle(starts, ends, limit),
+        MatchPolicy::Exact => correlate_exact(starts, ends, limit),
+        MatchPolicy::FirstAfter => correlate_first_after(starts, ends, limit),
+        MatchPolicy::Nearest => correlate_nearest(starts, ends, limit),
+        MatchPolicy::StackNested => correlate_stack_nested(starts, ends, limit),
+        MatchPolicy::StreamOrder => correlate_stream_order(starts, ends, limit),
+    }
+}
+
 fn validate_policy(
     start: &Selector,
     end: &Selector,
     policy: MatchPolicy,
 ) -> Result<(), MeasureError> {
     let message = match policy {
-        MatchPolicy::Exact if !start.supports_exact() || !end.supports_exact() => {
-            Some("exact matching requires CUDA endpoints with a deterministic correlation ID")
+        MatchPolicy::Exact if !start.supports_exact(end) => {
+            Some("exact matching requires endpoints with a deterministic correlation key")
         }
         MatchPolicy::StackNested if !start.supports_stack_nested(end) => {
             Some("stack-nested requires entry and return selectors for the same host function")
@@ -534,13 +669,67 @@ fn validate_policy(
     Ok(())
 }
 
-const fn correlation_metadata(policy: MatchPolicy) -> (&'static str, CorrelationConfidence) {
+const fn correlation_metadata(
+    policy: MatchPolicy,
+    syscall_lifecycle: bool,
+) -> (&'static str, CorrelationConfidence) {
     match policy {
+        MatchPolicy::Exact if syscall_lifecycle => {
+            ("exact_syscall_tid_lifecycle", CorrelationConfidence::Exact)
+        }
         MatchPolicy::Exact => ("exact_cupti_correlation_id", CorrelationConfidence::Exact),
         MatchPolicy::FirstAfter => ("first_after", CorrelationConfidence::Heuristic),
         MatchPolicy::Nearest => ("nearest", CorrelationConfidence::Heuristic),
         MatchPolicy::StackNested => ("stack_nested_tid_lifo", CorrelationConfidence::High),
         MatchPolicy::StreamOrder => ("cuda_stream_order", CorrelationConfidence::High),
+    }
+}
+
+fn correlate_syscall_lifecycle<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    limit: Option<usize>,
+) -> Outcome<'a> {
+    let mut timeline = starts
+        .iter()
+        .map(|event| (event.timestamp_ns, 0_u8, *event))
+        .chain(ends.iter().map(|event| (event.timestamp_ns, 1_u8, *event)))
+        .collect::<Vec<_>>();
+    timeline.sort_by_key(|(timestamp, boundary, event)| (*timestamp, *boundary, event.sequence));
+
+    let mut pending = BTreeMap::<(u32, u32, Option<u64>), &Event>::new();
+    let mut pairs = Vec::new();
+    let mut unmatched_end = 0_u64;
+    let mut ambiguous = 0_u64;
+    for (_, boundary, event) in timeline {
+        let key = (event.pid, event.tid, event.process_start_time);
+        if boundary == 0 {
+            if pending.insert(key, event).is_some() {
+                ambiguous += 1;
+            }
+        } else if let Some(start) = pending.remove(&key) {
+            if let Some(latency_ns) = event.timestamp_ns.checked_sub(start.timestamp_ns) {
+                pairs.push(Pair {
+                    start,
+                    end: event,
+                    latency_ns,
+                });
+            } else {
+                ambiguous += 1;
+            }
+        } else {
+            unmatched_end += 1;
+        }
+    }
+    pairs.sort_by_key(|pair| pair.start.timestamp_ns);
+    if let Some(limit) = limit {
+        pairs.truncate(limit);
+    }
+    Outcome {
+        pairs,
+        unmatched_start: pending.len() as u64,
+        unmatched_end,
+        ambiguous,
     }
 }
 
@@ -1097,6 +1286,25 @@ mod tests {
         event
     }
 
+    fn syscall_event(event_type: EventType, timestamp: u64, tid: u32, name: &str) -> Event {
+        let mut event = event(event_type, timestamp, 0);
+        event.source = EventSource::Ebpf;
+        event.clock_domain = ClockDomain::HostMonotonic;
+        event.tid = tid;
+        event.process_start_time = Some(42);
+        event.cuda = None;
+        event.host = Some(HostEvent {
+            probe_kind: HostProbeKind::Syscall,
+            binary_path: None,
+            build_id: None,
+            symbol: Some(name.to_owned()),
+            offset: None,
+            return_value: (event.event_type == EventType::SyscallExit).then_some(0),
+            arguments: Vec::new(),
+        });
+        event
+    }
+
     #[test]
     fn exact_matching_uses_cupti_correlation_ids() {
         let events = vec![
@@ -1125,6 +1333,62 @@ mod tests {
         assert_eq!(result.measurement.samples.matched, 2);
         assert_eq!(result.measurement.latency_ns.min, 50);
         assert_eq!(result.measurement.latency_ns.max, 80);
+    }
+
+    #[test]
+    fn exact_syscall_matching_follows_thread_lifecycle() {
+        let events = vec![
+            syscall_event(EventType::SyscallEntry, 100, 10, "mmap"),
+            syscall_event(EventType::SyscallEntry, 110, 20, "mmap"),
+            syscall_event(EventType::SyscallExit, 150, 20, "mmap"),
+            syscall_event(EventType::SyscallExit, 180, 10, "mmap"),
+        ];
+        let options = MeasureOptions {
+            session_id: "xp_syscall".to_owned(),
+            name: Some("mmap".to_owned()),
+            start_selector: "syscall:mmap:entry".to_owned(),
+            end_selector: "syscall:mmap:exit".to_owned(),
+            match_policy: MatchPolicy::Exact,
+            samples: Some(2),
+            duration: None,
+            max_events: 100,
+            dropped_events: 0,
+        };
+
+        let result = measure(&events, &options).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 40);
+        assert_eq!(result.measurement.latency_ns.max, 80);
+        assert_eq!(result.correlation.method, "exact_syscall_tid_lifecycle");
+        assert_eq!(result.correlation.confidence, CorrelationConfidence::Exact);
+        assert_eq!(result.evidence[0].start.tid, 10);
+        assert_eq!(result.evidence[0].end.tid, 10);
+    }
+
+    #[test]
+    fn exact_syscall_matching_does_not_cross_process_identity() {
+        let mut exit = syscall_event(EventType::SyscallExit, 150, 10, "munmap");
+        exit.process_start_time = Some(43);
+        let events = vec![
+            syscall_event(EventType::SyscallEntry, 100, 10, "munmap"),
+            exit,
+        ];
+        let options = MeasureOptions {
+            session_id: "xp_syscall".to_owned(),
+            name: None,
+            start_selector: "syscall:munmap:entry".to_owned(),
+            end_selector: "syscall:munmap:exit".to_owned(),
+            match_policy: MatchPolicy::Exact,
+            samples: Some(1),
+            duration: None,
+            max_events: 100,
+            dropped_events: 0,
+        };
+
+        assert_eq!(
+            measure(&events, &options).unwrap_err(),
+            MeasureError::NoMatchedSamples
+        );
     }
 
     #[test]

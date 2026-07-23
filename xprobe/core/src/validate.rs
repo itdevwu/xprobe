@@ -4,8 +4,8 @@ use regex::Regex;
 use xprobe_protocol::{
     AgentActivation, EndpointSource, ErrorCode, EventType, HostProbeKind, MatchPolicy, MemcpyKind,
     PolicyRecommendation, PolicyRecommendationReason, ProcessReport, ResolvedCudaSelector,
-    SchemaVersion, ValidatedEndpoint, ValidationIssue, ValidationRequirements, ValidationResult,
-    Warning,
+    ResolvedLinuxSelector, SchemaVersion, ValidatedEndpoint, ValidationIssue,
+    ValidationRequirements, ValidationResult, Warning,
 };
 
 use crate::{
@@ -81,6 +81,9 @@ impl From<InspectError> for ValidateError {
 enum EndpointKind {
     HostEntry,
     HostReturn,
+    SyscallEntry { name: String },
+    SyscallExit { name: String },
+    Tracepoint,
     CudaApi { domain: String, name: String },
     Kernel,
     Memcpy,
@@ -97,13 +100,25 @@ impl EndpointKind {
     }
 
     const fn is_host(&self) -> bool {
-        matches!(self, Self::HostEntry | Self::HostReturn)
+        matches!(
+            self,
+            Self::HostEntry
+                | Self::HostReturn
+                | Self::SyscallEntry { .. }
+                | Self::SyscallExit { .. }
+                | Self::Tracepoint
+        )
     }
 
     const fn uses_host_clock(&self) -> bool {
         matches!(
             self,
-            Self::HostEntry | Self::HostReturn | Self::CudaApi { .. }
+            Self::HostEntry
+                | Self::HostReturn
+                | Self::SyscallEntry { .. }
+                | Self::SyscallExit { .. }
+                | Self::Tracepoint
+                | Self::CudaApi { .. }
         )
     }
 }
@@ -267,6 +282,22 @@ fn resolve_endpoint(
                 event_type,
                 collectable,
                 host: Some(host),
+                linux: None,
+                cuda: None,
+            },
+            kind,
+        });
+    }
+    if selector.starts_with("syscall:") || selector.starts_with("tracepoint:") {
+        let (linux, kind) = parse_linux_selector(selector)?;
+        return Ok(Endpoint {
+            public: ValidatedEndpoint {
+                selector: selector.to_owned(),
+                source: EndpointSource::Host,
+                event_type: linux.event_type.clone(),
+                collectable: true,
+                host: None,
+                linux: Some(linux),
                 cuda: None,
             },
             kind,
@@ -281,10 +312,78 @@ fn resolve_endpoint(
             event_type: cuda.event_type.clone(),
             collectable,
             host: None,
+            linux: None,
             cuda: Some(cuda),
         },
         kind,
     })
+}
+
+fn parse_linux_selector(
+    selector: &str,
+) -> Result<(ResolvedLinuxSelector, EndpointKind), ValidateError> {
+    let fields = selector.split(':').collect::<Vec<_>>();
+    match fields.as_slice() {
+        ["syscall", name, boundary] if valid_tracepoint_component(name) => {
+            let (event_type, kind) = match *boundary {
+                "entry" => (
+                    EventType::SyscallEntry,
+                    EndpointKind::SyscallEntry {
+                        name: (*name).to_owned(),
+                    },
+                ),
+                "exit" => (
+                    EventType::SyscallExit,
+                    EndpointKind::SyscallExit {
+                        name: (*name).to_owned(),
+                    },
+                ),
+                _ => {
+                    return Err(ValidateError::InvalidSelector(
+                        "syscall boundary must be entry or exit".to_owned(),
+                    ));
+                }
+            };
+            Ok((
+                ResolvedLinuxSelector {
+                    event_type,
+                    probe_kind: HostProbeKind::Syscall,
+                    category: "syscalls".to_owned(),
+                    name: (*name).to_owned(),
+                },
+                kind,
+            ))
+        }
+        ["syscall", ..] => Err(ValidateError::InvalidSelector(
+            "syscall selector must be syscall:<name>:<entry|exit>".to_owned(),
+        )),
+        ["tracepoint", category, name]
+            if valid_tracepoint_component(category) && valid_tracepoint_component(name) =>
+        {
+            Ok((
+                ResolvedLinuxSelector {
+                    event_type: EventType::Tracepoint,
+                    probe_kind: HostProbeKind::Tracepoint,
+                    category: (*category).to_owned(),
+                    name: (*name).to_owned(),
+                },
+                EndpointKind::Tracepoint,
+            ))
+        }
+        ["tracepoint", ..] => Err(ValidateError::InvalidSelector(
+            "tracepoint selector must be tracepoint:<category>:<name>".to_owned(),
+        )),
+        _ => Err(ValidateError::InvalidSelector(
+            "expected uprobe:, syscall:, tracepoint:, or cuda: prefix".to_owned(),
+        )),
+    }
+}
+
+fn valid_tracepoint_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn parse_cuda_selector(
@@ -293,7 +392,7 @@ fn parse_cuda_selector(
     let fields: Vec<&str> = selector.splitn(3, ':').collect();
     if fields.first() != Some(&"cuda") || fields.len() < 2 {
         return Err(ValidateError::InvalidSelector(
-            "expected uprobe: or cuda: prefix".to_owned(),
+            "expected uprobe:, syscall:, tracepoint:, or cuda: prefix".to_owned(),
         ));
     }
 
@@ -491,12 +590,24 @@ fn check_capabilities(
             || matches!(end.kind, EndpointKind::HostEntry);
         let needs_uretprobe = matches!(start.kind, EndpointKind::HostReturn)
             || matches!(end.kind, EndpointKind::HostReturn);
+        let needs_tracepoint = matches!(
+            start.kind,
+            EndpointKind::SyscallEntry { .. }
+                | EndpointKind::SyscallExit { .. }
+                | EndpointKind::Tracepoint
+        ) || matches!(
+            end.kind,
+            EndpointKind::SyscallEntry { .. }
+                | EndpointKind::SyscallExit { .. }
+                | EndpointKind::Tracepoint
+        );
         if (needs_uprobe && !report.capabilities.uprobe)
             || (needs_uretprobe && !report.capabilities.uretprobe)
+            || (needs_tracepoint && !report.capabilities.tracepoint)
         {
             issues.push(issue(
                 ErrorCode::PermissionDenied,
-                "required eBPF userspace probe capability is unavailable".to_owned(),
+                "required eBPF probe capability is unavailable".to_owned(),
             ));
         }
     }
@@ -572,6 +683,10 @@ fn supports_exact(start: &EndpointKind, end: &EndpointKind) -> bool {
         (EndpointKind::Kernel, EndpointKind::Kernel)
         | (EndpointKind::Memcpy, EndpointKind::Memcpy)
         | (EndpointKind::Memset, EndpointKind::Memset) => true,
+        (
+            EndpointKind::SyscallEntry { name: start_name },
+            EndpointKind::SyscallExit { name: end_name },
+        ) => start_name == end_name,
         (EndpointKind::CudaApi { domain, name }, EndpointKind::Kernel)
         | (EndpointKind::Kernel, EndpointKind::CudaApi { domain, name }) => {
             (domain == "runtime_api" && name == "cudaLaunchKernel")
@@ -635,12 +750,13 @@ fn warning(code: &str, message: &str) -> Warning {
 mod tests {
     use xprobe_protocol::{
         AgentActivation, ElfObjectKind, EndpointSource, EventType, HostProbeKind, MatchPolicy,
-        MemcpyKind, PolicyRecommendationReason, ProcessMapping, ResolvedProbe, SchemaVersion,
-        TargetIdentity, ValidatedEndpoint,
+        MemcpyKind, PolicyRecommendationReason, ProcessMapping, ResolvedLinuxSelector,
+        ResolvedProbe, SchemaVersion, TargetIdentity, ValidatedEndpoint,
     };
 
     use super::{
-        Endpoint, EndpointKind, parse_cuda_selector, parse_match_policy, recommend_policy, run,
+        Endpoint, EndpointKind, parse_cuda_selector, parse_linux_selector, parse_match_policy,
+        recommend_policy, run,
     };
     use crate::inspect;
 
@@ -677,6 +793,80 @@ mod tests {
         assert!(parse_cuda_selector("cuda:kernel_start:name~[").is_err());
         assert!(parse_cuda_selector("cuda:memcpy_start:kind=sideways").is_err());
         assert!(parse_match_policy("probably-near").is_err());
+    }
+
+    #[test]
+    fn parses_named_syscalls_and_tracepoints() {
+        let (syscall, kind) = parse_linux_selector("syscall:mmap:entry").unwrap();
+        assert_eq!(syscall.event_type, EventType::SyscallEntry);
+        assert_eq!(syscall.probe_kind, HostProbeKind::Syscall);
+        assert_eq!(syscall.category, "syscalls");
+        assert_eq!(syscall.name, "mmap");
+        assert_eq!(
+            kind,
+            EndpointKind::SyscallEntry {
+                name: "mmap".to_owned()
+            }
+        );
+
+        let (tracepoint, kind) = parse_linux_selector("tracepoint:sched:sched_switch").unwrap();
+        assert_eq!(tracepoint.event_type, EventType::Tracepoint);
+        assert_eq!(tracepoint.probe_kind, HostProbeKind::Tracepoint);
+        assert_eq!(tracepoint.category, "sched");
+        assert_eq!(tracepoint.name, "sched_switch");
+        assert_eq!(kind, EndpointKind::Tracepoint);
+
+        assert!(parse_linux_selector("syscall:mmap:return").is_err());
+        assert!(parse_linux_selector("tracepoint:sched:sched-switch").is_err());
+    }
+
+    #[test]
+    fn recommends_exact_matching_for_one_syscall_lifecycle() {
+        let endpoint = |selector: &str, event_type, kind, linux| Endpoint {
+            public: ValidatedEndpoint {
+                selector: selector.to_owned(),
+                source: EndpointSource::Host,
+                event_type,
+                collectable: true,
+                host: None,
+                linux: Some(linux),
+                cuda: None,
+            },
+            kind,
+        };
+        let start = endpoint(
+            "syscall:mmap:entry",
+            EventType::SyscallEntry,
+            EndpointKind::SyscallEntry {
+                name: "mmap".to_owned(),
+            },
+            ResolvedLinuxSelector {
+                event_type: EventType::SyscallEntry,
+                probe_kind: HostProbeKind::Syscall,
+                category: "syscalls".to_owned(),
+                name: "mmap".to_owned(),
+            },
+        );
+        let end = endpoint(
+            "syscall:mmap:exit",
+            EventType::SyscallExit,
+            EndpointKind::SyscallExit {
+                name: "mmap".to_owned(),
+            },
+            ResolvedLinuxSelector {
+                event_type: EventType::SyscallExit,
+                probe_kind: HostProbeKind::Syscall,
+                category: "syscalls".to_owned(),
+                name: "mmap".to_owned(),
+            },
+        );
+
+        let recommendation = recommend_policy(&start, &end);
+        assert_eq!(recommendation.policy, MatchPolicy::Exact);
+        assert_eq!(
+            recommendation.reason,
+            PolicyRecommendationReason::DeterministicCorrelationKey
+        );
     }
 
     #[test]
@@ -763,6 +953,7 @@ mod tests {
                         file_offset: 0,
                     },
                 }),
+                linux: None,
                 cuda: None,
             },
             kind,

@@ -361,6 +361,7 @@ fn validation_result_contract_round_trips() {
             "event_type": "cuda_api_exit",
             "collectable": true,
             "host": null,
+            "linux": null,
             "cuda": {
                 "event_type": "cuda_api_exit",
                 "api_domain": "runtime_api",
@@ -375,6 +376,7 @@ fn validation_result_contract_round_trips() {
             "event_type": "gpu_kernel_start",
             "collectable": true,
             "host": null,
+            "linux": null,
             "cuda": {
                 "event_type": "gpu_kernel_start",
                 "api_domain": null,

@@ -260,6 +260,30 @@
         "event_type"
       ]
     },
+    "ResolvedLinuxSelector": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "name": {
+          "type": "string"
+        },
+        "probe_kind": {
+          "$ref": "#/$defs/HostProbeKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "event_type",
+        "probe_kind",
+        "category",
+        "name"
+      ]
+    },
     "ResolvedProbe": {
       "type": "object",
       "properties": {
@@ -389,6 +413,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ResolvedProbe"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "linux": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResolvedLinuxSelector"
             },
             {
               "type": "null"
