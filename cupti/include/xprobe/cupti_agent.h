@@ -7,10 +7,10 @@
 extern "C" {
 #endif
 
-#define XPROBE_CUPTI_AGENT_ABI_VERSION 2U
+#define XPROBE_CUPTI_AGENT_ABI_VERSION 3U
 #define XPROBE_CUPTI_OUTPUT_MAGIC "XPCUPTI"
 #define XPROBE_CUPTI_CONTROL_MAGIC "XPCTRL\0"
-#define XPROBE_CUPTI_CONTROL_VERSION 2U
+#define XPROBE_CUPTI_CONTROL_VERSION 3U
 #define XPROBE_CUPTI_NAME_LENGTH 128U
 #define XPROBE_CUPTI_FILTER_COUNT 2U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
@@ -71,6 +71,7 @@ struct xprobe_cupti_control_request {
     uint32_t version;
     uint32_t command;
     uint64_t record_capacity;
+    uint64_t record_offset;
     struct xprobe_cupti_filter filters[XPROBE_CUPTI_FILTER_COUNT];
 };
 
@@ -99,6 +100,7 @@ struct xprobe_cupti_output_header {
     uint64_t agent_dropped_records;
     uint64_t cupti_dropped_records;
     uint64_t unknown_records;
+    uint64_t record_offset;
 };
 
 struct xprobe_cupti_record {

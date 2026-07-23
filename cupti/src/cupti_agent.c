@@ -70,13 +70,13 @@ int xprobe_cupti_agent_flush(void)
 #define XPROBE_CUPTI_CLOCK_MARGIN_NS 1000000000U
 #define XPROBE_CUPTI_CORRELATION_CLOCK_MARGIN_NS 1000000U
 
-_Static_assert(sizeof(struct xprobe_cupti_output_header) == 80U,
+_Static_assert(sizeof(struct xprobe_cupti_output_header) == 88U,
                "unexpected CUPTI output header layout");
 _Static_assert(sizeof(struct xprobe_cupti_record) == 200U,
                "unexpected CUPTI record layout");
 _Static_assert(sizeof(struct xprobe_cupti_filter) == 144U,
                "unexpected CUPTI filter layout");
-_Static_assert(sizeof(struct xprobe_cupti_control_request) == 312U,
+_Static_assert(sizeof(struct xprobe_cupti_control_request) == 320U,
                "unexpected CUPTI control request layout");
 
 static struct xprobe_cupti_record *records;
@@ -911,7 +911,7 @@ unaligned:
 }
 
 static void initialize_output_header(struct xprobe_cupti_output_header *header,
-                                     uint64_t available)
+                                     uint64_t available, uint64_t record_offset)
 {
     memset(header, 0, sizeof(*header));
     memcpy(header->magic, XPROBE_CUPTI_OUTPUT_MAGIC, sizeof(header->magic));
@@ -926,7 +926,7 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
         (uint32_t)atomic_load_explicit(&capture_state, memory_order_acquire);
     header->stop_reason =
         (uint32_t)atomic_load_explicit(&stop_reason, memory_order_relaxed);
-    header->record_count = available;
+    header->record_count = available - record_offset;
     header->record_capacity = record_capacity;
     header->observed_records =
         atomic_load_explicit(&record_count, memory_order_relaxed);
@@ -936,9 +936,10 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
         atomic_load_explicit(&cupti_dropped_records, memory_order_relaxed);
     header->unknown_records =
         atomic_load_explicit(&unknown_records, memory_order_relaxed);
+    header->record_offset = record_offset;
 }
 
-static int write_capture(int descriptor, int is_socket)
+static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
 {
     struct xprobe_cupti_output_header header;
     uint64_t available =
@@ -947,11 +948,19 @@ static int write_capture(int descriptor, int is_socket)
         is_socket != 0 ? send_all : write_all;
     int result;
 
-    initialize_output_header(&header, available);
+    if (record_offset > available) {
+        fprintf(stderr,
+                "xprobe CUPTI: requested record offset %llu exceeds committed "
+                "record count %llu\n",
+                (unsigned long long)record_offset,
+                (unsigned long long)available);
+        return -1;
+    }
+    initialize_output_header(&header, available, record_offset);
     result = write_function(descriptor, &header, sizeof(header));
     if (result == 0) {
-        result = write_function(descriptor, records,
-                                available * sizeof(records[0]));
+        result = write_function(descriptor, records + record_offset,
+                                (available - record_offset) * sizeof(records[0]));
     }
     return result;
 }
@@ -968,7 +977,7 @@ static int write_output(void)
         remember_output_error();
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
-    result = write_capture(descriptor, 0);
+    result = write_capture(descriptor, 0, 0U);
     if (close(descriptor) != 0 && result == 0) {
         result = -1;
     }
@@ -1125,7 +1134,12 @@ static void *serve_snapshots(void *unused)
         } else {
             int command_status = XPROBE_CUPTI_AGENT_READY;
 
-            if (request.command == XPROBE_CUPTI_CONTROL_ARM) {
+            if (request.command == XPROBE_CUPTI_CONTROL_ARM &&
+                request.record_offset != 0U) {
+                fprintf(stderr,
+                        "xprobe CUPTI: ARM record offset must be zero\n");
+                command_status = XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+            } else if (request.command == XPROBE_CUPTI_CONTROL_ARM) {
                 command_status = arm_capture(&request);
             } else if (request.command == XPROBE_CUPTI_CONTROL_SNAPSHOT) {
                 if (atomic_load_explicit(&capture_state, memory_order_acquire) ==
@@ -1138,7 +1152,7 @@ static void *serve_snapshots(void *unused)
                     request.command == XPROBE_CUPTI_CONTROL_CLOSE;
             }
             (void)command_status;
-            if (write_capture(client, 1) != 0) {
+            if (write_capture(client, 1, request.record_offset) != 0) {
                 fprintf(stderr, "xprobe CUPTI: failed to send snapshot: %s\n",
                         strerror(errno));
             }

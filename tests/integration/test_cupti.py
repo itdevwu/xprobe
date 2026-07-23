@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 
-HEADER = struct.Struct("<8s6I6Q")
+HEADER = struct.Struct("<8s6I7Q")
 RECORD = struct.Struct("<Q16I128s")
 EXPECTED_ACTIVITY_COUNTS = {3: 3, 4: 3, 5: 3, 6: 3, 7: 1, 8: 1}
 EXPECTED_EVENT_TYPES = {
@@ -49,8 +49,8 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
     if len(data) < HEADER.size:
         raise AssertionError("CUPTI capture is shorter than its header")
     fields = HEADER.unpack_from(data)
-    if fields[1] != 2:
-        raise AssertionError(f"expected capture ABI 2, found {fields[1]}")
+    if fields[1] != 3:
+        raise AssertionError(f"expected capture ABI 3, found {fields[1]}")
     header = {
         "abi_version": fields[1],
         "header_size": fields[2],
@@ -64,9 +64,10 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         "agent_dropped_records": fields[10],
         "cupti_dropped_records": fields[11],
         "unknown_records": fields[12],
+        "record_offset": fields[13],
     }
     assert fields[0] == b"XPCUPTI\0"
-    assert header["abi_version"] == 2
+    assert header["abi_version"] == 3
     assert header["header_size"] == HEADER.size
     assert header["record_size"] == RECORD.size
     assert header["feature_flags"] in {2, 3}
@@ -283,6 +284,7 @@ def main() -> None:
     assert header["agent_dropped_records"] == 0
     assert header["cupti_dropped_records"] == 0
     assert header["unknown_records"] == 0
+    assert header["record_offset"] == 0
     assert bool(header["feature_flags"] & 1) is expect_aligned
     assert all(record["timestamp_ns"] > 0 for record in records)
     assert all(record["pid"] > 0 and record["tid"] > 0 for record in records)

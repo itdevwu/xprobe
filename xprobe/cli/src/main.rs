@@ -1208,6 +1208,7 @@ struct LiveCollection {
     collectors: HostCollectors,
     host_captures: Option<Vec<HostCaptureResult>>,
     latest_cuda: Option<cupti::CuptiCapture>,
+    cuda_record_offset: u64,
     managed_agent: bool,
     cupti_armed: bool,
     agent_injected: bool,
@@ -1421,6 +1422,7 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
         collectors,
         host_captures,
         latest_cuda: None,
+        cuda_record_offset: 0,
         managed_agent: activation.managed,
         cupti_armed: baseline.is_some(),
         agent_injected: activation.injected,
@@ -1473,7 +1475,7 @@ fn cleanup_failed_arm(
         .socket
         .as_deref()
         .expect("managed activation has a socket");
-    match cupti::close(path, request.timeout, &request.options.session_id) {
+    match cupti::close(path, request.timeout, &request.options.session_id, 0) {
         Ok(_) => Err(failure),
         Err(cleanup) => Err(CommandFailure::new(
             ErrorCode::CleanupFailed,
@@ -1801,16 +1803,26 @@ fn stop_cupti_agent(
         .expect("armed CUPTI agent has a socket");
     collection.cupti_armed = false;
     let capture = if collection.managed_agent {
-        cupti::close(socket, request.timeout, &request.options.session_id)
+        cupti::close(
+            socket,
+            request.timeout,
+            &request.options.session_id,
+            collection.cuda_record_offset,
+        )
     } else {
-        cupti::stop(socket, request.timeout, &request.options.session_id)
+        cupti::stop(
+            socket,
+            request.timeout,
+            &request.options.session_id,
+            collection.cuda_record_offset,
+        )
     }
     .map_err(|error| {
         CommandFailure::new(ErrorCode::CleanupFailed, error.to_string(), true)
             .with_detail("cleanup_phase", "stop_cupti")
             .with_hint("verify the target state before starting another measurement")
     })?;
-    collection.latest_cuda = Some(capture);
+    append_cuda_capture(collection, capture)?;
     collection.managed_agent = false;
     Ok(())
 }
@@ -1820,9 +1832,19 @@ impl Drop for LiveCollection {
         if self.cupti_armed {
             if let Some(socket) = self.socket.as_deref() {
                 let result = if self.managed_agent {
-                    cupti::close(socket, Duration::from_secs(2), "xp_cleanup")
+                    cupti::close(
+                        socket,
+                        Duration::from_secs(2),
+                        "xp_cleanup",
+                        self.cuda_record_offset,
+                    )
                 } else {
-                    cupti::stop(socket, Duration::from_secs(2), "xp_cleanup")
+                    cupti::stop(
+                        socket,
+                        Duration::from_secs(2),
+                        "xp_cleanup",
+                        self.cuda_record_offset,
+                    )
                 };
                 if let Err(error) = result {
                     eprintln!("xprobe: failed to stop CUPTI agent during cleanup: {error}");
@@ -1932,11 +1954,80 @@ fn refresh_live_sources(
         collection.collectors.cancel();
         return Ok(());
     }
-    collection.latest_cuda = Some(
-        cupti::snapshot(path, remaining, &request.options.session_id).map_err(|error| {
-            CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true)
-        })?,
-    );
+    let capture = cupti::snapshot(
+        path,
+        remaining,
+        &request.options.session_id,
+        collection.cuda_record_offset,
+    )
+    .map_err(|error| CommandFailure::new(ErrorCode::CuptiNotAvailable, error.to_string(), true))?;
+    append_cuda_capture(collection, capture)?;
+    Ok(())
+}
+
+fn append_cuda_capture(
+    collection: &mut LiveCollection,
+    mut capture: cupti::CuptiCapture,
+) -> Result<(), CommandFailure> {
+    if capture.record_offset != collection.cuda_record_offset {
+        return Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!(
+                "CUPTI incremental capture started at record {}, expected {}",
+                capture.record_offset, collection.cuda_record_offset
+            ),
+            false,
+        ));
+    }
+    let returned = u64::try_from(capture.events.len()).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!("CUPTI incremental event count exceeds u64: {error}"),
+            false,
+        )
+    })?;
+    let next_offset = capture.record_offset.checked_add(returned).ok_or_else(|| {
+        CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            "CUPTI incremental record offset overflowed",
+            false,
+        )
+    })?;
+    if let Some(accumulated) = collection.latest_cuda.as_mut() {
+        if accumulated.record_capacity != capture.record_capacity {
+            return Err(CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!(
+                    "CUPTI record capacity changed from {} to {} during capture",
+                    accumulated.record_capacity, capture.record_capacity
+                ),
+                false,
+            ));
+        }
+        if capture.observed_records < accumulated.observed_records
+            || capture.agent_dropped_records < accumulated.agent_dropped_records
+            || capture.cupti_dropped_records < accumulated.cupti_dropped_records
+            || capture.unknown_records < accumulated.unknown_records
+        {
+            return Err(CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                "CUPTI incremental counters moved backwards",
+                false,
+            ));
+        }
+        accumulated.state = capture.state;
+        accumulated.stop_reason = capture.stop_reason;
+        accumulated.observed_records = capture.observed_records;
+        accumulated.agent_dropped_records = capture.agent_dropped_records;
+        accumulated.cupti_dropped_records = capture.cupti_dropped_records;
+        accumulated.dropped_records = capture.dropped_records;
+        accumulated.unknown_records = capture.unknown_records;
+        accumulated.events.append(&mut capture.events);
+    } else {
+        capture.record_offset = 0;
+        collection.latest_cuda = Some(capture);
+    }
+    collection.cuda_record_offset = next_offset;
     Ok(())
 }
 
@@ -2496,7 +2587,7 @@ fn run_cupti(args: CuptiArgs) -> ExitCode {
         }
     } else {
         let socket = socket.expect("clap requires one CUPTI capture source");
-        match cupti::snapshot(&socket, Duration::from_millis(timeout_ms), &session_id) {
+        match cupti::snapshot(&socket, Duration::from_millis(timeout_ms), &session_id, 0) {
             Ok(capture) => capture,
             Err(error) => {
                 return emit_error(ErrorCode::TraceExportFailed, error.to_string(), true, json);

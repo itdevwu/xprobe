@@ -25,12 +25,14 @@ directions, and simple kernel-name exact/prefix/suffix/contains patterns are
 filtered before they consume capture capacity. Complex kernel regular
 expressions use a wider Agent filter and retain exact Rust-side matching.
 
-`SNAPSHOT` flushes pending activity and returns an immutable capture. `STOP`
-returns the final capture and disables CUPTI while retaining the socket, so a
-preloaded Agent can service a later bounded measurement. An automatically
-injected measurement uses `CLOSE`, which performs the same logical stop and
-then removes its private socket. In both cases the shared object remains mapped;
-it must not be passed to `dlclose` while CUDA may still reference callback code.
+`SNAPSHOT` flushes pending activity and returns records after the caller's
+checked record offset. The CLI accumulates only contiguous deltas rather than
+retransferring and decoding the growing capture. `STOP` returns the final delta
+and disables CUPTI while retaining the socket, so a preloaded Agent can service
+a later bounded measurement. An automatically injected measurement uses
+`CLOSE`, which performs the same logical stop and then removes its private
+socket. In both cases the shared object remains mapped; it must not be passed to
+`dlclose` while CUDA may still reference callback code.
 
 Activity records that began before the ARM epoch are excluded as a whole. This
 prevents CUPTI's boundary records, which can have an unavailable start
@@ -43,18 +45,19 @@ paths.
 
 ## Control and capture ABI
 
-Control version 2 uses one fixed 312-byte native-endian request defined by
+Control version 3 uses one fixed 320-byte native-endian request defined by
 `cupti/include/xprobe/cupti_agent.h`. It contains magic, version, command,
-record capacity, and two fixed endpoint filters. Commands are `ARM`,
-`SNAPSHOT`, `STOP`, and `CLOSE`. Every accepted command returns one capture
-followed by EOF.
+record capacity, record offset, and two fixed endpoint filters. Commands are
+`ARM`, `SNAPSHOT`, `STOP`, and `CLOSE`. ARM requires offset zero; later commands
+return records at or after the requested offset followed by EOF.
 
-Capture ABI v2 starts with an 80-byte header and zero or more 200-byte records.
+Capture ABI v3 starts with an 88-byte header and zero or more 200-byte records.
 The header reports capture state and stop reason, configured capacity, observed
 and retained counts, Agent and CUPTI drops, unknown activity, record sizes, and
-feature flags. Capacity comes from `--max-events`; there is no special 2^16
-limit. Reaching the configured limit freezes capture and causes measurement to
-fail explicitly instead of returning partial success.
+feature flags. It also reports the payload record offset so the caller can
+reject gaps, replays, and counter rollback. Capacity comes from `--max-events`;
+there is no special 2^16 limit. Reaching the configured limit freezes capture
+and causes measurement to fail explicitly instead of returning partial success.
 
 Records preserve process/thread, device/context/stream, correlation IDs,
 callback domain/ID, dimensions or transfer metadata, and one bounded name.
@@ -67,11 +70,13 @@ interpolation error bound, so normalized results emit
 
 ## Hot-path constraints
 
-The API callback reads time and fixed metadata and writes one preallocated
-record. Endpoint matching is bounded string/integer comparison. The path does
-not allocate, perform file or socket I/O, symbolize names, or take blocking
-locks. CUPTI activity buffer decoding is likewise bounded by the configured
-capture capacity; flushing and response I/O run on the control thread.
+ARM enables only activity families and Runtime/Driver callback IDs required by
+the validated endpoints. The API callback checks its fixed filter before
+reading time or constructing a record. Activity decoding checks event family,
+name, and transfer direction before copying fixed metadata, and stops
+converting records after the capture limit. These paths do not allocate,
+perform file or socket I/O, symbolize names, or take blocking locks. Flushing
+and incremental response I/O run on the control thread.
 
 ## Verification
 
