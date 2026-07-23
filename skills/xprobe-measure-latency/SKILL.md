@@ -15,7 +15,7 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
 
 ## Workflow
 
-1. Run `xprobe --version`. When the command is absent or not 0.3.2, read
+1. Run `xprobe --version`. When the command is absent or not 0.3.3, read
    [references/setup.md](references/setup.md) and install or repair the CLI
    yourself; do not ask the user to perform a separate CLI installation.
    Confirm every JSON response has `schema_version: "2.0"`; do not assume a

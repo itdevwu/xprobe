@@ -143,7 +143,7 @@ def check_skill(workspace: pathlib.Path) -> None:
     ):
         assert required in normalized_trace_analysis
     for required in (
-        "v0.3.2/install.sh",
+        "v0.3.3/install.sh",
         "npx skills@1 add",
         "xprobe --version",
         "xprobe doctor",
