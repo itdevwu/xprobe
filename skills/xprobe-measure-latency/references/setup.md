@@ -36,6 +36,41 @@ PATH, permission, driver, CUDA, or CUPTI failures explicitly and adjust from the
 reported detail; do not continue to measurement on an unverified installation.
 The CLI needs no Node.js. CUDA is optional until a GPU selector is measured.
 
+## Build locally when the release is unsuitable
+
+The `glibc 2.34` requirement applies to the precompiled release archive. When
+that archive cannot run on the host, build the matching source locally with the
+host glibc instead. This is a local-use fallback, not permission to weaken the
+release package's `GLIBC_2.34` ceiling.
+
+```bash
+git clone --depth 1 --branch v0.3.2 https://github.com/itdevwu/xprobe.git
+cd xprobe
+mamba env create --file environment.yml
+mamba run -n xprobe-dev just build
+export PATH="$PWD/target/debug:$PATH"
+xprobe --version
+xprobe doctor --json --non-interactive --no-color
+```
+
+For CPU-only work, this build is sufficient; no CUDA toolkit or CUPTI Agent is
+required. Do not use `scripts/package-release.sh` for this path because it
+enforces the distributable archive compatibility policy.
+
+For GPU or mixed work, build one local Agent against the target's CUDA 12 or
+CUDA 13 toolkit, then point the CLI at it:
+
+```bash
+mamba run -n xprobe-dev env CUDA_PATH=/opt/cuda-12 cmake -S . -B build/cuda12 -G Ninja \
+  -DXPROBE_BUILD_BPF=ON -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=12
+mamba run -n xprobe-dev cmake --build build/cuda12 --target xprobe-bpf xprobe-cupti
+export XPROBE_CUPTI_AGENT_PATH="$PWD/build/cuda12/cupti/libxprobe-cupti.so"
+```
+
+Replace `12` and the toolkit path with `13` for CUDA 13. CUDA/CUPTI majors other
+than 12 or 13 are not supported: do not force an Agent build or bypass the
+version check.
+
 ## Repair the Skill only when needed
 
 The user normally installed this Skill before invoking the agent. When its files
