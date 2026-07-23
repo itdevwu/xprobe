@@ -143,6 +143,13 @@ capacity, or activity accounting:
 just benchmark-aggregate
 ```
 
+Run the concurrent worker benchmark after changing multi-process Skill guidance
+or per-worker orchestration:
+
+```bash
+just benchmark-multiprocess
+```
+
 See `docs/agent-integration.md` and `docs/benchmarks.md` for the tested contract
 and benchmark interpretation.
 

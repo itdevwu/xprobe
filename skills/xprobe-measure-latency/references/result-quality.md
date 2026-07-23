@@ -31,6 +31,13 @@ for wall-clock busy time and `overlap_factor` to quantify concurrency. Compare
 per-stream gaps separately. A top kernel's `summed_kernel_time_share` describes
 its share of summed kernel work, not its exclusive share of wall time.
 
+For multi-process captures, keep every result and artifact scoped to its PID
+plus process start time. Compare worker summaries only after checking individual
+quality and workload alignment. Do not merge Event JSONL files for correlation:
+timestamp overlap, matching names, or matching correlation IDs across processes
+does not establish causality. Preserve partial command failures instead of
+silently reporting only successful workers.
+
 ## Bounds and completion
 
 `completed` means either requested samples or duration was reached. `timed_out`

@@ -25,3 +25,4 @@ jobs:
       - run: just test-multisource-live
       - run: just benchmark-gpu
       - run: just benchmark-aggregate
+      - run: just benchmark-multiprocess

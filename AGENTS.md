@@ -73,4 +73,5 @@
 - Run `just benchmark-gpu` for callback hot-path changes.
 - Run `just benchmark-aggregate` for aggregate inventory hot-path or capacity
   changes.
+- Run `just benchmark-multiprocess` for concurrent worker orchestration changes.
 - Use emoji conventional commits, for example `🐛 fix: restore target registers`.
