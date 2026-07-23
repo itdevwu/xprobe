@@ -19,6 +19,7 @@ static EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use xprobe_collector::{
     completed, cupti,
+    linux::{self, LinuxCaptureRequest},
     uprobe::{self, UprobeRequest},
 };
 use xprobe_core::{cupti_compat, discover, doctor, inject, inspect, resolve, validate};
@@ -30,8 +31,8 @@ use xprobe_protocol::{
     CheckResult, ClockDomain, CuptiCollectionSummary, DiscoveryResult, ErrorCode, ErrorResponse,
     Event, EventSource, EventType, ExportFormat, HostCaptureResult, MatchPolicy, MeasurementMode,
     MeasurementResult, MeasurementSpec, MemcpyKind, ProcessReport, ResolvedCudaSelector,
-    ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity, TraceExportResult,
-    ValidationResult, Warning, XprobeError,
+    ResolvedLinuxSelector, ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity,
+    TraceExportResult, ValidationResult, Warning, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -1304,7 +1305,7 @@ struct LiveMeasureRequest {
     options: MeasureOptions,
 }
 
-type HostCaptureHandle = JoinHandle<Result<HostCaptureResult, uprobe::UprobeError>>;
+type HostCaptureHandle = JoinHandle<Result<HostCaptureResult, CommandFailure>>;
 const SNAPSHOT_QUIET_PERIOD: Duration = Duration::from_millis(100);
 
 struct HostCollectors {
@@ -1327,9 +1328,7 @@ impl HostCollectors {
             let result = handle.join().map_err(|_| {
                 CommandFailure::new(ErrorCode::Internal, "host collector thread panicked", false)
             })?;
-            captures.push(result.map_err(|error| {
-                CommandFailure::new(error.code(), error.to_string(), error.recoverable())
-            })?);
+            captures.push(result?);
         }
         Ok(captures)
     }
@@ -2137,19 +2136,27 @@ fn start_host_collectors(
     validation: &ValidationResult,
     request: &LiveMeasureRequest,
 ) -> Result<HostCollectors, CommandFailure> {
+    inspect::verify_target(&report.target).map_err(|error| {
+        CommandFailure::new(error.code(), error.to_string(), error.recoverable())
+    })?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let mut probes = Vec::new();
+    let mut linux_probes = Vec::new();
     for endpoint in [&validation.start, &validation.end] {
-        let Some(probe) = endpoint.host.as_ref() else {
-            continue;
-        };
-        if probes
-            .iter()
-            .any(|existing: &ResolvedProbe| existing.selector == probe.selector)
+        if let Some(probe) = endpoint.host.as_ref()
+            && !probes
+                .iter()
+                .any(|existing: &ResolvedProbe| existing.selector == probe.selector)
         {
-            continue;
+            probes.push(probe.clone());
         }
-        probes.push(probe.clone());
+        if let Some(probe) = endpoint.linux.as_ref()
+            && !linux_probes
+                .iter()
+                .any(|existing: &ResolvedLinuxSelector| existing == probe)
+        {
+            linux_probes.push(probe.clone());
+        }
     }
     let host_timeout = request
         .options
@@ -2159,8 +2166,8 @@ fn start_host_collectors(
         .options
         .samples
         .unwrap_or(request.options.max_events);
-    let mut receivers = Vec::with_capacity(probes.len());
-    let handles = probes
+    let mut receivers = Vec::with_capacity(probes.len() + usize::from(!linux_probes.is_empty()));
+    let mut handles = probes
         .into_iter()
         .enumerate()
         .map(|(index, probe)| {
@@ -2183,12 +2190,66 @@ fn start_host_collectors(
                 cancelled: Arc::clone(&cancelled),
                 ready: Some(ready),
             };
-            thread::spawn(move || uprobe::capture(&capture_request))
+            thread::spawn(move || {
+                uprobe::capture(&capture_request).map_err(|error| {
+                    CommandFailure::new(error.code(), error.to_string(), error.recoverable())
+                })
+            })
         })
-        .collect();
+        .collect::<Vec<_>>();
+    if !linux_probes.is_empty() {
+        let (ready, receiver) = mpsc::sync_channel(1);
+        receivers.push(receiver);
+        let endpoint_count = linux_probes.len();
+        let event_limit = linux_capture_event_limit(&request.options, endpoint_count);
+        let capture_request = LinuxCaptureRequest {
+            target: report.target.clone(),
+            probes: linux_probes,
+            event_limit,
+            capacity_limit: request.options.samples.is_none(),
+            timeout: host_timeout,
+            cancelled: Arc::clone(&cancelled),
+            ready: Some(ready),
+        };
+        handles.push(thread::spawn(move || {
+            linux::capture(&capture_request).map_err(|error| {
+                CommandFailure::new(error.code(), error.to_string(), error.recoverable())
+            })
+        }));
+    }
     let mut collectors = HostCollectors { cancelled, handles };
+    wait_for_host_collectors(&mut collectors, receivers, request.timeout)?;
+    if let Err(error) = inspect::verify_target(&report.target) {
+        collectors.cancel();
+        collectors.join()?;
+        return Err(CommandFailure::new(
+            error.code(),
+            error.to_string(),
+            error.recoverable(),
+        ));
+    }
+    Ok(collectors)
+}
+
+fn linux_capture_event_limit(options: &MeasureOptions, endpoint_count: usize) -> usize {
+    options
+        .samples
+        .and_then(|samples| {
+            samples
+                .checked_mul(endpoint_count)
+                .and_then(|events| events.checked_add(endpoint_count))
+        })
+        .unwrap_or(options.max_events)
+        .min(options.max_events)
+}
+
+fn wait_for_host_collectors(
+    collectors: &mut HostCollectors,
+    receivers: Vec<mpsc::Receiver<()>>,
+    timeout: Duration,
+) -> Result<(), CommandFailure> {
     for receiver in receivers {
-        match receiver.recv_timeout(request.timeout) {
+        match receiver.recv_timeout(timeout) {
             Ok(()) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 collectors.cancel();
@@ -2212,7 +2273,7 @@ fn start_host_collectors(
             }
         }
     }
-    Ok(collectors)
+    Ok(())
 }
 
 fn refresh_live_sources(
@@ -2739,7 +2800,7 @@ fn completed_live_capture(
         .map(|capture| completed::CompletedCapture {
             dropped_records: capture.dropped,
             unknown_records: 0,
-            record_limit_reached: None,
+            record_limit_reached: capture.record_limit_reached.then_some(capture.captured),
             capture_failed: false,
             cupti: None,
             events: capture.events.clone(),
@@ -2828,7 +2889,7 @@ fn reject_incomplete_capture(
     if let Some(capacity) = capture.record_limit_reached {
         let mut failure = CommandFailure::new(
             ErrorCode::EventRateTooHigh,
-            format!("CUPTI capture reached its configured limit of {capacity} records"),
+            format!("capture reached its configured limit of {capacity} records"),
             true,
         )
         .with_detail("record_capacity", capacity)

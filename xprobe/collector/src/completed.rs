@@ -130,7 +130,7 @@ fn decode_json(bytes: &[u8]) -> Result<CompletedCapture, CompletedCaptureError> 
         return Ok(CompletedCapture {
             dropped_records: capture.dropped,
             unknown_records: 0,
-            record_limit_reached: None,
+            record_limit_reached: capture.record_limit_reached.then_some(capture.captured),
             capture_failed: false,
             cupti: None,
             events: capture.events,
@@ -289,6 +289,7 @@ mod tests {
             captured: 1,
             dropped: 3,
             timed_out: false,
+            record_limit_reached: false,
             events: vec![event(12, 20)],
         };
         let input = serde_json::to_vec_pretty(&capture).unwrap();

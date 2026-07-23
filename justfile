@@ -41,6 +41,7 @@ test-bpf:
 
 test-bpf-live: build
     python3 tests/integration/test_uprobe.py "{{cuda_smoke_image}}"
+    python3 tests/integration/test_linux.py "{{cuda_smoke_image}}"
 
 test-cupti:
     cmake -S . -B build -G Ninja -DXPROBE_BUILD_CUPTI=ON

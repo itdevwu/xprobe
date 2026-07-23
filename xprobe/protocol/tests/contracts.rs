@@ -59,6 +59,7 @@ fn host_capture_contract_round_trips() {
         "captured": 1,
         "dropped": 0,
         "timed_out": false,
+        "record_limit_reached": false,
         "events": [{
             "schema_version": "2.0",
             "session_id": "xp_uprobe_1234_1000",
