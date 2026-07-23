@@ -36,10 +36,13 @@
 ## Agent workflow
 
 - Follow `skills/xprobe-measure-latency/SKILL.md` for measurement tasks.
-- For an unknown workload, progress from readiness and baseline through a broad,
-  representative bounded inventory, evidence-based selector narrowing,
-  validation, and one detailed bounded measurement per stated hypothesis. Scope
-  breadth and capture duration are independent. Do not guess selectors.
+- Classify a workload as CPU-only or GPU/mixed before choosing collectors.
+  `discover` is only for CUDA context holders; CPU-only work proceeds with its
+  selected PID and host selectors. For GPU/mixed work, progress from readiness
+  and baseline through a broad, representative bounded inventory,
+  evidence-based selector narrowing, validation, and one detailed bounded
+  measurement per stated hypothesis. Scope breadth and capture duration are
+  independent. Do not guess selectors.
 - Read evidence pairs, artifact analysis, stream identity, collection quality,
   and profiler overhead before interpreting latency. Summed concurrent GPU
   duration is not wall time.

@@ -20,25 +20,32 @@ CLI and selector syntax is in [references/cli-contract.md](references/cli-contra
    yourself; do not ask the user to perform a separate CLI installation.
    Confirm every JSON response has `schema_version: "2.0"`; do not assume a
    pre-0.3 or future protocol is compatible with this Skill.
-2. Establish an application-level latency baseline. Wait for process readiness,
-   CUDA context creation, JIT compilation, and warmup before discovery. Keep a
-   repeatable request or batch trigger ready for the measurement window.
+2. Establish an application-level latency baseline, process readiness, and
+   warmup. Classify the workload before selecting collectors: for CPU-only work,
+   choose the owning PID and skip CUDA discovery; for GPU or mixed work, wait
+   for CUDA context creation and JIT warmup before discovery. Keep a repeatable
+   request or batch trigger ready for the measurement window.
 3. Run `xprobe doctor --json --non-interactive --no-color`. Check individual
    capabilities; `ok: true` only means diagnosis completed.
-4. Run `xprobe discover --pid ROOT_PID --limit 200 --json --non-interactive
-   --no-color`. It returns NVML-confirmed CUDA context holders under that process
-   tree. Choose a worker from workload, PID/start-time, command line, and GPU
-   UUID evidence. Measure workers separately when several ranks are relevant.
-5. Map the workload before choosing a name. Validate broad kernel, memcpy, or
-   memset activity endpoints, then collect one bounded, representative coarse
-   inventory per event family with `--events-out`. Scope breadth and collection
-   duration are independent: keep the selector broad, but choose a duration that
+4. For GPU or mixed work, run `xprobe discover --pid ROOT_PID --limit 200 --json
+   --non-interactive --no-color`. It returns NVML-confirmed CUDA context holders
+   under that process tree. Choose a worker from workload, PID/start-time,
+   command line, and GPU UUID evidence. Measure workers separately when several
+   ranks are relevant. For CPU-only work, do not run `discover`; continue with
+   the selected process PID.
+5. Map GPU or mixed work before choosing a name. Validate broad kernel, memcpy,
+   or memset activity endpoints, then collect one bounded, representative coarse
+   inventory per event family with `--events-out`. For CPU-only work, resolve and
+   validate the intended host-function boundary directly; do not require CUDA or
+   CUPTI. Scope breadth and collection duration are independent: keep the
+   selector broad where an activity inventory exists, but choose a duration that
    covers the workload cycle being diagnosed. Give `--max-events` headroom.
-6. Run `scripts/analyze_trace.py` on each coarse artifact. Use kernel names,
-   selector hints, duration aggregates, launch variants, stream distribution,
-   busy union, overlap factor, and adjacent gaps to form one narrow hypothesis. Read
+6. For GPU artifacts, run `scripts/analyze_trace.py`. Use kernel names, selector
+   hints, duration aggregates, launch variants, stream distribution, busy union,
+   overlap factor, and adjacent gaps to form one narrow hypothesis. Read
    [references/trace-analysis.md](references/trace-analysis.md) when interpreting
-   the report.
+   the report. For CPU-only work, use resolved host selectors and result evidence
+   to form the hypothesis instead.
 7. Run `xprobe validate --pid WORKER_PID --from SELECTOR --to SELECTOR --match
    POLICY --json --non-interactive --no-color`. Stop when `valid` is false. If
    `agent_activation` is `injection_required`, disclose that `measure` will

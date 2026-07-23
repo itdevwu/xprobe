@@ -74,6 +74,9 @@ def check_skill(workspace: pathlib.Path) -> None:
         assert quality_field in normalized_skill
     for investigation_step in (
         "application-level latency baseline",
+        "CPU-only",
+        "GPU or mixed",
+        "do not run `discover`",
         "representative coarse inventory",
         "Scope breadth and collection duration are independent",
         "scripts/analyze_trace.py",
@@ -112,6 +115,7 @@ def check_skill(workspace: pathlib.Path) -> None:
     normalized_investigation = re.sub(r"\s+", " ", investigation)
     normalized_quality = re.sub(r"\s+", " ", quality)
     normalized_trace_analysis = re.sub(r"\s+", " ", trace_analysis)
+    normalized_setup = re.sub(r"\s+", " ", setup)
     for required in (
         "Triton",
         "procfs start time",
@@ -143,8 +147,11 @@ def check_skill(workspace: pathlib.Path) -> None:
         "npx skills@1 add",
         "xprobe --version",
         "xprobe doctor",
+        "host glibc",
+        "CUDA/CUPTI majors other than 12 or 13 are not supported",
+        "scripts/package-release.sh",
     ):
-        assert required in setup
+        assert required in normalized_setup
 
     engineering_rules = re.sub(
         r"\s+", " ", (workspace / "AGENTS.md").read_text()
