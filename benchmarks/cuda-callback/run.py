@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 
-HEADER = struct.Struct("<8s6I6Q")
+HEADER = struct.Struct("<8s6I7Q")
 RECORD = struct.Struct("<Q16I128s")
 PRECISION_KERNEL = "xprobe_precision_kernel"
 TARGET_RATE_KERNEL = "xprobe_target_rate_kernel"
@@ -32,9 +32,10 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
         "agent_dropped_records": fields[10],
         "cupti_dropped_records": fields[11],
         "unknown_records": fields[12],
+        "record_offset": fields[13],
     }
     assert fields[0] == b"XPCUPTI\0", header
-    assert header["abi_version"] == 2, header
+    assert header["abi_version"] == 3, header
     assert header["header_size"] == HEADER.size, header
     assert header["record_size"] == RECORD.size, header
     assert len(data) == HEADER.size + header["record_count"] * RECORD.size, header
@@ -122,6 +123,7 @@ def main() -> None:
     assert header["agent_dropped_records"] == 0, header
     assert header["cupti_dropped_records"] == 0, header
     assert header["unknown_records"] == 0, header
+    assert header["record_offset"] == 0, header
 
     cupti_ns = precision_duration(records)
     reference_ns = instrumented["precision_cuda_event_ns"]
