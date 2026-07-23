@@ -53,7 +53,10 @@ handling remain in the caller, and event correlation never crosses processes.
 Host selector resolution converts ELF virtual addresses through load segments
 to file offsets, then through `/proc/<pid>/maps` to runtime addresses. This
 supports executables, PIE, and shared libraries without assuming that a mapping
-base is a symbol address.
+base is a symbol address. Raw ELF names are matched without demangling the
+symbol table. A full C++ signature uses the explicit `symbol=` selector form;
+the resolver checks exported dynamic symbols first, falls back to the complete
+table, and returns both the attachable mangled name and readable signature.
 
 ## Validation
 

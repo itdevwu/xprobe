@@ -561,6 +561,13 @@
             "string",
             "null"
           ]
+        },
+        "symbol_demangled": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,

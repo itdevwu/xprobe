@@ -176,11 +176,15 @@ impl Selector {
                 ));
             }
         };
-        let (binary_path, target) = binary_and_target.rsplit_once(':').ok_or_else(|| {
-            MeasureError::InvalidSelector(
-                "uprobe selector requires a binary path and symbol or offset".to_owned(),
-            )
-        })?;
+        let (binary_path, target) = if let Some(parts) = binary_and_target.split_once(":symbol=") {
+            parts
+        } else {
+            binary_and_target.rsplit_once(':').ok_or_else(|| {
+                MeasureError::InvalidSelector(
+                    "uprobe selector requires a binary path and symbol or offset".to_owned(),
+                )
+            })?
+        };
         if binary_path.is_empty() || target.is_empty() {
             return Err(MeasureError::InvalidSelector(
                 "uprobe binary path and target must not be empty".to_owned(),
@@ -365,6 +369,7 @@ impl Selector {
                             && match target {
                                 HostTarget::Symbol(symbol) => {
                                     host.symbol.as_deref() == Some(symbol.as_str())
+                                        || host.symbol_demangled.as_deref() == Some(symbol.as_str())
                                 }
                                 HostTarget::Offset(offset) => host.offset == Some(*offset),
                             }
@@ -1279,6 +1284,7 @@ mod tests {
             binary_path: Some("/srv/libserver.so".to_owned()),
             build_id: None,
             symbol: Some("handle_request".to_owned()),
+            symbol_demangled: None,
             offset: None,
             return_value: None,
             arguments: Vec::new(),
@@ -1298,6 +1304,7 @@ mod tests {
             binary_path: None,
             build_id: None,
             symbol: Some(name.to_owned()),
+            symbol_demangled: None,
             offset: None,
             return_value: (event.event_type == EventType::SyscallExit).then_some(0),
             arguments: Vec::new(),
@@ -1567,6 +1574,32 @@ mod tests {
         assert_eq!(result.measurement.latency_ns.max, 100);
         assert_eq!(result.correlation.method, "stack_nested_tid_lifo");
         assert_eq!(result.correlation.confidence, CorrelationConfidence::High);
+    }
+
+    #[test]
+    fn demangled_cpp_selectors_match_mangled_host_events() {
+        let mut entry = host_event(100);
+        entry.host.as_mut().unwrap().symbol =
+            Some("_ZN14xprobe_fixture15native_operatorEl".to_owned());
+        entry.host.as_mut().unwrap().symbol_demangled =
+            Some("xprobe_fixture::native_operator(long)".to_owned());
+        let mut exit = entry.clone();
+        exit.timestamp_raw = 160;
+        exit.timestamp_ns = 160;
+        exit.event_type = EventType::HostFunctionExit;
+        exit.host.as_mut().unwrap().probe_kind = HostProbeKind::Uretprobe;
+        let mut options = options(MatchPolicy::StackNested);
+        options.start_selector =
+            "uprobe:/srv/libserver.so:symbol=xprobe_fixture::native_operator(long):entry"
+                .to_owned();
+        options.end_selector =
+            "uprobe:/srv/libserver.so:symbol=xprobe_fixture::native_operator(long):return"
+                .to_owned();
+        options.samples = Some(1);
+
+        let result = measure(&[entry, exit], &options).unwrap();
+        assert_eq!(result.measurement.samples.matched, 1);
+        assert_eq!(result.measurement.latency_ns.min, 60);
     }
 
     #[test]

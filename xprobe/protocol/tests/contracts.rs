@@ -39,6 +39,7 @@ fn event_contract_round_trips() {
             "binary_path": "/srv/app",
             "build_id": null,
             "symbol": "handle_request",
+            "symbol_demangled": null,
             "offset": 4096,
             "return_value": null,
             "arguments": []
@@ -80,6 +81,7 @@ fn host_capture_contract_round_trips() {
                 "binary_path": "/srv/app",
                 "build_id": null,
                 "symbol": "handle_request",
+                "symbol_demangled": null,
                 "offset": null,
                 "return_value": null,
                 "arguments": []
@@ -337,6 +339,7 @@ fn resolved_probe_contract_round_trips() {
         "object_kind": "shared_library",
         "probe_kind": "uprobe",
         "symbol": "handle_request",
+        "symbol_demangled": null,
         "symbol_virtual_address": 8192,
         "symbol_size": 32,
         "file_offset": 8192,

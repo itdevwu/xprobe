@@ -46,6 +46,12 @@
         "null"
       ]
     },
+    "symbol_demangled": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "symbol_size": {
       "type": [
         "integer",

@@ -1059,6 +1059,7 @@ mod tests {
                     object_kind: ElfObjectKind::Executable,
                     probe_kind,
                     symbol: Some("work".to_owned()),
+                    symbol_demangled: None,
                     symbol_virtual_address: Some(0x1000),
                     symbol_size: Some(16),
                     file_offset: 0x1000,

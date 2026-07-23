@@ -205,7 +205,7 @@ struct ResolveArgs {
     #[arg(long)]
     pid: u32,
 
-    /// Event selector: uprobe:<binary>:<symbol|+0xoffset>:<entry|return>.
+    /// Event selector for a mapped ELF symbol, C++ signature, or file offset.
     #[arg(long, alias = "event")]
     selector: String,
 
@@ -2182,6 +2182,7 @@ fn start_host_collectors(
                 target: report.target.clone(),
                 binary: PathBuf::from(&probe.binary_path),
                 symbol: probe.symbol,
+                symbol_demangled: probe.symbol_demangled,
                 offset,
                 probe_kind: probe.probe_kind,
                 probe_id: u32::try_from(index + 1).expect("two endpoints fit u32"),
@@ -3168,6 +3169,7 @@ fn run_uprobe(args: UprobeArgs) -> ExitCode {
         target: report.target.clone(),
         binary,
         symbol: Some(symbol),
+        symbol_demangled: None,
         offset: 0,
         probe_kind: if return_probe {
             xprobe_protocol::HostProbeKind::Uretprobe
@@ -3489,6 +3491,9 @@ fn print_resolved_probe(resolved: &ResolvedProbe) {
     println!("Probe: {:?}", resolved.probe_kind);
     if let Some(symbol) = &resolved.symbol {
         println!("Symbol: {symbol}");
+    }
+    if let Some(symbol) = &resolved.symbol_demangled {
+        println!("Demangled: {symbol}");
     }
     println!("File offset: {:#x}", resolved.file_offset);
     println!("Runtime address: {:#x}", resolved.runtime_address);
