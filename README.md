@@ -14,33 +14,23 @@ in a process, on the CPU, NVIDIA GPU, or across both. Its bounded native profile
 combines eBPF uprobes and NVIDIA CUPTI with an agent-friendly CLI, strict JSON
 contracts, explicit correlation quality, and no daemon or server lifecycle.
 
-## Install xprobe
+## Install
 
-```bash
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.3.1/install.sh | sh
-```
-
-This installs the released CLI and CUDA 12/13 Agents under `~/.local`. xprobe
-supports Linux x86_64 with glibc 2.34 or newer. NVIDIA CUDA is optional unless
-GPU events are selected. See [Installation](docs/installation.md) for checksum
-verification, custom prefixes, upgrades, and removal.
-
-## Install the Agent Skill
-
-Install the version-matched Skill with the open Agent Skills CLI:
+Install the version-matched Skill with the open Agent Skills CLI. This is the
+only installation action required from the user:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.3.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.3.2/skills/xprobe-measure-latency \
   --global
 ```
 
 The installer detects Codex, Claude Code, Cursor, and other compatible agents.
-Node.js is only needed for this Skill installation, not for xprobe itself. Set
-`DISABLE_TELEMETRY=1` when anonymous `skills` CLI telemetry is not wanted.
-The Skill guides a short survey, derives selectors from trace evidence, and
-includes a deterministic multi-stream JSONL analyzer.
+When invoked, the Skill checks for the matching `xprobe` CLI and installs or
+repairs it under a writable prefix before profiling. It can then diagnose and
+adjust path, permission, NVIDIA, CUDA, or CUPTI problems from live evidence.
+Node.js is only needed for Skill installation, not for xprobe itself. See
+[Installation](docs/installation.md) for direct CLI use and archive verification.
 
 ## Measure
 
@@ -93,7 +83,7 @@ for safe reactivation.
 
 ## Support
 
-| Surface | 0.3.1 support |
+| Surface | 0.3.2 support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.34 or newer |
 | Host events | ELF function entry/return through PID-scoped uprobes |

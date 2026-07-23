@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "serde_json",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-collector"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "libbpf-rs",
  "serde_json",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "nix",
  "object",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-correlator"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "regex",
  "serde_json",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-exporter"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde_json",
  "xprobe-protocol",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-protocol"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "schemars",
  "serde",

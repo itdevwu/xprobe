@@ -1,6 +1,6 @@
 # CLI contract
 
-xprobe 0.3.1 exposes exactly four public commands: `doctor`, `discover`,
+xprobe 0.3.2 exposes exactly four public commands: `doctor`, `discover`,
 `validate`, and `measure`.
 
 ## Common behavior

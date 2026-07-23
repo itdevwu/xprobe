@@ -1,0 +1,15 @@
+{
+  "schema_version": "2.0",
+  "name": "coarse_kernel_inventory",
+  "target": {
+    "pid": 1234,
+    "process_start_time": 987654
+  },
+  "start_selector": "cuda:kernel_start",
+  "end_selector": "cuda:kernel_end",
+  "match_policy": "exact",
+  "samples": null,
+  "duration_ms": 1000,
+  "timeout_ms": 30000,
+  "max_events": 200000
+}

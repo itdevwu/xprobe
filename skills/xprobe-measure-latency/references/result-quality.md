@@ -42,9 +42,10 @@ max_events >= minimum_records + expected_unmatched_records
 ```
 
 Use at least 2x headroom for stable narrow selectors and 4-10x for high-rate or
-broad surveys. For a duration survey, size from a pilot artifact's observed
-records per second. Increasing max-events without narrowing a noisy selector
-only increases profiler work.
+broad inventories. For a duration inventory, size from a pilot artifact's
+observed records per second. Keep enough duration to cover a representative
+cycle; increasing max-events without narrowing a noisy selector only increases
+profiler work.
 
 `duration-ms` limits correlation to a window beginning at the first selected
 event. In live mode it also sets a collection stop from ARM completion, so finish

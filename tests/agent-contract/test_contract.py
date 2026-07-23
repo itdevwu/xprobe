@@ -74,7 +74,8 @@ def check_skill(workspace: pathlib.Path) -> None:
         assert quality_field in normalized_skill
     for investigation_step in (
         "application-level latency baseline",
-        "short duration-bounded survey",
+        "representative coarse inventory",
+        "Scope breadth and collection duration are independent",
         "scripts/analyze_trace.py",
         "selector hints",
         "busy union",
@@ -107,6 +108,7 @@ def check_skill(workspace: pathlib.Path) -> None:
     investigation = (skill_root / "references/investigation.md").read_text()
     quality = (skill_root / "references/result-quality.md").read_text()
     trace_analysis = (skill_root / "references/trace-analysis.md").read_text()
+    setup = (skill_root / "references/setup.md").read_text()
     normalized_investigation = re.sub(r"\s+", " ", investigation)
     normalized_quality = re.sub(r"\s+", " ", quality)
     normalized_trace_analysis = re.sub(r"\s+", " ", trace_analysis)
@@ -116,6 +118,8 @@ def check_skill(workspace: pathlib.Path) -> None:
         "EVENT_RATE_TOO_HIGH",
         "readelf -Ws",
         "NO_MATCHED_SAMPLES",
+        "representative cycle",
+        "concrete Runtime or Driver API name",
     ):
         assert required in normalized_investigation
     for required in (
@@ -131,8 +135,16 @@ def check_skill(workspace: pathlib.Path) -> None:
         "summed_activity_ns",
         "launch_variants",
         "Cross-stream",
+        "distinct capture windows",
     ):
         assert required in normalized_trace_analysis
+    for required in (
+        "v0.3.2/install.sh",
+        "npx skills@1 add",
+        "xprobe --version",
+        "xprobe doctor",
+    ):
+        assert required in setup
 
     engineering_rules = re.sub(
         r"\s+", " ", (workspace / "AGENTS.md").read_text()
