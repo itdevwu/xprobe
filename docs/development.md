@@ -136,6 +136,13 @@ CUPTI timing or callback hot path:
 just benchmark-gpu
 ```
 
+Run the high-rate bounded-inventory benchmark after changing aggregate storage,
+capacity, or activity accounting:
+
+```bash
+just benchmark-aggregate
+```
+
 See `docs/agent-integration.md` and `docs/benchmarks.md` for the tested contract
 and benchmark interpretation.
 

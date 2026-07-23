@@ -559,19 +559,14 @@ static int aggregate_key_matches(
 
 static int atomic_add_checked(_Atomic uint64_t *value, uint64_t addend)
 {
-    uint64_t current = atomic_load_explicit(value, memory_order_relaxed);
+    uint64_t previous =
+        atomic_fetch_add_explicit(value, addend, memory_order_relaxed);
 
-    for (;;) {
-        if (UINT64_MAX - current < addend) {
-            remember_output_error();
-            return 0;
-        }
-        if (atomic_compare_exchange_weak_explicit(
-                value, &current, current + addend, memory_order_relaxed,
-                memory_order_relaxed)) {
-            return 1;
-        }
+    if (UINT64_MAX - previous < addend) {
+        remember_output_error();
+        return 0;
     }
+    return 1;
 }
 
 static void atomic_min(_Atomic uint64_t *value, uint64_t candidate)
@@ -600,7 +595,7 @@ static void update_aggregate_slot(struct xprobe_cupti_aggregate_slot *slot,
                                   uint64_t duration_ns, uint64_t bytes)
 {
     if (atomic_add_checked(&slot->total_duration_ns, duration_ns) == 0 ||
-        atomic_add_checked(&slot->total_bytes, bytes) == 0 ||
+        (bytes != 0U && atomic_add_checked(&slot->total_bytes, bytes) == 0) ||
         atomic_add_checked(&slot->count, 1U) == 0) {
         return;
     }
@@ -623,7 +618,6 @@ static void aggregate_activity(uint32_t kind, uint32_t device_id,
         remember_output_error();
         return;
     }
-    atomic_fetch_add_explicit(&record_count, 1U, memory_order_relaxed);
     hash = aggregate_hash(kind, device_id, memcpy_kind, name);
     first = hash % record_capacity;
     for (uint64_t probe = 0U; probe < record_capacity; ++probe) {
@@ -1126,9 +1120,36 @@ unaligned:
     return 0;
 }
 
+static uint64_t aggregate_observed_records(void)
+{
+    uint64_t observed = 0U;
+
+    for (uint64_t index = 0U; index < record_capacity; ++index) {
+        const struct xprobe_cupti_aggregate_slot *slot = &aggregate_slots[index];
+        uint64_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
+        uint64_t count;
+
+        if (state < 2U) {
+            continue;
+        }
+        count = atomic_load_explicit(&slot->count, memory_order_relaxed);
+        if (UINT64_MAX - observed < count) {
+            remember_output_error();
+            return UINT64_MAX;
+        }
+        observed += count;
+    }
+    return observed;
+}
+
 static void initialize_output_header(struct xprobe_cupti_output_header *header,
                                      uint64_t available, uint64_t record_offset)
 {
+    uint64_t observed =
+        capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE
+            ? aggregate_observed_records()
+            : atomic_load_explicit(&record_count, memory_order_relaxed);
+
     memset(header, 0, sizeof(*header));
     memcpy(header->magic, XPROBE_CUPTI_OUTPUT_MAGIC, sizeof(header->magic));
     header->abi_version = XPROBE_CUPTI_AGENT_ABI_VERSION;
@@ -1146,8 +1167,7 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
         (uint32_t)atomic_load_explicit(&stop_reason, memory_order_relaxed);
     header->record_count = available - record_offset;
     header->record_capacity = record_capacity;
-    header->observed_records =
-        atomic_load_explicit(&record_count, memory_order_relaxed);
+    header->observed_records = observed;
     header->agent_dropped_records =
         atomic_load_explicit(&agent_dropped_records, memory_order_relaxed);
     header->cupti_dropped_records =

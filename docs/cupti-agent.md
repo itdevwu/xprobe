@@ -97,4 +97,6 @@ test-injection-live` performs first-load and reactivation measurements against
 one mapped Agent. `just test-multisource-live` covers host/GPU orchestration and
 repeated ARM/STOP windows. CUDA 12 variants exercise the same paths against the
 other linked major, and `just benchmark-gpu` checks callback overhead and
-timestamp precision.
+timestamp precision. `just benchmark-aggregate` drives a high-rate two-kernel
+workload and compares bounded aggregation with raw broad capture for collection
+completeness, process resources, and artifact size.
