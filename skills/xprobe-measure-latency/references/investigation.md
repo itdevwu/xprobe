@@ -71,8 +71,11 @@ regex metacharacters and validate the final selector.
 For Triton and other JIT kernels, use captured names plus grid/block variants to
 identify a launch family, then correlate it with framework cache metadata,
 generated source, or application logs. xprobe does not read JIT cache contents
-and cannot select by grid/block. Long mangled names should be narrowed to a
-short, observed-unique literal instead of copied wholesale.
+and cannot select by grid/block. Use each aggregate group's emitted selector
+hint directly. A `name_complete: false` group contains a bounded observed prefix
+and therefore emits a prefix hint; do not add an exact end anchor. When a hint
+still covers several groups, derive a shorter observed-unique prefix or
+contains literal and validate it before collection.
 
 ## Derive CPU selectors
 

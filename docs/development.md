@@ -79,6 +79,14 @@ BPF container:
 PYTORCH_ENV=/path/to/env just test-pytorch-live
 ```
 
+With a CUDA-enabled PyTorch environment, run eager matrix multiplication,
+convolution, compiled Triton, bidirectional transfer, selected-kernel, and
+stream-synchronization profiling on the local GPU:
+
+```bash
+PYTORCH_ENV=/path/to/env just test-pytorch-cuda-live
+```
+
 ## GPU checks
 
 Run host diagnostics outside restricted sandboxes when GPU device access is

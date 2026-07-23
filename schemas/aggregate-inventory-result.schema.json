@@ -172,6 +172,12 @@
             "null"
           ]
         },
+        "name_complete": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "start_selector_hint": {
           "type": "string"
         },

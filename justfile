@@ -75,6 +75,9 @@ test-pytorch-symbols: build
 test-pytorch-live: build
     python3 tests/integration/test_pytorch.py "{{cuda_smoke_image}}" "${PYTORCH_ENV:?set PYTORCH_ENV to a Mamba environment with torch}"
 
+test-pytorch-cuda-live: build
+    python3 tests/integration/test_pytorch_cuda.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV:?set PYTORCH_ENV to a Mamba environment with torch}"
+
 benchmark-gpu:
     python3 benchmarks/cuda-callback/run.py "{{cuda13_devel_image}}"
 

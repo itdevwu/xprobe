@@ -103,7 +103,10 @@ Broad GPU inventory uses the same `measure` primitive with aggregate mode. The
 Agent updates a `--max-groups`-bounded table for matching kernel, memcpy, or
 memset activity and returns only final count/duration/byte summaries. Exact
 measurement remains the evidence path; aggregate output has a separate result
-contract and cannot be exported as event JSONL.
+contract and cannot be exported as event JSONL. Kernel names are retained as
+fixed 127-byte observed prefixes. Complete names produce exact selector hints;
+a full name buffer is marked incomplete and produces a prefix hint that remains
+filterable before event reservation.
 
 CUPTI activity timestamps are normalized to `CLOCK_MONOTONIC` through its
 timestamp callback or an explicit CUDA 12 clock calibration. Activity that

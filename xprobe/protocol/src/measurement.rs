@@ -188,6 +188,7 @@ pub struct AggregateInventory {
 pub struct AggregateGroup {
     pub activity: AggregateActivity,
     pub name: Option<String>,
+    pub name_complete: Option<bool>,
     pub device_id: Option<u32>,
     pub memcpy_kind: Option<crate::MemcpyKind>,
     pub start_selector_hint: String,

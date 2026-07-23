@@ -195,6 +195,7 @@ fn aggregate_inventory_contract_round_trips() {
             "groups": [{
                 "activity": "kernel",
                 "name": "vector_add",
+                "name_complete": true,
                 "device_id": 0,
                 "memcpy_kind": null,
                 "start_selector_hint": "cuda:kernel_start:name~^vector_add$",
