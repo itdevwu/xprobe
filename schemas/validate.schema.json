@@ -63,7 +63,8 @@
       "enum": [
         "not_required",
         "already_loaded",
-        "injection_required"
+        "injection_required",
+        "startup_required"
       ]
     },
     "ElfObjectKind": {
@@ -126,6 +127,8 @@
         "gpu_memcpy_end",
         "gpu_memset_start",
         "gpu_memset_end",
+        "nvtx_range_start",
+        "nvtx_range_end",
         "marker"
       ]
     },
@@ -253,6 +256,13 @@
               "type": "null"
             }
           ]
+        },
+        "nvtx_name_regex": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,
@@ -494,6 +504,10 @@
         },
         "needs_ebpf": {
           "type": "boolean"
+        },
+        "needs_nvtx": {
+          "type": "boolean",
+          "default": false
         },
         "target_mutation": {
           "type": "boolean"

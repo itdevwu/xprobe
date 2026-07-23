@@ -31,6 +31,7 @@ fn exports_event_jsonl_as_chrome_trace() {
         process_start_time: None,
         host: None,
         cuda: None,
+        nvtx: None,
         attributes: BTreeMap::new(),
     };
     fs::write(

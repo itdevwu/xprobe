@@ -19,6 +19,7 @@ pub enum AgentActivation {
     NotRequired,
     AlreadyLoaded,
     InjectionRequired,
+    StartupRequired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -28,6 +29,8 @@ pub struct ResolvedCudaSelector {
     pub api_domain: Option<String>,
     pub api_name: Option<String>,
     pub kernel_name_regex: Option<String>,
+    #[serde(default)]
+    pub nvtx_name_regex: Option<String>,
     pub memcpy_kind: Option<MemcpyKind>,
 }
 
@@ -61,6 +64,8 @@ pub struct ValidationRequirements {
     pub needs_cupti: bool,
     pub needs_cupti_callback: bool,
     pub needs_cupti_activity: bool,
+    #[serde(default)]
+    pub needs_nvtx: bool,
     pub needs_clock_alignment: bool,
     pub agent_activation: AgentActivation,
     pub target_mutation: bool,

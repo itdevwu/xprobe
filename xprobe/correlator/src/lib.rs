@@ -6,8 +6,8 @@ use regex::Regex;
 use xprobe_protocol::{
     CaptureCompleteness, ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence,
     CorrelationSummary, ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics,
-    MatchPolicy, MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, SampleSummary,
-    SchemaVersion, SessionStatus, Warning,
+    MatchPolicy, MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, NvtxRangeKind,
+    SampleSummary, SchemaVersion, SessionStatus, Warning,
 };
 
 #[derive(Debug, Clone)]
@@ -121,6 +121,11 @@ enum Selector {
     Memset {
         event_type: EventType,
     },
+    Nvtx {
+        event_type: EventType,
+        name: Regex,
+        pattern: String,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -152,6 +157,7 @@ impl Selector {
             "kernel_start" | "kernel_end" => Self::parse_kernel(&fields),
             "memcpy_start" | "memcpy_end" => Self::parse_memcpy(&fields),
             "memset_start" | "memset_end" => Self::parse_memset(text, &fields),
+            "nvtx_range_start" | "nvtx_range_end" => Self::parse_nvtx(&fields),
             event => Err(MeasureError::InvalidSelector(format!(
                 "event {event:?} is not present in completed CUPTI captures"
             ))),
@@ -354,6 +360,39 @@ impl Selector {
         Ok(Self::Memset { event_type })
     }
 
+    fn parse_nvtx(fields: &[&str]) -> Result<Self, MeasureError> {
+        let event_type = match fields[1] {
+            "nvtx_range_start" => EventType::NvtxRangeStart,
+            "nvtx_range_end" => EventType::NvtxRangeEnd,
+            _ => unreachable!("NVTX parser only receives NVTX range selectors"),
+        };
+        let Some(filter) = fields.get(2) else {
+            return Err(MeasureError::InvalidSelector(
+                "NVTX range selector requires name~<bounded-regular-expression>".to_owned(),
+            ));
+        };
+        let pattern = filter.strip_prefix("name~").ok_or_else(|| {
+            MeasureError::InvalidSelector(
+                "NVTX range filter must use name~<bounded-regular-expression>".to_owned(),
+            )
+        })?;
+        if !is_bounded_name_regex(pattern) {
+            return Err(MeasureError::InvalidSelector(
+                "NVTX range name must reduce to one nonempty exact, prefix, suffix, or contains filter shorter than 128 bytes".to_owned(),
+            ));
+        }
+        let name = Regex::new(pattern).map_err(|error| {
+            MeasureError::InvalidSelector(format!(
+                "invalid NVTX range name regular expression: {error}"
+            ))
+        })?;
+        Ok(Self::Nvtx {
+            event_type,
+            name,
+            pattern: pattern.to_owned(),
+        })
+    }
+
     fn matches(&self, event: &Event) -> bool {
         match self {
             Self::Host {
@@ -432,6 +471,15 @@ impl Selector {
                     })
             }
             Self::Memset { event_type } => event.event_type == *event_type,
+            Self::Nvtx {
+                event_type, name, ..
+            } => {
+                event.event_type == *event_type
+                    && event
+                        .nvtx
+                        .as_ref()
+                        .is_some_and(|nvtx| name.is_match(&nvtx.name))
+            }
         }
     }
 
@@ -447,8 +495,20 @@ impl Selector {
                     name: end_name,
                 },
             ) => start_name == end_name,
-            (Self::Host { .. } | Self::Tracepoint { .. }, _)
-            | (_, Self::Host { .. } | Self::Tracepoint { .. }) => false,
+            (
+                Self::Nvtx {
+                    event_type: EventType::NvtxRangeStart,
+                    pattern: start_pattern,
+                    ..
+                },
+                Self::Nvtx {
+                    event_type: EventType::NvtxRangeEnd,
+                    pattern: end_pattern,
+                    ..
+                },
+            ) => start_pattern == end_pattern,
+            (Self::Host { .. } | Self::Tracepoint { .. } | Self::Nvtx { .. }, _)
+            | (_, Self::Host { .. } | Self::Tracepoint { .. } | Self::Nvtx { .. }) => false,
             _ => true,
         }
     }
@@ -466,6 +526,24 @@ impl Selector {
                     name: end_name,
                 },
             ) if start_name == end_name
+        )
+    }
+
+    fn is_nvtx_lifecycle(&self, end: &Self) -> bool {
+        matches!(
+            (self, end),
+            (
+                Self::Nvtx {
+                    event_type: EventType::NvtxRangeStart,
+                    pattern: start_pattern,
+                    ..
+                },
+                Self::Nvtx {
+                    event_type: EventType::NvtxRangeEnd,
+                    pattern: end_pattern,
+                    ..
+                },
+            ) if start_pattern == end_pattern
         )
     }
 
@@ -495,6 +573,45 @@ impl Selector {
             Self::Kernel { .. } | Self::Memcpy { .. } | Self::Memset { .. }
         )
     }
+}
+
+fn is_bounded_name_regex(pattern: &str) -> bool {
+    const CANDIDATES: [(&str, &str); 8] = [
+        ("^", "$"),
+        ("^", ".*"),
+        (".*", "$"),
+        (".*", ".*"),
+        ("^", ""),
+        ("", "$"),
+        (".*", ""),
+        ("", ""),
+    ];
+    CANDIDATES.iter().any(|(prefix, suffix)| {
+        pattern
+            .strip_prefix(prefix)
+            .and_then(|value| value.strip_suffix(suffix))
+            .and_then(regex_literal)
+            .is_some_and(|literal| !literal.is_empty() && literal.len() < 128)
+    })
+}
+
+fn regex_literal(pattern: &str) -> Option<String> {
+    let mut literal = String::with_capacity(pattern.len());
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            let escaped = characters.next()?;
+            if escaped.is_ascii_alphanumeric() {
+                return None;
+            }
+            literal.push(escaped);
+        } else if ".+*?()|[]{}^$".contains(character) {
+            return None;
+        } else {
+            literal.push(character);
+        }
+    }
+    Some(literal)
 }
 
 fn valid_linux_component(value: &str) -> bool {
@@ -558,6 +675,7 @@ pub fn measure(
     apply_duration_window(&mut starts, &mut ends, options.duration)?;
 
     let syscall_lifecycle = start_selector.is_syscall_lifecycle(&end_selector);
+    let nvtx_lifecycle = start_selector.is_nvtx_lifecycle(&end_selector);
     let outcome = correlate_selected(
         &starts,
         &ends,
@@ -576,14 +694,11 @@ pub fn measure(
         .map(|pair| pair.latency_ns)
         .collect::<Vec<_>>();
     let denominator = matched + outcome.unmatched_start + outcome.unmatched_end + outcome.ambiguous;
-    let (method, confidence) = correlation_metadata(options.match_policy, syscall_lifecycle);
+    let (method, confidence) =
+        correlation_metadata(options.match_policy, syscall_lifecycle, nvtx_lifecycle);
     let warnings = measurement_warnings(options, &starts, &ends);
 
-    let host_events = events
-        .iter()
-        .filter(|event| event.source == EventSource::Ebpf)
-        .count() as u64;
-    let cuda_events = events.len() as u64 - host_events;
+    let (host_events, cuda_events) = collection_event_counts(events);
     Ok(MeasurementResult {
         schema_version: SchemaVersion::current(),
         ok: true,
@@ -634,6 +749,14 @@ pub fn measure(
     })
 }
 
+fn collection_event_counts(events: &[Event]) -> (u64, u64) {
+    let host = events
+        .iter()
+        .filter(|event| event.source == EventSource::Ebpf)
+        .count() as u64;
+    (host, events.len() as u64 - host)
+}
+
 fn correlate_selected<'a>(
     starts: &[&'a Event],
     ends: &[&'a Event],
@@ -677,10 +800,14 @@ fn validate_policy(
 const fn correlation_metadata(
     policy: MatchPolicy,
     syscall_lifecycle: bool,
+    nvtx_lifecycle: bool,
 ) -> (&'static str, CorrelationConfidence) {
     match policy {
         MatchPolicy::Exact if syscall_lifecycle => {
             ("exact_syscall_tid_lifecycle", CorrelationConfidence::Exact)
+        }
+        MatchPolicy::Exact if nvtx_lifecycle => {
+            ("exact_nvtx_range_id", CorrelationConfidence::Exact)
         }
         MatchPolicy::Exact => ("exact_cupti_correlation_id", CorrelationConfidence::Exact),
         MatchPolicy::FirstAfter => ("first_after", CorrelationConfidence::Heuristic),
@@ -1136,11 +1263,34 @@ fn group_by_stream<'a>(
     unmatched
 }
 
-type CorrelationKey = (u32, u32, u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CorrelationKey {
+    Cuda {
+        pid: u32,
+        context_id: u32,
+        correlation_id: u32,
+    },
+    Nvtx {
+        pid: u32,
+        range_kind: NvtxRangeKind,
+        range_id: u64,
+    },
+}
 
 fn correlation_key(event: &Event) -> Option<CorrelationKey> {
+    if let Some(nvtx) = event.nvtx.as_ref() {
+        return Some(CorrelationKey::Nvtx {
+            pid: event.pid,
+            range_kind: nvtx.range_kind,
+            range_id: nvtx.range_id,
+        });
+    }
     let cuda = event.cuda.as_ref()?;
-    Some((event.pid, cuda.context_id?, cuda.correlation_id?))
+    Some(CorrelationKey::Cuda {
+        pid: event.pid,
+        context_id: cuda.context_id?,
+        correlation_id: cuda.correlation_id?,
+    })
 }
 
 fn statistics(values: &[u64]) -> LatencyStatistics {
@@ -1203,7 +1353,7 @@ mod tests {
 
     use xprobe_protocol::{
         ClockDomain, CorrelationConfidence, CudaEvent, Event, EventSource, EventType, HostEvent,
-        HostProbeKind, MatchPolicy, MemcpyKind, SchemaVersion,
+        HostProbeKind, MatchPolicy, MemcpyKind, NvtxEvent, NvtxRangeKind, SchemaVersion,
     };
 
     use super::{MeasureError, MeasureOptions, measure};
@@ -1242,8 +1392,32 @@ mod tests {
                 bytes: None,
                 memcpy_kind: None,
             }),
+            nvtx: None,
             attributes: BTreeMap::new(),
         }
+    }
+
+    fn nvtx_event(
+        event_type: EventType,
+        timestamp: u64,
+        tid: u32,
+        range_kind: NvtxRangeKind,
+        range_id: u64,
+        start_tid: u32,
+    ) -> Event {
+        let mut event = event(event_type, timestamp, 0);
+        event.source = EventSource::CuptiCallback;
+        event.clock_domain = ClockDomain::HostMonotonic;
+        event.tid = tid;
+        event.cuda = None;
+        event.nvtx = Some(NvtxEvent {
+            name: "forward".to_owned(),
+            name_complete: true,
+            range_kind,
+            range_id,
+            start_tid,
+        });
+        event
     }
 
     fn options(policy: MatchPolicy) -> MeasureOptions {
@@ -1370,6 +1544,63 @@ mod tests {
         assert_eq!(result.correlation.confidence, CorrelationConfidence::Exact);
         assert_eq!(result.evidence[0].start.tid, 10);
         assert_eq!(result.evidence[0].end.tid, 10);
+    }
+
+    #[test]
+    fn exact_nvtx_matching_uses_kind_and_range_id() {
+        let events = vec![
+            nvtx_event(
+                EventType::NvtxRangeStart,
+                100,
+                10,
+                NvtxRangeKind::Thread,
+                7,
+                10,
+            ),
+            nvtx_event(
+                EventType::NvtxRangeStart,
+                110,
+                20,
+                NvtxRangeKind::Process,
+                7,
+                20,
+            ),
+            nvtx_event(
+                EventType::NvtxRangeEnd,
+                160,
+                30,
+                NvtxRangeKind::Process,
+                7,
+                20,
+            ),
+            nvtx_event(
+                EventType::NvtxRangeEnd,
+                180,
+                10,
+                NvtxRangeKind::Thread,
+                7,
+                10,
+            ),
+        ];
+        let options = MeasureOptions {
+            session_id: "xp_nvtx".to_owned(),
+            name: Some("forward".to_owned()),
+            start_selector: "cuda:nvtx_range_start:name~^forward$".to_owned(),
+            end_selector: "cuda:nvtx_range_end:name~^forward$".to_owned(),
+            match_policy: MatchPolicy::Exact,
+            samples: Some(2),
+            duration: None,
+            max_events: 100,
+            dropped_events: 0,
+        };
+
+        let result = measure(&events, &options).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 50);
+        assert_eq!(result.measurement.latency_ns.max, 80);
+        assert_eq!(result.correlation.method, "exact_nvtx_range_id");
+        assert_eq!(result.evidence[0].end.tid, 10);
+        assert_eq!(result.evidence[1].end.tid, 30);
     }
 
     #[test]

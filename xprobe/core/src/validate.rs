@@ -88,11 +88,12 @@ enum EndpointKind {
     Kernel,
     Memcpy,
     Memset,
+    NvtxRange { name_regex: String },
 }
 
 impl EndpointKind {
     const fn needs_callback(&self) -> bool {
-        matches!(self, Self::CudaApi { .. })
+        matches!(self, Self::CudaApi { .. } | Self::NvtxRange { .. })
     }
 
     const fn needs_activity(&self) -> bool {
@@ -119,7 +120,12 @@ impl EndpointKind {
                 | Self::SyscallExit { .. }
                 | Self::Tracepoint
                 | Self::CudaApi { .. }
+                | Self::NvtxRange { .. }
         )
+    }
+
+    const fn needs_nvtx(&self) -> bool {
+        matches!(self, Self::NvtxRange { .. })
     }
 }
 
@@ -151,12 +157,15 @@ pub fn run(
     let needs_ebpf = start.kind.is_host() || end.kind.is_host();
     let needs_cupti_callback = start.kind.needs_callback() || end.kind.needs_callback();
     let needs_cupti_activity = start.kind.needs_activity() || end.kind.needs_activity();
+    let needs_nvtx = start.kind.needs_nvtx() || end.kind.needs_nvtx();
     let needs_cupti = needs_cupti_callback || needs_cupti_activity;
     let needs_clock_alignment = start.kind.uses_host_clock() != end.kind.uses_host_clock();
     let agent_activation = if !needs_cupti {
         AgentActivation::NotRequired
     } else if report.cuda.xprobe_cupti_loaded {
         AgentActivation::AlreadyLoaded
+    } else if needs_nvtx {
+        AgentActivation::StartupRequired
     } else {
         AgentActivation::InjectionRequired
     };
@@ -165,6 +174,7 @@ pub fn run(
         needs_cupti,
         needs_cupti_callback,
         needs_cupti_activity,
+        needs_nvtx,
         needs_clock_alignment,
         agent_activation,
         target_mutation: agent_activation == AgentActivation::InjectionRequired,
@@ -514,6 +524,7 @@ fn parse_cuda_selector(
         "kernel_start" | "kernel_end" => parse_kernel_selector(&fields),
         "memcpy_start" | "memcpy_end" => parse_memcpy_selector(&fields),
         "memset_start" | "memset_end" => parse_memset_selector(selector, &fields),
+        "nvtx_range_start" | "nvtx_range_end" => parse_nvtx_selector(&fields),
         "runtime_api" | "driver_api" => parse_api_selector(selector),
         event => Err(ValidateError::InvalidSelector(format!(
             "unsupported CUDA event {event:?}"
@@ -556,6 +567,7 @@ fn parse_kernel_selector(
             api_domain: None,
             api_name: None,
             kernel_name_regex,
+            nvtx_name_regex: None,
             memcpy_kind: None,
         },
         EndpointKind::Kernel,
@@ -599,6 +611,7 @@ fn parse_memcpy_selector(
             api_domain: None,
             api_name: None,
             kernel_name_regex: None,
+            nvtx_name_regex: None,
             memcpy_kind,
         },
         EndpointKind::Memcpy,
@@ -626,11 +639,95 @@ fn parse_memset_selector(
             api_domain: None,
             api_name: None,
             kernel_name_regex: None,
+            nvtx_name_regex: None,
             memcpy_kind: None,
         },
         EndpointKind::Memset,
         true,
     ))
+}
+
+fn parse_nvtx_selector(
+    fields: &[&str],
+) -> Result<(ResolvedCudaSelector, EndpointKind, bool), ValidateError> {
+    let event_type = match fields[1] {
+        "nvtx_range_start" => EventType::NvtxRangeStart,
+        "nvtx_range_end" => EventType::NvtxRangeEnd,
+        _ => unreachable!("NVTX parser only receives NVTX range events"),
+    };
+    let Some(filter) = fields.get(2) else {
+        return Err(ValidateError::InvalidSelector(
+            "NVTX range selector requires name~<bounded-regular-expression>".to_owned(),
+        ));
+    };
+    let pattern = filter.strip_prefix("name~").ok_or_else(|| {
+        ValidateError::InvalidSelector(
+            "NVTX range filter must use name~<bounded-regular-expression>".to_owned(),
+        )
+    })?;
+    Regex::new(pattern).map_err(|error| {
+        ValidateError::InvalidSelector(format!(
+            "invalid NVTX range name regular expression: {error}"
+        ))
+    })?;
+    if !is_bounded_name_regex(pattern) {
+        return Err(ValidateError::InvalidSelector(
+            "NVTX range name must reduce to one nonempty exact, prefix, suffix, or contains filter shorter than 128 bytes".to_owned(),
+        ));
+    }
+    Ok((
+        ResolvedCudaSelector {
+            event_type,
+            api_domain: None,
+            api_name: None,
+            kernel_name_regex: None,
+            nvtx_name_regex: Some(pattern.to_owned()),
+            memcpy_kind: None,
+        },
+        EndpointKind::NvtxRange {
+            name_regex: pattern.to_owned(),
+        },
+        true,
+    ))
+}
+
+fn is_bounded_name_regex(pattern: &str) -> bool {
+    const CANDIDATES: [(&str, &str); 8] = [
+        ("^", "$"),
+        ("^", ".*"),
+        (".*", "$"),
+        (".*", ".*"),
+        ("^", ""),
+        ("", "$"),
+        (".*", ""),
+        ("", ""),
+    ];
+    CANDIDATES.iter().any(|(prefix, suffix)| {
+        pattern
+            .strip_prefix(prefix)
+            .and_then(|value| value.strip_suffix(suffix))
+            .and_then(regex_literal)
+            .is_some_and(|literal| !literal.is_empty() && literal.len() < 128)
+    })
+}
+
+fn regex_literal(pattern: &str) -> Option<String> {
+    let mut literal = String::with_capacity(pattern.len());
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            let escaped = characters.next()?;
+            if escaped.is_ascii_alphanumeric() {
+                return None;
+            }
+            literal.push(escaped);
+        } else if ".+*?()|[]{}^$".contains(character) {
+            return None;
+        } else {
+            literal.push(character);
+        }
+    }
+    Some(literal)
 }
 
 fn parse_api_selector(
@@ -661,6 +758,7 @@ fn parse_api_selector(
             api_domain: Some(domain.clone()),
             api_name: Some(name.clone()),
             kernel_name_regex: None,
+            nvtx_name_regex: None,
             memcpy_kind: None,
         },
         EndpointKind::CudaApi { domain, name },
@@ -725,12 +823,21 @@ fn check_capabilities(
             ));
         }
     }
-    if requirements.agent_activation == AgentActivation::InjectionRequired {
-        warnings.push(warning(
+    match requirements.agent_activation {
+        AgentActivation::InjectionRequired => warnings.push(warning(
             "TARGET_PROCESS_WILL_BE_MODIFIED",
             "measure must inject the xprobe CUPTI agent into the target process",
-        ));
-    } else {
+        )),
+        AgentActivation::StartupRequired => issues.push(issue(
+            ErrorCode::CuptiAgentNotLoaded,
+            "NVTX ranges cannot be enabled by online attach after NVTX initialization; restart the target with NVTX_INJECTION64_PATH set to the xprobe CUPTI agent".to_owned(),
+        )),
+        AgentActivation::NotRequired | AgentActivation::AlreadyLoaded => {}
+    }
+    if matches!(
+        requirements.agent_activation,
+        AgentActivation::NotRequired | AgentActivation::AlreadyLoaded
+    ) {
         if requirements.needs_cupti_callback && !report.capabilities.cuda_callback {
             issues.push(issue(
                 ErrorCode::CuptiNotAvailable,
@@ -798,6 +905,14 @@ fn supports_exact(start: &EndpointKind, end: &EndpointKind) -> bool {
         | (EndpointKind::Memcpy, EndpointKind::Memcpy)
         | (EndpointKind::Memset, EndpointKind::Memset) => true,
         (
+            EndpointKind::NvtxRange {
+                name_regex: start_name,
+            },
+            EndpointKind::NvtxRange {
+                name_regex: end_name,
+            },
+        )
+        | (
             EndpointKind::SyscallEntry { name: start_name },
             EndpointKind::SyscallExit { name: end_name },
         ) => start_name == end_name,
@@ -896,6 +1011,12 @@ mod tests {
         let (memset, _, collectable) = parse_cuda_selector("cuda:memset_start").unwrap();
         assert_eq!(memset.event_type, EventType::GpuMemsetStart);
         assert!(collectable);
+
+        let (nvtx, _, collectable) =
+            parse_cuda_selector("cuda:nvtx_range_start:name~^forward$").unwrap();
+        assert_eq!(nvtx.event_type, EventType::NvtxRangeStart);
+        assert_eq!(nvtx.nvtx_name_regex.as_deref(), Some("^forward$"));
+        assert!(collectable);
         assert_eq!(
             parse_match_policy("first-after").unwrap(),
             MatchPolicy::FirstAfter
@@ -906,6 +1027,8 @@ mod tests {
     fn rejects_invalid_filters_and_policies() {
         assert!(parse_cuda_selector("cuda:kernel_start:name~[").is_err());
         assert!(parse_cuda_selector("cuda:memcpy_start:kind=sideways").is_err());
+        assert!(parse_cuda_selector("cuda:nvtx_range_start").is_err());
+        assert!(parse_cuda_selector("cuda:nvtx_range_start:name~(forward|backward)").is_err());
         assert!(parse_match_policy("probably-near").is_err());
     }
 
@@ -1036,6 +1159,33 @@ mod tests {
         assert!(!result.requirements.target_mutation);
         assert!(!result.requirements.needs_clock_alignment);
         assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn reports_nvtx_startup_requirement_before_agent_is_loaded() {
+        let report = inspect::run(std::process::id()).unwrap();
+        let result = run(
+            &report,
+            "cuda:nvtx_range_start:name~^forward$",
+            "cuda:nvtx_range_end:name~^forward$",
+            "exact",
+        )
+        .unwrap();
+
+        assert!(!result.valid);
+        assert!(result.requirements.needs_nvtx);
+        assert_eq!(
+            result.requirements.agent_activation,
+            AgentActivation::StartupRequired
+        );
+        assert!(!result.requirements.target_mutation);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.code == xprobe_protocol::ErrorCode::CuptiAgentNotLoaded)
+        );
+        assert_eq!(result.policy_recommendation.policy, MatchPolicy::Exact);
     }
 
     #[test]

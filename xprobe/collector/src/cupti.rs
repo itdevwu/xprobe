@@ -817,6 +817,7 @@ fn decode_record(
             bytes: is_transfer.then(|| read_split_u64(record, 44)),
             memcpy_kind: is_memcpy.then(|| decode_memcpy_kind(read_u32(record, 52))),
         }),
+        nvtx: None,
         attributes,
     })
 }

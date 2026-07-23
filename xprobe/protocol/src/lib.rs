@@ -21,7 +21,7 @@ pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{
     ArgumentValue, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, HostEvent,
-    HostProbeKind, MemcpyKind,
+    HostProbeKind, MemcpyKind, NvtxEvent, NvtxRangeKind,
 };
 pub use export::{ExportFormat, TraceExportResult};
 pub use measurement::{

@@ -45,6 +45,7 @@ fn event_contract_round_trips() {
             "arguments": []
         },
         "cuda": null,
+        "nvtx": null,
         "attributes": {}
     }));
 }
@@ -87,6 +88,7 @@ fn host_capture_contract_round_trips() {
                 "arguments": []
             },
             "cuda": null,
+            "nvtx": null,
             "attributes": {}
         }]
     }));
@@ -372,6 +374,7 @@ fn validation_result_contract_round_trips() {
                 "api_domain": "runtime_api",
                 "api_name": "cudaLaunchKernel",
                 "kernel_name_regex": null,
+                "nvtx_name_regex": null,
                 "memcpy_kind": null
             }
         },
@@ -387,6 +390,7 @@ fn validation_result_contract_round_trips() {
                 "api_domain": null,
                 "api_name": null,
                 "kernel_name_regex": "flash.*",
+                "nvtx_name_regex": null,
                 "memcpy_kind": null
             }
         },
@@ -401,6 +405,7 @@ fn validation_result_contract_round_trips() {
             "needs_cupti": true,
             "needs_cupti_callback": true,
             "needs_cupti_activity": true,
+            "needs_nvtx": false,
             "needs_clock_alignment": true,
             "agent_activation": "injection_required",
             "target_mutation": true

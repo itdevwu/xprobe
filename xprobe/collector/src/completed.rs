@@ -259,6 +259,7 @@ mod tests {
             process_start_time: Some(10),
             host: None,
             cuda: None,
+            nvtx: None,
             attributes: BTreeMap::new(),
         }
     }
