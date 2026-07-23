@@ -33,7 +33,7 @@ attachment, collection, correlation, logical CUPTI shutdown, and cleanup.
 | `xprobe/collector` | eBPF collection, CUPTI control protocol and ABI decoding |
 | `xprobe/correlator` | Selector matching, pair evidence, statistics and quality |
 | `xprobe/exporter` | Event JSONL and Chrome Trace Event Format |
-| `bpf/` | PID-scoped uprobe/uretprobe programs |
+| `bpf/` | PID-scoped uprobe, syscall, and named tracepoint programs |
 | `cupti/` | Reusable in-process CUDA callback/activity agent |
 
 ## Identity and discovery
@@ -57,9 +57,10 @@ base is a symbol address.
 
 ## Validation
 
-`validate` is read-only. It resolves host selectors, parses CUDA selectors,
-checks correlation-policy compatibility, and reports eBPF, CUPTI, callback,
-activity, and clock requirements. CUPTI activation is one of:
+`validate` is read-only. It resolves ELF probes and Linux syscall numbers,
+parses named tracepoint and CUDA selectors, checks correlation-policy
+compatibility, and reports eBPF, CUPTI, callback, activity, and clock
+requirements. CUPTI activation is one of:
 
 - `not_required`
 - `already_loaded`
@@ -72,10 +73,20 @@ required host collection remain explicit issues or errors.
 
 ## Collection
 
-Host events use libbpf-rs with one PID-scoped uprobe or uretprobe per unique
-host endpoint. The BPF path only filters identity, records monotonic timestamps
-and CPU/TID, updates bounded counters, and submits fixed records. Rust ownership
-detaches links on every return path.
+Host events use libbpf-rs. ELF functions attach one PID-scoped uprobe or
+uretprobe per unique endpoint. Linux syscall endpoints share raw
+`sys_enter`/`sys_exit` links and compare up to two configured x86_64 syscall
+numbers after PID-namespace filtering. Only matching entries read the six
+scalar ABI registers; exits retain the scalar return value. Pointer-referenced
+memory is never read.
+
+Named tracepoints attach by category and name and retain timestamp, PID/TID,
+CPU, and selector identity without copying payload fields. The two endpoint
+links are armed together after attachment, so setup events cannot enter the
+capture. Linux records use a `--max-events`-sized ring buffer and fixed record
+layout. Ring exhaustion, scalar-read failure, malformed records, and
+duration-capacity exhaustion remain explicit failures. Rust ownership detaches
+all links on every return path.
 
 CUDA events use an in-process CUPTI Agent. CUDA 12 and CUDA 13 builds share the
 same source and capture ABI but link their matching CUPTI SONAME. Loading the
@@ -126,7 +137,7 @@ All sources normalize into the versioned `Event` type. `measure` supports:
 
 | Policy | Pairing | Confidence |
 | --- | --- | --- |
-| `exact` | CUPTI correlation ID | exact |
+| `exact` | CUPTI correlation ID or same-thread syscall lifecycle | exact |
 | `first-after` | First unused end at or after each start | heuristic |
 | `nearest` | Nearest unused end by timestamp | heuristic |
 | `stack-nested` | Per-thread LIFO host entry/return | high |
@@ -140,7 +151,7 @@ CUPTI event without a reported interpolation bound makes
 
 ## Contracts and failure model
 
-Public records use schema version `1.0`; generated schemas are checked in and
+Public records use schema version `2.0`; generated schemas are checked in and
 tested for drift. Unknown fields and unsupported versions fail deserialization.
 Expected capability absence is represented as available/restricted/unavailable
 data. Unexpected I/O, malformed procfs/ELF/capture data, target changes,

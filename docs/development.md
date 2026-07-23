@@ -52,14 +52,15 @@ Compile the BPF object without attaching it:
 just test-bpf
 ```
 
-Run the real PID-scoped uprobe and uretprobe test in the pinned container:
+Run the real PID-scoped ELF and Linux event tests in the pinned container:
 
 ```bash
 just test-bpf-live
 ```
 
-The live test captures function entry and return events from the same target.
-It requires Docker daemon access and grants the container `BPF`,
+The live suite captures function entry/return, mmap/munmap lifecycle, generic
+raw tracepoint, and host-capacity failure paths from controlled targets. It
+requires Docker daemon access and grants the container `BPF`,
 `PERFMON`, `SYS_ADMIN`, and `SYS_RESOURCE`, with seccomp disabled for BPF/perf
 syscalls. It does not use `--privileged`, does not require GPU access, mounts the
 workspace read-only, and removes the container after the test.

@@ -39,10 +39,12 @@ For more than one selected process, follow
 5. Map GPU or mixed work before choosing a name. Validate broad kernel, memcpy,
    or memset activity endpoints, then collect one bounded, representative coarse
    inventory per event family with `measure --aggregate --duration-ms ...`.
-   For CPU-only work, resolve and validate the intended host-function boundary
-   directly; do not require CUDA or CUPTI. Scope breadth and collection duration
-   are independent: keep the selector broad where an activity inventory exists,
-   choose a duration that covers the workload cycle being diagnosed, and give
+   For CPU-only work, use existing application evidence or a bounded system
+   summary to choose a function, named syscall, or tracepoint family before
+   detailed collection; do not require CUDA or CUPTI, and do not begin with an
+   unfiltered high-rate raw tracepoint. Scope breadth and collection duration are
+   independent: keep the selector broad where a bounded aggregate exists, choose
+   a duration that covers the workload cycle being diagnosed, and give
    `--max-groups` headroom. For defensibly homogeneous workers, inventory one
    representative worker and apply its evidence-derived narrow selector to all
    selected workers.
@@ -51,8 +53,8 @@ For more than one selected process, follow
    `scripts/analyze_trace.py` and use launch variants, stream distribution, busy
    union, overlap factor, and adjacent gaps. Read
    [references/trace-analysis.md](references/trace-analysis.md) when interpreting
-   the report. For CPU-only work, use resolved host selectors and result evidence
-   to form the hypothesis instead.
+   the report. For CPU-only work, use resolved host selectors or filtered
+   syscall/tracepoint evidence to form the hypothesis instead.
 7. Run one read-only `xprobe validate` per selected worker. Compare every
    response target with the PID plus process start time retained from discovery
    before mutation, and stop that worker when `valid` is false. If
@@ -79,6 +81,7 @@ or [coarse memcpy inventory](examples/coarse-memcpy-inventory.json), then use th
 [kernel duration](examples/kernel-duration.json),
 [same-stream gap](examples/same-stream-kernel-gap.json),
 [host span](examples/host-function-span.json), and
+[syscall duration](examples/syscall-duration.json),
 [memcpy duration](examples/memcpy-duration.json) specs, plus the
 [CUDA synchronization API](examples/cuda-api-duration.json) shape, after
 replacing target identity and selectors. Each bounded call answers one
