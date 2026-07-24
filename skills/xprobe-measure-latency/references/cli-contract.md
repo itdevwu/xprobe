@@ -35,19 +35,23 @@ does not dereference pointers. Named tracepoints contain no payload fields.
 Always let `validate` resolve the named syscall or tracepoint on the current
 host before measurement.
 
-CUDA selectors cover Runtime and Driver API entry/exit plus kernel, memcpy, and
-memset activity start/end. Kernel activity accepts `name~REGEX`; memcpy accepts
-`kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`. `validate` must accept the complete selector
-and policy before measurement.
+CUDA selectors cover Runtime and Driver API entry/exit; kernel, memcpy, and
+memset activity start/end; and bounded NVTX range start/end. Kernel activity
+accepts `name~REGEX`; memcpy accepts `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`. NVTX
+uses `cuda:nvtx_range_start:name~REGEX` and
+`cuda:nvtx_range_end:name~REGEX`; the regex must reduce to an exact, prefix,
+suffix, or contains match shorter than 128 bytes. `validate` must accept the
+complete selector and policy before measurement.
 
 ## Correlation
 
-Use `exact` for CUDA events with the same CUPTI correlation ID or entry/exit of
-one named syscall, `stack-nested` for entry/return of the same host function,
-and `stream-order` for activity events on one CUDA stream. `first-after` and
-`nearest` are temporal heuristics and cannot establish causality. Read
-`policy_recommendation.policy`, its machine-readable `reason`, and
-`compatible_policies`; xprobe never silently changes the requested policy.
+Use `exact` for CUDA events with the same CUPTI correlation ID, NVTX boundaries
+with the same range kind and ID, or entry/exit of one named syscall.
+Use `stack-nested` for entry/return of the same host function and `stream-order`
+for activity events on one CUDA stream. `first-after` and `nearest` are temporal
+heuristics and cannot establish causality. Read `policy_recommendation.policy`,
+its machine-readable `reason`, and `compatible_policies`; xprobe never silently
+changes the requested policy.
 
 ## Bounds and failures
 
@@ -96,4 +100,8 @@ error code, message, details, and hints.
 Validation is read-only. When it reports `injection_required`, the following
 live `measure` may ptrace the target and load the matching CUDA 12 or CUDA 13
 CUPTI Agent. Measurement disables the Agent logically after collection but
-does not unload the shared object.
+does not unload the shared object. When validation reports `startup_required`
+for an NVTX selector, restart the worker with `NVTX_INJECTION64_PATH` pointing
+to that Agent before its first NVTX call, reacquire its PID plus start time, and
+validate again. Online injection cannot install NVTX dispatch after NVTX has
+initialized.

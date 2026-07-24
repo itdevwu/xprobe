@@ -33,6 +33,12 @@
 - `validate` is read-only. `measure` may inject CUPTI only after validation
   reports `injection_required`; log the mutation and include a JSON warning.
 - Stop CUPTI logically after collection. Do not `dlclose` the injected agent.
+- NVTX callback routing must be initialized before the target's first NVTX API
+  call. Once initialized, keep the CUPTI subscriber mapped and registered;
+  logical stop disables callback domains instead of unsubscribing it.
+- Correlate NVTX IDs as ordered lifecycles. Thread range keys reuse push levels,
+  and a bounded capture may end with one range open; retain earlier closed
+  pairs and report only the trailing start as unmatched.
 - Never collect pointer-referenced payloads, environments, or GPU buffer data by
   default. Named tracepoints retain identity and timestamps unless a versioned
   scalar payload is explicitly designed. Never describe temporal correlation
@@ -70,6 +76,7 @@
 - Run `just fmt-check`, `just lint`, and `just test` for Rust changes.
 - Run `just test-bpf-live` for BPF attachment changes.
 - Run `just test-cupti-live` for CUPTI ABI or callback changes.
+- Run `just test-nvtx-live` for NVTX callback, filtering, or lifecycle changes.
 - Run `just test-injection-live` for injection or agent lifecycle changes.
 - Run `just test-multisource-live` for host/GPU orchestration changes.
 - Run `just test-agent-contract` for CLI, schema, docs, or Skill changes.

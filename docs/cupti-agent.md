@@ -1,9 +1,9 @@
 # CUPTI Agent and online injection
 
-`libxprobe-cupti.so` collects CUDA Runtime/Driver callback boundaries and
-kernel, memcpy, and memset activity inside the target process. Normal users
-invoke it through `measure --pid`; it is a bounded collector, not a daemon or a
-persistent profiling session.
+`libxprobe-cupti.so` collects CUDA Runtime/Driver callback boundaries,
+kernel/memcpy/memset activity, and selected NVTX timeline range boundaries
+inside the target process. Normal users invoke it through `measure --pid`; it
+is a bounded collector, not a daemon or a persistent profiling session.
 
 Release packages contain separate Agents linked to `libcupti.so.12` and
 `libcupti.so.13`. xprobe selects the major from the target's mapped CUDA
@@ -24,6 +24,16 @@ then enables callbacks and activity collection. API names and domains, memcpy
 directions, and simple kernel-name exact/prefix/suffix/contains patterns are
 filtered before they consume capture capacity. Complex kernel regular
 expressions use a wider Agent filter and retain exact Rust-side matching.
+
+NVTX differs from ordinary online CUDA injection. Set
+`NVTX_INJECTION64_PATH` to the matching Agent before the target's first NVTX
+call; an initialized NVTX dispatch cannot be retrofitted by attach. Startup
+installs routing and a dormant CUPTI subscriber. ARM enables only range
+StartA/StartEx/End and PushA/PushEx/Pop callbacks, with bounded name matching
+before timestamping or table insertion. STOP disables those callbacks but
+retains the subscriber because CUDA 13 still references it. The Agent copies
+only ASCII range names, IDs, kind, and thread identity. It does not copy NVTX
+payload, color, category, registered strings, wide strings, or environments.
 
 An aggregate ARM uses a fixed-capacity hash table instead of event records.
 Kernel activity is grouped by name and device, memcpy by direction and device,
@@ -70,6 +80,10 @@ measurement to fail explicitly instead of returning partial success.
 
 Exact records preserve process/thread, device/context/stream, correlation IDs,
 callback domain/ID, dimensions or transfer metadata, and one bounded name.
+NVTX records reuse the fixed layout for a 64-bit range ID, thread/process kind,
+start thread, and explicit name completeness flag. Their exact correlation is
+range identity, including a synthesized TID plus nesting level for thread
+ranges; it is not a claim that arbitrary adjacent events are causally related.
 Aggregate records contain a bounded group key and exact integer counters, not
 event evidence or a latency distribution; they therefore do not report
 percentiles or correlation confidence.
@@ -87,8 +101,10 @@ the validated endpoints. The API callback checks its fixed filter before
 reading time or constructing a record. Activity decoding checks event family,
 name, and transfer direction before copying fixed metadata, and stops
 converting records after the capture limit. These paths do not allocate,
-perform file or socket I/O, symbolize names, or take blocking locks. Flushing
-and incremental response I/O run on the control thread.
+perform file or socket I/O, symbolize names, or take blocking locks. NVTX range
+callbacks use only fixed records and a preallocated table; CUPTI Range
+Profiling metrics and replay are outside this timeline collector. Flushing,
+control, and incremental response I/O run on the control thread.
 
 ## Verification
 

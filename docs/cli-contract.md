@@ -86,9 +86,12 @@ return value on exit. It never dereferences pointer arguments. Named
 tracepoints record identity and timestamp only; they do not copy the tracepoint
 payload. Unsupported syscall names and unavailable tracepoints fail explicitly.
 
-CUDA forms include Runtime/Driver API entry/exit and kernel, memcpy, or memset
-activity start/end. Kernel selectors accept `name~REGEX`; memcpy selectors
-accept `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`.
+CUDA forms include Runtime/Driver API entry/exit, kernel/memcpy/memset activity
+start/end, and NVTX range boundaries. Kernel selectors accept `name~REGEX`;
+memcpy selectors accept `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`. NVTX selectors are
+`cuda:nvtx_range_start:name~REGEX` and
+`cuda:nvtx_range_end:name~REGEX`; their name expression must reduce to one
+nonempty exact, prefix, suffix, or contains filter shorter than 128 bytes.
 
 ## `validate`
 
@@ -104,18 +107,23 @@ parses CUDA filters, and checks collection and correlation requirements.
 Results conform to `schemas/validate.schema.json`.
 
 Supported policies are `exact`, `first-after`, `nearest`, `stack-nested`, and
-`stream-order`. Exact uses deterministic CUPTI correlation IDs or one named
-syscall's per-thread entry/exit lifecycle. Nested requires entry/return of the
-same host function. Stream order requires GPU activity endpoints. Temporal
-policies always warn that they are heuristic.
+`stream-order`. Exact uses deterministic CUPTI correlation IDs, NVTX range
+kind/ID, or one named syscall's per-thread entry/exit lifecycle. Nested
+requires entry/return of the same host function. Stream order requires GPU
+activity endpoints. Temporal policies always warn that they are heuristic.
 `policy_recommendation` reports the strongest compatible policy, a stable
 machine-readable reason, and all compatible alternatives. The caller still
 chooses the policy; xprobe does not silently replace or retry it.
 
-`requirements.agent_activation` is `not_required`, `already_loaded`, or
-`injection_required`. The last value sets `target_mutation: true` and emits
-`TARGET_PROCESS_WILL_BE_MODIFIED`; it does not make an otherwise collectable
-request invalid. Callers must still stop on `valid: false`.
+`requirements.agent_activation` is `not_required`, `already_loaded`,
+`injection_required`, or `startup_required`. Online injection handles ordinary
+CUDA callbacks and activity; `injection_required` sets `target_mutation: true`
+and emits `TARGET_PROCESS_WILL_BE_MODIFIED`. NVTX dispatch is fixed by its first
+API initialization, so an unmapped Agent produces `startup_required` and an
+invalid result. Restart the target with `NVTX_INJECTION64_PATH` set to the
+matching xprobe Agent before its first NVTX call. A mapped Agent is verified
+again at ARM through the capture feature flag. Callers must stop on
+`valid: false`.
 Mapped CUDA/CUPTI majors that conflict or fall outside 12 and 13 produce
 `UNSUPPORTED_CUDA_VERSION`.
 CUDA major support does not imply host-clock alignment: `measure` accepts
@@ -140,6 +148,16 @@ Linux syscall duration:
 ```bash
 xprobe measure --pid 4242 \
   --from 'syscall:mmap:entry' --to 'syscall:mmap:exit' \
+  --match exact --samples 100 --max-events 1000 \
+  --json --non-interactive --no-color
+```
+
+NVTX application range:
+
+```bash
+xprobe measure --pid 4242 \
+  --from 'cuda:nvtx_range_start:name~^forward$' \
+  --to 'cuda:nvtx_range_end:name~^forward$' \
   --match exact --samples 100 --max-events 1000 \
   --json --non-interactive --no-color
 ```
@@ -202,6 +220,15 @@ a stderr warning and `CUPTI_AGENT_INJECTED`. Each live call arms a fresh
 `--max-events`-bounded capture with endpoint filters. Final stop disables CUPTI;
 automatic injection also removes its private socket while leaving the `.so`
 mapped.
+
+NVTX thread ranges preserve nesting through the thread ID and zero-based push
+level. Process ranges preserve the NVTX range ID and may end on a different
+thread; evidence reports both boundary threads plus `start_tid`. Names are
+copied into the fixed record bound with `name_complete`. ASCII
+`nvtxRangePushA`/`nvtxRangeStartA` and ASCII messages in their `Ex` forms are
+supported; wide and registered-string messages are not collected. This is
+timeline boundary collection only. It does not enable CUPTI Range Profiling,
+metric replay, or kernel performance-counter passes.
 
 Completed inputs may be CUPTI ABI binary, bounded host-capture JSON, or Event
 JSONL. Repeated inputs are merged after target-PID checks. Unknown records,
