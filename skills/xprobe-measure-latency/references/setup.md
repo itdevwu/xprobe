@@ -69,7 +69,15 @@ export XPROBE_CUPTI_AGENT_PATH="$PWD/build/cuda12/cupti/libxprobe-cupti.so"
 
 Replace `12` and the toolkit path with `13` for CUDA 13. CUDA/CUPTI majors other
 than 12 or 13 are not supported: do not force an Agent build or bypass the
-version check.
+version check. For an NVTX range measurement, start or restart the target with
+the same local Agent configured before the target's first NVTX call:
+
+```bash
+NVTX_INJECTION64_PATH="$XPROBE_CUPTI_AGENT_PATH" python serve.py
+```
+
+Record the new PID plus procfs start time and run `validate` again. Do not use
+online injection as a fallback for an already initialized NVTX process.
 
 ## Repair the Skill only when needed
 

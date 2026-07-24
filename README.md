@@ -64,10 +64,10 @@ xprobe measure --pid 4242 \
 
 Kernel launch latency is only one event pair. The same workflow measures host
 function spans, syscall latency, named Linux events, CUDA API calls, GPU
-operation durations, transfers, and paths across CPU and GPU events after
-selecting the correct process. Aggregate mode provides a bounded coarse
-inventory of GPU operations before an exact evidence measurement narrows the
-question.
+operation durations, transfers, NVTX application ranges, and paths across CPU
+and GPU events after selecting the correct process. Aggregate mode provides a
+bounded coarse inventory of GPU operations before an exact evidence
+measurement narrows the question.
 
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
@@ -88,7 +88,9 @@ is also preserved when correlation or clock validation fails.
 `measure --pid` automatically loads the matching CUDA 12 or CUDA 13 CUPTI Agent
 when a selected endpoint requires it. It reports the target mutation on stderr
 and in JSON, disables collection afterward, and leaves the shared object mapped
-for safe reactivation.
+for safe reactivation. NVTX ranges are the exception: set
+`NVTX_INJECTION64_PATH` before the target's first NVTX call because online
+attach cannot retrofit an initialized NVTX dispatch.
 
 ## Support
 
@@ -98,6 +100,7 @@ for safe reactivation.
 | Host events | PID-scoped ELF function, named syscall, and tracepoint boundaries |
 | CUDA callbacks | Runtime and Driver API entry/exit |
 | GPU activity | Kernel, memcpy, and memset start/end |
+| Application ranges | Bounded ASCII NVTX thread and process ranges |
 | CUDA/CUPTI | 12.x and 13.x with automatic major selection |
 | Correlation | exact, first-after, nearest, stack-nested, stream-order |
 | Online injection | same mount namespace; ptrace permission required |

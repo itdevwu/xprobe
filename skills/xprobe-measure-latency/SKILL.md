@@ -53,14 +53,20 @@ For more than one selected process, follow
    `scripts/analyze_trace.py` and use launch variants, stream distribution, busy
    union, overlap factor, and adjacent gaps. Read
    [references/trace-analysis.md](references/trace-analysis.md) when interpreting
-   the report. For CPU-only work, use resolved host selectors or filtered
-   syscall/tracepoint evidence to form the hypothesis instead.
+   the report. When the application already marks the narrowed operation with a
+   bounded ASCII NVTX range, that range can provide exact application-level
+   start/end boundaries. For CPU-only work, use resolved host selectors or
+   filtered syscall/tracepoint evidence to form the hypothesis instead.
 7. Run one read-only `xprobe validate` per selected worker. Compare every
    response target with the PID plus process start time retained from discovery
    before mutation, and stop that worker when `valid` is false. If
    `agent_activation` is `injection_required`, disclose that `measure` will
    ptrace the target and leave the CUPTI shared object mapped. Use
-   `policy_recommendation` explicitly; xprobe never changes policy for the caller.
+   `policy_recommendation` explicitly; xprobe never changes policy for the
+   caller. If it is `startup_required`, restart that worker with
+   `NVTX_INJECTION64_PATH` pointing to the matching xprobe CUPTI Agent before
+   its first NVTX call, reacquire PID plus start time, and validate again.
+   Online injection cannot retrofit NVTX dispatch into an initialized process.
 8. Run one bounded `xprobe measure` for that hypothesis. Set samples or duration,
    timeout, and max-events; write `--events-out` when the capture may need audit
    or offline re-correlation. Use a versioned `--spec FILE` containing the stable
@@ -91,7 +97,9 @@ hypothesis; orchestration remains the agent framework's responsibility.
 
 - Stop on target reuse, permission failure, invalid selectors, unavailable
   collectors, drops, incomplete capture, unknown clock alignment, or unexamined
-  ambiguity. Read structured `details`, `hints`, and any failed-capture artifact.
+  ambiguity. Treat an NVTX ARM-time feature mismatch as a startup failure rather
+  than retrying online injection. Read structured `details`, `hints`, and any
+  failed-capture artifact.
 - Do not claim request causality from `first-after` or `nearest`. Do not compare
   or sum events across streams as if they were serial.
 - Stop using xprobe once evidence isolates time inside one kernel. Kernel

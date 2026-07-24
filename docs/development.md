@@ -81,7 +81,8 @@ PYTORCH_ENV=/path/to/env just test-pytorch-live
 
 With a CUDA-enabled PyTorch environment, run eager matrix multiplication,
 convolution, compiled Triton, bidirectional transfer, selected-kernel, and
-stream-synchronization profiling on the local GPU:
+stream-synchronization profiling on the local GPU. The test also wraps an eager
+operation in an NVTX range and verifies exact range-ID matching:
 
 ```bash
 PYTORCH_ENV=/path/to/env just test-pytorch-cuda-live
@@ -125,6 +126,19 @@ The minimum-version check builds the release-style Agent with CUDA 12.9 and
 runs it against CUDA 12.0. GPU-only durations remain available when the runtime
 cannot prove host-clock alignment; cross CPU/GPU measurement then fails with
 `CLOCK_ALIGNMENT_FAILED` instead of reporting a shifted latency.
+
+Run the bounded NVTX fixture against both supported CUPTI majors:
+
+```bash
+just test-nvtx-live-cuda12
+just test-nvtx-live
+```
+
+It covers nested ASCII and extended ranges, cross-thread process ranges,
+bounded-name truncation, capacity failure and reuse after logical stop. NVTX
+initialization occurs before the fixture's first NVTX call; the test also
+verifies that the subscriber remains mapped while callback domains are dormant
+between captures.
 
 Run online ptrace injection, stop, and reactivation twice against a target that
 does not preload the agent:

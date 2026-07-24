@@ -68,9 +68,13 @@ requirements. CUPTI activation is one of:
 - `not_required`
 - `already_loaded`
 - `injection_required`
+- `startup_required`
 
 `injection_required` keeps validation valid when all semantic requirements are
 met, sets `target_mutation: true`, and emits `TARGET_PROCESS_WILL_BE_MODIFIED`.
+`startup_required` is specific to an NVTX selector whose target did not load
+the Agent before NVTX initialized. Online attach cannot rewrite that dispatch
+table, so validation returns an explicit issue instead of promising injection.
 Malformed selectors, unresolved symbols, invalid policies, and unavailable
 required host collection remain explicit issues or errors.
 
@@ -98,6 +102,15 @@ Agent creates a control socket; `measure` separately arms one fresh,
 Driver callbacks plus kernel, memcpy, and memset activity are filtered before
 fixed records consume capacity. Callback hot paths do not perform blocking I/O
 or allocation.
+
+NVTX startup injection installs CUPTI routing before the first NVTX call and
+keeps one dormant subscriber alive for the process lifetime. Each ARM enables
+only the six supported global ASCII/Ex range callbacks. A preallocated,
+open-addressed table retains matching starts until a thread pop or process
+range end recovers the same bounded name and start thread. Thread keys combine
+TID with the returned nesting level; process keys use the returned 64-bit NVTX
+range ID and permit a different end thread. STOP disables callback domains but
+does not unsubscribe the routing required by CUDA 13.
 
 Broad GPU inventory uses the same `measure` primitive with aggregate mode. The
 Agent updates a `--max-groups`-bounded table for matching kernel, memcpy, or
@@ -143,7 +156,7 @@ All sources normalize into the versioned `Event` type. `measure` supports:
 
 | Policy | Pairing | Confidence |
 | --- | --- | --- |
-| `exact` | CUPTI correlation ID or same-thread syscall lifecycle | exact |
+| `exact` | CUPTI correlation ID, NVTX range ID, or same-thread syscall lifecycle | exact |
 | `first-after` | First unused end at or after each start | heuristic |
 | `nearest` | Nearest unused end by timestamp | heuristic |
 | `stack-nested` | Per-thread LIFO host entry/return | high |
