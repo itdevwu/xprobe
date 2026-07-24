@@ -17,7 +17,7 @@ For more than one selected process, follow
 
 ## Workflow
 
-1. Run `xprobe --version`. When the command is absent or not 0.3.3, read
+1. Run `xprobe --version`. When the command is absent or not 0.4.0, read
    [references/setup.md](references/setup.md) and install or repair the CLI
    yourself; do not ask the user to perform a separate CLI installation.
    Confirm every JSON response has `schema_version: "2.0"`; do not assume a

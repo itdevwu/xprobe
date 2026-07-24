@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(xprobe VERSION 0.3.3 LANGUAGES C)
+project(xprobe VERSION 0.4.0 LANGUAGES C)
 
 include(CTest)
 
