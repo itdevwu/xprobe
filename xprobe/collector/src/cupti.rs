@@ -12,7 +12,8 @@ use std::{
 
 use serde_json::Value;
 use xprobe_protocol::{
-    ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, MemcpyKind, SchemaVersion,
+    ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, MemcpyKind, NvtxEvent,
+    NvtxRangeKind, SchemaVersion,
 };
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
@@ -30,8 +31,11 @@ pub const CUPTI_NAME_CAPACITY: usize = 128;
 const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
 const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
 const FEATURE_AGGREGATE_RECORDS: u32 = 1 << 2;
-const SUPPORTED_FEATURES: u32 =
-    FEATURE_HOST_MONOTONIC_TIMESTAMPS | FEATURE_TRANSFER_RECORDS | FEATURE_AGGREGATE_RECORDS;
+const FEATURE_NVTX_RECORDS: u32 = 1 << 3;
+const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS
+    | FEATURE_TRANSFER_RECORDS
+    | FEATURE_AGGREGATE_RECORDS
+    | FEATURE_NVTX_RECORDS;
 const UNKNOWN_U32: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +49,8 @@ pub enum CuptiRecordKind {
     GpuMemcpyEnd = 6,
     GpuMemsetStart = 7,
     GpuMemsetEnd = 8,
+    NvtxRangeStart = 9,
+    NvtxRangeEnd = 10,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +126,7 @@ pub struct CuptiAggregateGroup {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CuptiCapture {
+    pub nvtx_callbacks_active: bool,
     pub record_offset: u64,
     pub state: CuptiCaptureState,
     pub stop_reason: CuptiStopReason,
@@ -180,6 +187,10 @@ pub enum CuptiDecodeError {
     InvalidTimestamp {
         index: usize,
         kind: u32,
+    },
+    InvalidNvtxRecord {
+        index: usize,
+        message: &'static str,
     },
     InvalidAggregateRecord {
         index: usize,
@@ -247,6 +258,9 @@ impl fmt::Display for CuptiDecodeError {
                     formatter,
                     "CUPTI record {index} of kind {kind} has a zero timestamp"
                 )
+            }
+            Self::InvalidNvtxRecord { index, message } => {
+                write!(formatter, "CUPTI NVTX record {index} is invalid: {message}")
             }
             Self::InvalidAggregateRecord { index, message } => {
                 write!(
@@ -582,6 +596,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         .checked_add(cupti_dropped_records)
         .ok_or(CuptiDecodeError::CounterOverflow)?;
     Ok(CuptiCapture {
+        nvtx_callbacks_active: feature_flags & FEATURE_NVTX_RECORDS != 0,
         record_offset,
         state,
         stop_reason,
@@ -720,25 +735,7 @@ fn decode_record(
     feature_flags: u32,
 ) -> Result<Event, CuptiDecodeError> {
     let kind = read_u32(record, 8);
-    let (source, event_type) = match kind {
-        1 => (EventSource::CuptiCallback, EventType::CudaApiEntry),
-        2 => (EventSource::CuptiCallback, EventType::CudaApiExit),
-        3 => (EventSource::CuptiActivity, EventType::GpuKernelStart),
-        4 => (EventSource::CuptiActivity, EventType::GpuKernelEnd),
-        5 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
-            (EventSource::CuptiActivity, EventType::GpuMemcpyStart)
-        }
-        6 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
-            (EventSource::CuptiActivity, EventType::GpuMemcpyEnd)
-        }
-        7 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
-            (EventSource::CuptiActivity, EventType::GpuMemsetStart)
-        }
-        8 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
-            (EventSource::CuptiActivity, EventType::GpuMemsetEnd)
-        }
-        _ => return Err(CuptiDecodeError::UnknownRecordKind { index, kind }),
-    };
+    let (source, event_type) = decode_record_kind(kind, index, feature_flags)?;
     let timestamp_raw = read_u64(record, 0);
     if timestamp_raw == 0 {
         return Err(CuptiDecodeError::InvalidTimestamp { index, kind });
@@ -756,7 +753,8 @@ fn decode_record(
     let is_transfer = matches!(kind, 5..=8);
     let is_start = matches!(kind, 3 | 5 | 7);
     let is_end = matches!(kind, 4 | 6 | 8);
-    let (timestamp_ns, clock_domain, timestamp_error_ns) = if is_api {
+    let is_nvtx = matches!(kind, 9 | 10);
+    let (timestamp_ns, clock_domain, timestamp_error_ns) = if is_api || is_nvtx {
         (timestamp_raw, ClockDomain::HostMonotonic, None)
     } else if feature_flags & FEATURE_HOST_MONOTONIC_TIMESTAMPS != 0 {
         (
@@ -783,6 +781,7 @@ fn decode_record(
     if matches!(kind, 7 | 8) {
         attributes.insert("memset_value".to_owned(), Value::from(read_u32(record, 56)));
     }
+    let nvtx = decode_nvtx_event(record, index, is_nvtx, name)?;
 
     Ok(Event {
         schema_version: SchemaVersion::current(),
@@ -800,7 +799,7 @@ fn decode_record(
         timestamp_error_ns,
         process_start_time: None,
         host: None,
-        cuda: Some(CudaEvent {
+        cuda: (!is_nvtx).then(|| CudaEvent {
             device_id: optional_unknown(read_u32(record, 20)),
             context_id: optional_unknown(read_u32(record, 24)),
             stream_id: optional_unknown(read_u32(record, 28)).map(u64::from),
@@ -817,9 +816,90 @@ fn decode_record(
             bytes: is_transfer.then(|| read_split_u64(record, 44)),
             memcpy_kind: is_memcpy.then(|| decode_memcpy_kind(read_u32(record, 52))),
         }),
-        nvtx: None,
+        nvtx,
         attributes,
     })
+}
+
+fn decode_record_kind(
+    kind: u32,
+    index: usize,
+    feature_flags: u32,
+) -> Result<(EventSource, EventType), CuptiDecodeError> {
+    Ok(match kind {
+        1 => (EventSource::CuptiCallback, EventType::CudaApiEntry),
+        2 => (EventSource::CuptiCallback, EventType::CudaApiExit),
+        3 => (EventSource::CuptiActivity, EventType::GpuKernelStart),
+        4 => (EventSource::CuptiActivity, EventType::GpuKernelEnd),
+        5 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
+            (EventSource::CuptiActivity, EventType::GpuMemcpyStart)
+        }
+        6 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
+            (EventSource::CuptiActivity, EventType::GpuMemcpyEnd)
+        }
+        7 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
+            (EventSource::CuptiActivity, EventType::GpuMemsetStart)
+        }
+        8 if feature_flags & FEATURE_TRANSFER_RECORDS != 0 => {
+            (EventSource::CuptiActivity, EventType::GpuMemsetEnd)
+        }
+        9 if feature_flags & FEATURE_NVTX_RECORDS != 0 => {
+            (EventSource::CuptiCallback, EventType::NvtxRangeStart)
+        }
+        10 if feature_flags & FEATURE_NVTX_RECORDS != 0 => {
+            (EventSource::CuptiCallback, EventType::NvtxRangeEnd)
+        }
+        _ => return Err(CuptiDecodeError::UnknownRecordKind { index, kind }),
+    })
+}
+
+fn decode_nvtx_event(
+    record: &[u8],
+    index: usize,
+    is_nvtx: bool,
+    name: &str,
+) -> Result<Option<NvtxEvent>, CuptiDecodeError> {
+    if !is_nvtx {
+        return Ok(None);
+    }
+    let range_kind = match read_u32(record, 52) {
+        1 => NvtxRangeKind::Thread,
+        2 => NvtxRangeKind::Process,
+        _ => {
+            return Err(CuptiDecodeError::InvalidNvtxRecord {
+                index,
+                message: "range kind is neither thread nor process",
+            });
+        }
+    };
+    let range_id = read_split_u64(record, 44);
+    if range_id == 0 {
+        return Err(CuptiDecodeError::InvalidNvtxRecord {
+            index,
+            message: "range ID is zero",
+        });
+    }
+    let start_tid = read_u32(record, 56);
+    if start_tid == 0 {
+        return Err(CuptiDecodeError::InvalidNvtxRecord {
+            index,
+            message: "start thread ID is zero",
+        });
+    }
+    let name_complete = read_u32(record, 60);
+    if name_complete > 1 {
+        return Err(CuptiDecodeError::InvalidNvtxRecord {
+            index,
+            message: "name completeness flag is not boolean",
+        });
+    }
+    Ok(Some(NvtxEvent {
+        name: name.to_owned(),
+        name_complete: name_complete != 0,
+        range_kind,
+        range_id,
+        start_tid,
+    }))
 }
 
 fn read_split_u64(record: &[u8], offset: usize) -> u64 {
@@ -894,7 +974,7 @@ mod tests {
         CuptiEventFilter, CuptiMemcpyKind, CuptiNameFilter, CuptiRecordKind, HEADER_SIZE,
         OUTPUT_MAGIC, RECORD_SIZE, decode_capture, encode_control, read_snapshot,
     };
-    use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind};
+    use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind, NvtxRangeKind};
 
     fn capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
         let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
@@ -933,6 +1013,12 @@ mod tests {
         let features = super::FEATURE_TRANSFER_RECORDS | super::FEATURE_AGGREGATE_RECORDS;
         bytes[20..24].copy_from_slice(&features.to_le_bytes());
         bytes[48..56].copy_from_slice(&observed.to_le_bytes());
+        bytes
+    }
+
+    fn nvtx_capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
+        let mut bytes = capture(records);
+        bytes[20..24].copy_from_slice(&super::FEATURE_NVTX_RECORDS.to_le_bytes());
         bytes
     }
 
@@ -994,6 +1080,23 @@ mod tests {
         } else {
             record[56..60].copy_from_slice(&payload_kind.to_le_bytes());
         }
+        record
+    }
+
+    fn nvtx_record(
+        kind: u32,
+        timestamp: u64,
+        range_id: u64,
+        range_kind: u32,
+        start_tid: u32,
+        name_complete: u32,
+        name: &str,
+    ) -> [u8; RECORD_SIZE] {
+        let mut record = record(kind, timestamp, 0, name);
+        record[44..52].copy_from_slice(&range_id.to_le_bytes());
+        record[52..56].copy_from_slice(&range_kind.to_le_bytes());
+        record[56..60].copy_from_slice(&start_tid.to_le_bytes());
+        record[60..64].copy_from_slice(&name_complete.to_le_bytes());
         record
     }
 
@@ -1062,6 +1165,52 @@ mod tests {
     }
 
     #[test]
+    fn decodes_nvtx_thread_and_process_range_boundaries() {
+        let thread_id = (1235_u64 << 32) | 2;
+        let process_id = 0x1122_3344_5566_7788;
+        let decoded = decode_capture(
+            &nvtx_capture(&[
+                nvtx_record(9, 100, thread_id, 1, 1235, 1, "forward"),
+                nvtx_record(10, 180, thread_id, 1, 1235, 1, "forward"),
+                nvtx_record(9, 200, process_id, 2, 1235, 0, "long_range"),
+                nvtx_record(10, 290, process_id, 2, 1235, 0, "long_range"),
+            ]),
+            "xp_nvtx",
+        )
+        .expect("NVTX capture must decode");
+
+        assert!(decoded.nvtx_callbacks_active);
+        assert_eq!(decoded.events[0].event_type, EventType::NvtxRangeStart);
+        assert_eq!(decoded.events[0].clock_domain, ClockDomain::HostMonotonic);
+        assert!(decoded.events[0].cuda.is_none());
+        let thread = decoded.events[0].nvtx.as_ref().expect("NVTX payload");
+        assert_eq!(thread.range_kind, NvtxRangeKind::Thread);
+        assert_eq!(thread.range_id, thread_id);
+        assert!(thread.name_complete);
+        let process = decoded.events[2].nvtx.as_ref().expect("NVTX payload");
+        assert_eq!(process.range_kind, NvtxRangeKind::Process);
+        assert_eq!(process.range_id, process_id);
+        assert!(!process.name_complete);
+    }
+
+    #[test]
+    fn rejects_invalid_nvtx_range_metadata() {
+        let error = decode_capture(
+            &nvtx_capture(&[nvtx_record(9, 100, 7, 3, 1235, 1, "bad")]),
+            "xp_nvtx",
+        )
+        .expect_err("invalid NVTX range kind must fail");
+
+        assert_eq!(
+            error,
+            CuptiDecodeError::InvalidNvtxRecord {
+                index: 0,
+                message: "range kind is neither thread nor process",
+            }
+        );
+    }
+
+    #[test]
     fn normalizes_flagged_gpu_timestamps_to_host_monotonic() {
         let api = record(1, 10_400, 42, "cudaLaunchKernel");
         let kernel = record(3, 10_525, 42, "test_kernel");
@@ -1114,10 +1263,10 @@ mod tests {
     #[test]
     fn rejects_unknown_feature_flags() {
         let mut bytes = capture(&[]);
-        bytes[20..24].copy_from_slice(&8_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&16_u32.to_le_bytes());
         assert_eq!(
             decode_capture(&bytes, "xp_test"),
-            Err(CuptiDecodeError::UnsupportedFeatureFlags(8))
+            Err(CuptiDecodeError::UnsupportedFeatureFlags(16))
         );
     }
 

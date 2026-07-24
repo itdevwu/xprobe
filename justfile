@@ -78,6 +78,12 @@ test-pytorch-live: build
 test-pytorch-cuda-live: build
     python3 tests/integration/test_pytorch_cuda.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV:?set PYTORCH_ENV to a Mamba environment with torch}"
 
+test-nvtx-live: build
+    python3 tests/integration/test_nvtx.py --image "{{cuda13_devel_image}}"
+
+test-nvtx-live-cuda12: build
+    python3 tests/integration/test_nvtx.py --image "{{cuda12_devel_image}}"
+
 benchmark-gpu:
     python3 benchmarks/cuda-callback/run.py "{{cuda13_devel_image}}"
 

@@ -18,7 +18,8 @@ extern "C" {
 enum xprobe_cupti_feature {
     XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS = 1U << 0,
     XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS = 1U << 1,
-    XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS = 1U << 2
+    XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS = 1U << 2,
+    XPROBE_CUPTI_FEATURE_NVTX_RECORDS = 1U << 3
 };
 
 enum xprobe_cupti_capture_mode {
@@ -91,7 +92,9 @@ enum xprobe_cupti_record_kind {
     XPROBE_CUPTI_GPU_MEMCPY_START = 5,
     XPROBE_CUPTI_GPU_MEMCPY_END = 6,
     XPROBE_CUPTI_GPU_MEMSET_START = 7,
-    XPROBE_CUPTI_GPU_MEMSET_END = 8
+    XPROBE_CUPTI_GPU_MEMSET_END = 8,
+    XPROBE_CUPTI_NVTX_RANGE_START = 9,
+    XPROBE_CUPTI_NVTX_RANGE_END = 10
 };
 
 struct xprobe_cupti_output_header {
@@ -149,6 +152,10 @@ struct xprobe_cupti_aggregate_record {
  * For memcpy and memset records, grid_x/grid_y hold the low/high halves of the
  * byte count. grid_z holds the CUpti_ActivityMemcpyKind for memcpy records,
  * and block_x holds the assigned value for memset records.
+ *
+ * For NVTX records, grid_x/grid_y hold the low/high halves of the range ID,
+ * grid_z is 1 for a thread range or 2 for a process range, block_x is the
+ * thread that started the range, and block_y reports whether name is complete.
  */
 
 unsigned int xprobe_cupti_agent_abi_version(void);
@@ -160,6 +167,9 @@ int xprobe_cupti_agent_flush(void);
 
 /* CUDA calls this entry point when the library is loaded via CUDA_INJECTION64_PATH. */
 int InitializeInjection(void);
+/* NVTX calls this before its first API dispatch via NVTX_INJECTION64_PATH. */
+int InitializeInjectionNvtx(void *get_export_table);
+int InitializeInjectionNvtx2(void *get_export_table);
 
 #ifdef __cplusplus
 }

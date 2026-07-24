@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -67,6 +68,8 @@ def run_inner(xprobe: pathlib.Path) -> None:
         mode = temp / "mode"
         build_agent(workspace, agent)
         set_mode(mode, "mm")
+        environment = os.environ.copy()
+        environment["NVTX_INJECTION64_PATH"] = str(agent)
         workload = subprocess.Popen(
             [
                 sys.executable,
@@ -75,6 +78,7 @@ def run_inner(xprobe: pathlib.Path) -> None:
                 WORKLOAD,
                 str(mode),
             ],
+            env=environment,
             stdout=subprocess.PIPE,
             text=True,
         )
@@ -110,6 +114,15 @@ def run_inner(xprobe: pathlib.Path) -> None:
                 "cuda:runtime_api:cudaStreamSynchronize:entry",
                 "cuda:runtime_api:cudaStreamSynchronize:exit",
             )
+            nvtx = exact_measure(
+                xprobe,
+                agent,
+                pid,
+                mode,
+                "nvtx",
+                "cuda:nvtx_range_start:name~^xprobe_pytorch_step$",
+                "cuda:nvtx_range_end:name~^xprobe_pytorch_step$",
+            )
         finally:
             workload.terminate()
             workload.wait(timeout=10)
@@ -129,6 +142,13 @@ def run_inner(xprobe: pathlib.Path) -> None:
     assert "cuda:memcpy_start:kind=DtoH" in transfer_hints
     assert_exact(exact_kernel)
     assert_exact(synchronization)
+    assert_exact(nvtx)
+    assert nvtx["correlation"]["method"] == "exact_nvtx_range_id"
+    assert all(
+        pair["start"]["nvtx"]["range_kind"] == "thread"
+        and pair["start"]["nvtx"]["range_id"] == pair["end"]["nvtx"]["range_id"]
+        for pair in nvtx["evidence"]
+    )
 
     print(
         json.dumps(
@@ -141,7 +161,14 @@ def run_inner(xprobe: pathlib.Path) -> None:
                 "exact_kernel_records": exact_kernel["collection"]["cupti"][
                     "retained_records"
                 ],
-                "measured": ["kernel", "memcpy_htod", "memcpy_dtoh", "stream_sync"],
+                "measured": [
+                    "kernel",
+                    "memcpy_htod",
+                    "memcpy_dtoh",
+                    "stream_sync",
+                    "nvtx_range",
+                ],
+                "nvtx_records": nvtx["collection"]["cupti"]["retained_records"],
                 "ok": True,
                 "pytorch": metadata["pytorch"],
                 "stream_sync_records": synchronization["collection"]["cupti"][
@@ -324,6 +351,8 @@ def compiled_step(left, right):
 
 compiled_step(a, b)
 stream.synchronize()
+torch.cuda.nvtx.range_push("xprobe_init")
+torch.cuda.nvtx.range_pop()
 print(json.dumps({
     "cuda": torch.version.cuda,
     "device": torch.cuda.get_device_name(),
@@ -342,6 +371,11 @@ while True:
     elif mode == "transfer":
         device_transfer.copy_(host_input, non_blocking=True)
         host_output.copy_(device_transfer, non_blocking=True)
+    elif mode == "nvtx":
+        torch.cuda.nvtx.range_push("xprobe_pytorch_step")
+        torch.mm(a, b)
+        stream.synchronize()
+        torch.cuda.nvtx.range_pop()
     else:
         raise RuntimeError(f"unknown workload mode: {mode}")
     stream.synchronize()

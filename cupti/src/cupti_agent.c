@@ -24,6 +24,18 @@ int InitializeInjection(void)
     return 0;
 }
 
+int InitializeInjectionNvtx(void *get_export_table)
+{
+    (void)get_export_table;
+    return 0;
+}
+
+int InitializeInjectionNvtx2(void *get_export_table)
+{
+    (void)get_export_table;
+    return 0;
+}
+
 int xprobe_cupti_agent_status(void)
 {
     return XPROBE_CUPTI_AGENT_UNAVAILABLE;
@@ -46,6 +58,8 @@ int xprobe_cupti_agent_flush(void)
 #include <cupti_callbacks.h>
 #include <cupti_driver_cbid.h>
 #include <cupti_runtime_cbid.h>
+#include <nvtx3/nvToolsExt.h>
+#include <generated_nvtx_meta.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -64,6 +78,9 @@ int xprobe_cupti_agent_flush(void)
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+
+extern CUptiResult CUPTIAPI cuptiNvtxInitialize(void *get_export_table);
+extern CUptiResult CUPTIAPI cuptiNvtxInitialize2(void *get_export_table);
 
 #define XPROBE_CUPTI_DEFAULT_RECORD_CAPACITY 100000U
 #define XPROBE_CUPTI_ACTIVITY_BUFFER_SIZE (8U * 1024U * 1024U)
@@ -94,9 +111,20 @@ struct xprobe_cupti_aggregate_slot {
     char name[XPROBE_CUPTI_NAME_LENGTH];
 };
 
+struct xprobe_nvtx_range_slot {
+    _Atomic uint64_t state;
+    uint64_t range_id;
+    uint32_t range_kind;
+    uint32_t start_tid;
+    uint32_t name_complete;
+    char name[XPROBE_CUPTI_NAME_LENGTH];
+};
+
 static struct xprobe_cupti_record *records;
 static _Atomic unsigned char *record_ready;
 static struct xprobe_cupti_aggregate_slot *aggregate_slots;
+static struct xprobe_nvtx_range_slot *nvtx_range_slots;
+static uint64_t nvtx_range_capacity;
 static uint64_t record_capacity;
 static uint32_t capture_mode;
 static _Atomic uint64_t record_count;
@@ -122,12 +150,16 @@ static uint32_t enabled_activity_mask;
 static char output_path[PATH_MAX];
 static char snapshot_socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 static pthread_mutex_t flush_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t subscriber_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t snapshot_thread;
 static _Atomic int snapshot_thread_stop;
 static _Atomic int snapshot_listener = -1;
 static int snapshot_thread_started;
 static struct xprobe_cupti_filter capture_filters[XPROBE_CUPTI_FILTER_COUNT];
 static _Atomic int capture_filter_enabled;
+static _Atomic int nvtx_injection_active;
+static pthread_once_t injection_agent_once = PTHREAD_ONCE_INIT;
+static int injection_agent_status = XPROBE_CUPTI_AGENT_UNAVAILABLE;
 #define XPROBE_CUPTI_ACTIVITY_KERNEL (1U << 0)
 #define XPROBE_CUPTI_ACTIVITY_MEMCPY (1U << 1)
 #define XPROBE_CUPTI_ACTIVITY_MEMSET (1U << 2)
@@ -135,11 +167,12 @@ static _Atomic int capture_filter_enabled;
 static int shutdown_agent(void);
 static int activate_capture(void);
 
-static int allocate_capture(uint64_t capacity)
+static int allocate_capture(uint64_t capacity, int needs_nvtx)
 {
     struct xprobe_cupti_record *new_records;
     _Atomic unsigned char *new_ready;
     struct xprobe_cupti_aggregate_slot *new_aggregate_slots;
+    struct xprobe_nvtx_range_slot *new_nvtx_range_slots;
 
     if (capacity == 0U || capacity > SIZE_MAX / sizeof(*records) ||
         capacity > SIZE_MAX / sizeof(*record_ready)) {
@@ -150,6 +183,7 @@ static int allocate_capture(uint64_t capacity)
     new_records = NULL;
     new_ready = NULL;
     new_aggregate_slots = NULL;
+    new_nvtx_range_slots = NULL;
     if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
         if (capacity > SIZE_MAX / sizeof(*aggregate_slots)) {
             fprintf(stderr, "xprobe CUPTI: aggregate capacity exceeds size_t\n");
@@ -160,15 +194,28 @@ static int allocate_capture(uint64_t capacity)
         new_records = calloc((size_t)capacity, sizeof(*new_records));
         new_ready = malloc((size_t)capacity * sizeof(*new_ready));
     }
+    if (needs_nvtx != 0) {
+        if (capacity > SIZE_MAX / sizeof(*nvtx_range_slots)) {
+            fprintf(stderr, "xprobe CUPTI: NVTX range capacity exceeds size_t\n");
+            free(new_records);
+            free(new_ready);
+            free(new_aggregate_slots);
+            return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+        new_nvtx_range_slots =
+            calloc((size_t)capacity, sizeof(*new_nvtx_range_slots));
+    }
     if ((capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
          new_aggregate_slots == NULL) ||
         (capture_mode == XPROBE_CUPTI_CAPTURE_EXACT &&
-         (new_records == NULL || new_ready == NULL))) {
+         (new_records == NULL || new_ready == NULL)) ||
+        (needs_nvtx != 0 && new_nvtx_range_slots == NULL)) {
         fprintf(stderr, "xprobe CUPTI: failed to allocate %llu capture records\n",
                 (unsigned long long)capacity);
         free(new_records);
         free(new_ready);
         free(new_aggregate_slots);
+        free(new_nvtx_range_slots);
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
     if (new_ready != NULL) {
@@ -179,9 +226,12 @@ static int allocate_capture(uint64_t capacity)
     free(records);
     free(record_ready);
     free(aggregate_slots);
+    free(nvtx_range_slots);
     records = new_records;
     record_ready = new_ready;
     aggregate_slots = new_aggregate_slots;
+    nvtx_range_slots = new_nvtx_range_slots;
+    nvtx_range_capacity = needs_nvtx != 0 ? capacity : 0U;
     record_capacity = capacity;
     return XPROBE_CUPTI_AGENT_READY;
 }
@@ -199,6 +249,10 @@ static void reset_capture(void)
         for (index = 0U; index < record_capacity; ++index) {
             atomic_store_explicit(&record_ready[index], 0U, memory_order_relaxed);
         }
+    }
+    for (index = 0U; index < nvtx_range_capacity; ++index) {
+        atomic_store_explicit(&nvtx_range_slots[index].state, 0U,
+                              memory_order_relaxed);
     }
     atomic_store_explicit(&record_count, 0U, memory_order_relaxed);
     atomic_store_explicit(&committed_record_count, 0U, memory_order_relaxed);
@@ -345,6 +399,49 @@ static void copy_name(char destination[XPROBE_CUPTI_NAME_LENGTH],
         destination[index] = source[index];
     }
     destination[index] = '\0';
+}
+
+static uint32_t copy_nvtx_name(char destination[XPROBE_CUPTI_NAME_LENGTH],
+                               const char *source)
+{
+    size_t index = 0U;
+    uint32_t complete;
+
+    if (source == NULL) {
+        destination[0] = '\0';
+        return 1U;
+    }
+    while (index + 1U < XPROBE_CUPTI_NAME_LENGTH && source[index] != '\0') {
+        destination[index] = source[index];
+        ++index;
+    }
+    complete = source[index] == '\0' ? 1U : 0U;
+    if (complete == 0U && index > 0U) {
+        size_t lead = index;
+        unsigned char first;
+        size_t expected = 1U;
+
+        while (lead > 0U &&
+               ((unsigned char)destination[lead - 1U] & 0xc0U) == 0x80U) {
+            --lead;
+        }
+        if (lead > 0U) {
+            --lead;
+            first = (unsigned char)destination[lead];
+            if ((first & 0xe0U) == 0xc0U) {
+                expected = 2U;
+            } else if ((first & 0xf0U) == 0xe0U) {
+                expected = 3U;
+            } else if ((first & 0xf8U) == 0xf0U) {
+                expected = 4U;
+            }
+            if (expected > index - lead) {
+                index = lead;
+            }
+        }
+    }
+    destination[index] = '\0';
+    return complete;
 }
 
 static size_t bounded_name_length(const char *name)
@@ -677,6 +774,169 @@ static void initialize_record(struct xprobe_cupti_record *record, uint32_t kind,
     record->stream_id = XPROBE_CUPTI_VALUE_UNKNOWN;
 }
 
+#define XPROBE_NVTX_RANGE_THREAD 1U
+#define XPROBE_NVTX_RANGE_PROCESS 2U
+#define XPROBE_NVTX_SLOT_WRITING 1U
+#define XPROBE_NVTX_SLOT_TOMBSTONE 2U
+
+static uint64_t nvtx_range_hash(uint32_t range_kind, uint64_t range_id)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    uint64_t values[] = {(uint64_t)range_kind, range_id};
+
+    for (size_t index = 0U; index < sizeof(values); ++index) {
+        hash ^= ((const unsigned char *)values)[index];
+        hash *= 1099511628211ULL;
+    }
+    if (hash <= XPROBE_NVTX_SLOT_TOMBSTONE) {
+        hash += XPROBE_NVTX_SLOT_TOMBSTONE + 1U;
+    }
+    return hash;
+}
+
+static int nvtx_range_key_matches(const struct xprobe_nvtx_range_slot *slot,
+                                  uint32_t range_kind, uint64_t range_id)
+{
+    return slot->range_kind == range_kind && slot->range_id == range_id;
+}
+
+static void nvtx_range_capacity_reached(void)
+{
+    atomic_fetch_add_explicit(&agent_dropped_records, 1U, memory_order_relaxed);
+    atomic_store_explicit(&stop_reason, XPROBE_CUPTI_STOP_RECORD_LIMIT,
+                          memory_order_relaxed);
+    atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_LIMIT_REACHED,
+                          memory_order_release);
+}
+
+static int remember_nvtx_range(uint32_t range_kind, uint64_t range_id,
+                               uint32_t start_tid, const char *name)
+{
+    uint64_t hash = nvtx_range_hash(range_kind, range_id);
+    uint64_t first = hash % nvtx_range_capacity;
+    uint64_t candidate = UINT64_MAX;
+
+    for (uint64_t probe = 0U; probe < nvtx_range_capacity; ++probe) {
+        uint64_t index = (first + probe) % nvtx_range_capacity;
+        struct xprobe_nvtx_range_slot *slot = &nvtx_range_slots[index];
+        uint64_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
+
+        if (state == hash &&
+            nvtx_range_key_matches(slot, range_kind, range_id) != 0) {
+            atomic_fetch_add_explicit(&agent_dropped_records, 1U,
+                                      memory_order_relaxed);
+            return 0;
+        }
+        if (state == XPROBE_NVTX_SLOT_TOMBSTONE && candidate == UINT64_MAX) {
+            candidate = index;
+            continue;
+        }
+        if (state == 0U) {
+            if (candidate == UINT64_MAX) {
+                candidate = index;
+            }
+            break;
+        }
+    }
+    if (candidate != UINT64_MAX) {
+        struct xprobe_nvtx_range_slot *slot = &nvtx_range_slots[candidate];
+        uint64_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
+
+        if ((state == 0U || state == XPROBE_NVTX_SLOT_TOMBSTONE) &&
+            atomic_compare_exchange_strong_explicit(
+                &slot->state, &state, XPROBE_NVTX_SLOT_WRITING,
+                memory_order_acq_rel, memory_order_acquire)) {
+            slot->range_id = range_id;
+            slot->range_kind = range_kind;
+            slot->start_tid = start_tid;
+            slot->name_complete = copy_nvtx_name(slot->name, name);
+            atomic_store_explicit(&slot->state, hash, memory_order_release);
+            return 1;
+        }
+        atomic_fetch_add_explicit(&agent_dropped_records, 1U,
+                                  memory_order_relaxed);
+        return 0;
+    }
+    nvtx_range_capacity_reached();
+    return 0;
+}
+
+static int take_nvtx_range(uint32_t range_kind, uint64_t range_id,
+                           struct xprobe_cupti_record *record)
+{
+    uint64_t hash = nvtx_range_hash(range_kind, range_id);
+    uint64_t first = hash % nvtx_range_capacity;
+    uint64_t timestamp_ns;
+
+    for (uint64_t probe = 0U; probe < nvtx_range_capacity; ++probe) {
+        uint64_t index = (first + probe) % nvtx_range_capacity;
+        struct xprobe_nvtx_range_slot *slot = &nvtx_range_slots[index];
+        uint64_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
+
+        if (state == 0U) {
+            return 0;
+        }
+        if (state != hash ||
+            nvtx_range_key_matches(slot, range_kind, range_id) == 0) {
+            continue;
+        }
+        if (!atomic_compare_exchange_strong_explicit(
+                &slot->state, &state, XPROBE_NVTX_SLOT_WRITING,
+                memory_order_acq_rel, memory_order_acquire)) {
+            continue;
+        }
+        if (monotonic_timestamp_ns(&timestamp_ns) !=
+            XPROBE_CUPTI_AGENT_READY) {
+            atomic_store_explicit(&slot->state, XPROBE_NVTX_SLOT_TOMBSTONE,
+                                  memory_order_release);
+            return 0;
+        }
+        initialize_record(record, XPROBE_CUPTI_NVTX_RANGE_END, timestamp_ns);
+        record->grid_x = (uint32_t)range_id;
+        record->grid_y = (uint32_t)(range_id >> 32U);
+        record->grid_z = range_kind;
+        record->block_x = slot->start_tid;
+        record->block_y = slot->name_complete;
+        memcpy(record->name, slot->name, sizeof(record->name));
+        atomic_store_explicit(&slot->state, XPROBE_NVTX_SLOT_TOMBSTONE,
+                              memory_order_release);
+        return 1;
+    }
+    return 0;
+}
+
+static void enqueue_nvtx_range_start(uint32_t range_kind, uint64_t range_id,
+                                     const char *name, uint64_t timestamp_ns)
+{
+    struct xprobe_cupti_record record;
+    uint32_t start_tid = current_tid();
+
+    if (atomic_load_explicit(&capture_state, memory_order_relaxed) !=
+            XPROBE_CUPTI_CAPTURE_ACTIVE ||
+        remember_nvtx_range(range_kind, range_id, start_tid, name) == 0) {
+        return;
+    }
+    initialize_record(&record, XPROBE_CUPTI_NVTX_RANGE_START, timestamp_ns);
+    record.grid_x = (uint32_t)range_id;
+    record.grid_y = (uint32_t)(range_id >> 32U);
+    record.grid_z = range_kind;
+    record.block_x = start_tid;
+    record.block_y = copy_nvtx_name(record.name, name);
+    enqueue_record(&record);
+}
+
+static void enqueue_nvtx_range_end(uint32_t range_kind, uint64_t range_id)
+{
+    struct xprobe_cupti_record record;
+
+    if (atomic_load_explicit(&capture_state, memory_order_relaxed) !=
+            XPROBE_CUPTI_CAPTURE_ACTIVE ||
+        take_nvtx_range(range_kind, range_id, &record) == 0) {
+        return;
+    }
+    enqueue_record(&record);
+}
+
 static void enqueue_api_record(const CUpti_CallbackData *data,
                                CUpti_CallbackDomain domain,
                                CUpti_CallbackId callback_id, uint32_t kind,
@@ -694,19 +954,167 @@ static void enqueue_api_record(const CUpti_CallbackData *data,
     enqueue_record(&record);
 }
 
+static int nvtx_ascii_message(CUpti_CallbackId callback_id,
+                              const CUpti_NvtxData *data, const char **message)
+{
+    const nvtxEventAttributes_t *attributes;
+
+    switch (callback_id) {
+    case CUPTI_CBID_NVTX_nvtxRangeStartA:
+        *message =
+            ((const nvtxRangeStartA_params *)data->functionParams)->message;
+        return *message == NULL ? -1 : 1;
+    case CUPTI_CBID_NVTX_nvtxRangePushA:
+        *message =
+            ((const nvtxRangePushA_params *)data->functionParams)->message;
+        return *message == NULL ? -1 : 1;
+    case CUPTI_CBID_NVTX_nvtxRangeStartEx:
+        attributes =
+            ((const nvtxRangeStartEx_params *)data->functionParams)->eventAttrib;
+        break;
+    case CUPTI_CBID_NVTX_nvtxRangePushEx:
+        attributes =
+            ((const nvtxRangePushEx_params *)data->functionParams)->eventAttrib;
+        break;
+    default:
+        return -1;
+    }
+    if (attributes == NULL ||
+        attributes->size <
+            offsetof(nvtxEventAttributes_t, message) +
+                sizeof(attributes->message)) {
+        return -1;
+    }
+    if (attributes->messageType != NVTX_MESSAGE_TYPE_ASCII) {
+        return 0;
+    }
+    *message = attributes->message.ascii;
+    return *message == NULL ? -1 : 1;
+}
+
+static void nvtx_callback(CUpti_CallbackId callback_id,
+                          const CUpti_NvtxData *data)
+{
+    const char *name;
+    uint32_t tid;
+    uint64_t range_id;
+    uint64_t timestamp_ns;
+    int message_status;
+    int level;
+
+    if (atomic_load_explicit(&capture_state, memory_order_relaxed) !=
+        XPROBE_CUPTI_CAPTURE_ACTIVE) {
+        return;
+    }
+    if (data == NULL) {
+        atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+        return;
+    }
+    switch (callback_id) {
+    case CUPTI_CBID_NVTX_nvtxRangeStartA:
+    case CUPTI_CBID_NVTX_nvtxRangeStartEx:
+        if (data->functionParams == NULL) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        message_status = nvtx_ascii_message(callback_id, data, &name);
+        if (message_status == 0) {
+            return;
+        }
+        if (message_status < 0 || data->functionReturnValue == NULL) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        if (values_match_capture(XPROBE_CUPTI_NVTX_RANGE_START,
+                                 XPROBE_CUPTI_NVTX_RANGE_END, 0U, 0U,
+                                 name) == 0 ||
+            monotonic_timestamp_ns(&timestamp_ns) != XPROBE_CUPTI_AGENT_READY) {
+            return;
+        }
+        range_id = *(const nvtxRangeId_t *)data->functionReturnValue;
+        if (range_id == 0U) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        enqueue_nvtx_range_start(XPROBE_NVTX_RANGE_PROCESS, range_id, name,
+                                 timestamp_ns);
+        return;
+    case CUPTI_CBID_NVTX_nvtxRangePushA:
+    case CUPTI_CBID_NVTX_nvtxRangePushEx:
+        if (data->functionParams == NULL) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        message_status = nvtx_ascii_message(callback_id, data, &name);
+        if (message_status == 0) {
+            return;
+        }
+        if (message_status < 0 || data->functionReturnValue == NULL) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        if (values_match_capture(XPROBE_CUPTI_NVTX_RANGE_START,
+                                 XPROBE_CUPTI_NVTX_RANGE_END, 0U, 0U,
+                                 name) == 0 ||
+            monotonic_timestamp_ns(&timestamp_ns) != XPROBE_CUPTI_AGENT_READY) {
+            return;
+        }
+        level = *(const int *)data->functionReturnValue;
+        if (level < 0) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        tid = current_tid();
+        range_id = ((uint64_t)tid << 32U) | (uint32_t)level;
+        enqueue_nvtx_range_start(XPROBE_NVTX_RANGE_THREAD, range_id, name,
+                                 timestamp_ns);
+        return;
+    case CUPTI_CBID_NVTX_nvtxRangeEnd:
+        if (data->functionParams == NULL) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        range_id =
+            ((const nvtxRangeEnd_params *)data->functionParams)->id;
+        enqueue_nvtx_range_end(XPROBE_NVTX_RANGE_PROCESS, range_id);
+        return;
+    case CUPTI_CBID_NVTX_nvtxRangePop:
+        if (data->functionReturnValue == NULL) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        level = *(const int *)data->functionReturnValue;
+        if (level < 0) {
+            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            return;
+        }
+        tid = current_tid();
+        range_id = ((uint64_t)tid << 32U) | (uint32_t)level;
+        enqueue_nvtx_range_end(XPROBE_NVTX_RANGE_THREAD, range_id);
+        return;
+    default:
+        atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+    }
+}
+
 static void CUPTIAPI api_callback(void *userdata, CUpti_CallbackDomain domain,
                                   CUpti_CallbackId callback_id,
                                   const void *callback_data)
 {
-    const CUpti_CallbackData *data = callback_data;
+    const CUpti_CallbackData *data;
     uint32_t kind;
     uint64_t timestamp_ns;
 
     (void)userdata;
+    if (domain == CUPTI_CB_DOMAIN_NVTX) {
+        nvtx_callback(callback_id, callback_data);
+        return;
+    }
     if (domain != CUPTI_CB_DOMAIN_RUNTIME_API &&
         domain != CUPTI_CB_DOMAIN_DRIVER_API) {
         return;
     }
+    data = callback_data;
     kind = data->callbackSite == CUPTI_API_ENTER ? XPROBE_CUPTI_CUDA_API_ENTRY
                                                 : XPROBE_CUPTI_CUDA_API_EXIT;
     if (values_match_capture(kind, 0U, (uint32_t)domain, 0U,
@@ -1124,6 +1532,7 @@ unaligned:
 static uint64_t aggregate_observed_records(void)
 {
     uint64_t observed = 0U;
+    uint64_t dropped;
 
     for (uint64_t index = 0U; index < record_capacity; ++index) {
         const struct xprobe_cupti_aggregate_slot *slot = &aggregate_slots[index];
@@ -1140,6 +1549,13 @@ static uint64_t aggregate_observed_records(void)
         }
         observed += count;
     }
+    dropped =
+        atomic_load_explicit(&agent_dropped_records, memory_order_relaxed);
+    if (UINT64_MAX - observed < dropped) {
+        remember_output_error();
+        return UINT64_MAX;
+    }
+    observed += dropped;
     return observed;
 }
 
@@ -1157,6 +1573,9 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
     header->header_size = sizeof(*header);
     header->record_size = sizeof(records[0]);
     header->feature_flags = XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS;
+    if (atomic_load_explicit(&nvtx_injection_active, memory_order_acquire) != 0) {
+        header->feature_flags |= XPROBE_CUPTI_FEATURE_NVTX_RECORDS;
+    }
     if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS;
     } else if (activity_timestamps_are_host_monotonic(available) != 0) {
@@ -1300,7 +1719,7 @@ static int flush_activity_buffers(int allow_empty_flush)
 
 static int valid_filter(const struct xprobe_cupti_filter *filter)
 {
-    if (filter->record_kind > XPROBE_CUPTI_GPU_MEMSET_END ||
+    if (filter->record_kind > XPROBE_CUPTI_NVTX_RANGE_END ||
         filter->api_domain > CUPTI_CB_DOMAIN_RUNTIME_API ||
         filter->memcpy_kind > 5U ||
         filter->name_match > XPROBE_CUPTI_NAME_CONTAINS) {
@@ -1334,12 +1753,19 @@ static int valid_aggregate_filters(
 static int arm_capture(const struct xprobe_cupti_control_request *request)
 {
     int status;
+    int needs_nvtx = 0;
 
     for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
         if (valid_filter(&request->filters[index]) == 0) {
             fprintf(stderr, "xprobe CUPTI: invalid capture filter\n");
             remember_output_error();
             return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+        }
+        if (request->filters[index].record_kind ==
+                XPROBE_CUPTI_NVTX_RANGE_START ||
+            request->filters[index].record_kind ==
+                XPROBE_CUPTI_NVTX_RANGE_END) {
+            needs_nvtx = 1;
         }
     }
     if (request->capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
@@ -1357,7 +1783,8 @@ static int arm_capture(const struct xprobe_cupti_control_request *request)
         }
     }
     capture_mode = request->capture_mode;
-    if (allocate_capture(request->record_capacity) != XPROBE_CUPTI_AGENT_READY) {
+    if (allocate_capture(request->record_capacity, needs_nvtx) !=
+        XPROBE_CUPTI_AGENT_READY) {
         remember_output_error();
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
@@ -1590,13 +2017,64 @@ static int shutdown_agent(void)
     CUptiResult result;
     int status = disable_activities();
 
+    if (pthread_mutex_lock(&subscriber_mutex) != 0) {
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
     if (subscriber_active != 0) {
-        result = cuptiUnsubscribe(subscriber);
-        if (result != CUPTI_SUCCESS) {
-            report_cupti_error("cuptiUnsubscribe", result);
-            status = XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        if (atomic_load_explicit(&nvtx_injection_active, memory_order_acquire) !=
+            0) {
+            static const CUpti_CallbackDomain domains[] = {
+                CUPTI_CB_DOMAIN_DRIVER_API,
+                CUPTI_CB_DOMAIN_RUNTIME_API,
+                CUPTI_CB_DOMAIN_NVTX,
+            };
+
+            for (size_t index = 0U;
+                 index < sizeof(domains) / sizeof(domains[0]); ++index) {
+                result = cuptiEnableDomain(0U, subscriber, domains[index]);
+                if (result != CUPTI_SUCCESS) {
+                    report_cupti_error("cuptiEnableDomain(disable)", result);
+                    status = XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+                }
+            }
+        } else {
+            result = cuptiUnsubscribe(subscriber);
+            if (result != CUPTI_SUCCESS) {
+                report_cupti_error("cuptiUnsubscribe", result);
+                status = XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+            }
+            subscriber_active = 0;
         }
-        subscriber_active = 0;
+    }
+    if (pthread_mutex_unlock(&subscriber_mutex) != 0) {
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
+    return status;
+}
+
+static int ensure_subscriber(void)
+{
+    CUptiResult result;
+    int status = XPROBE_CUPTI_AGENT_READY;
+
+    if (pthread_mutex_lock(&subscriber_mutex) != 0) {
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
+    if (subscriber_active == 0) {
+        result = cuptiSubscribe(&subscriber, api_callback, NULL);
+        if (result != CUPTI_SUCCESS) {
+            report_cupti_error("cuptiSubscribe", result);
+            status = XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+        } else {
+            subscriber_active = 1;
+        }
+    }
+    if (pthread_mutex_unlock(&subscriber_mutex) != 0) {
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
     return status;
 }
@@ -1635,6 +2113,15 @@ static int capture_needs_api_domain(uint32_t domain)
         }
     }
     return 0;
+}
+
+static int capture_needs_nvtx_records(void)
+{
+    if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
+        return 0;
+    }
+    return capture_needs_record_kind(XPROBE_CUPTI_NVTX_RANGE_START,
+                                     XPROBE_CUPTI_NVTX_RANGE_END);
 }
 
 static int enable_activity(uint32_t bit, CUpti_ActivityKind kind)
@@ -1761,7 +2248,22 @@ static int activate_capture(void)
                            needs_memset != 0;
     int needs_runtime = capture_needs_api_domain(CUPTI_CB_DOMAIN_RUNTIME_API);
     int needs_driver = capture_needs_api_domain(CUPTI_CB_DOMAIN_DRIVER_API);
+    int needs_nvtx = capture_needs_nvtx_records();
 
+    if (needs_nvtx != 0 &&
+        atomic_load_explicit(&nvtx_injection_active, memory_order_acquire) == 0) {
+        fprintf(stderr,
+                "xprobe CUPTI: NVTX callback routing was not initialized; "
+                "restart with NVTX_INJECTION64_PATH set before the first NVTX "
+                "call\n");
+        atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_UNAVAILABLE,
+                              memory_order_relaxed);
+        atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_FAILED,
+                              memory_order_relaxed);
+        atomic_store_explicit(&stop_reason, XPROBE_CUPTI_STOP_CUPTI_ERROR,
+                              memory_order_relaxed);
+        return XPROBE_CUPTI_AGENT_UNAVAILABLE;
+    }
     result = cuptiGetVersion(&runtime_cupti_version);
     if (result != CUPTI_SUCCESS) {
         report_cupti_error("cuptiGetVersion", result);
@@ -1771,13 +2273,10 @@ static int activate_capture(void)
         XPROBE_CUPTI_AGENT_READY) {
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
-    if (needs_runtime != 0 || needs_driver != 0) {
-        result = cuptiSubscribe(&subscriber, api_callback, NULL);
-        if (result != CUPTI_SUCCESS) {
-            report_cupti_error("cuptiSubscribe", result);
+    if (needs_runtime != 0 || needs_driver != 0 || needs_nvtx != 0) {
+        if (ensure_subscriber() != XPROBE_CUPTI_AGENT_READY) {
             return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
         }
-        subscriber_active = 1;
     }
     if (needs_activities != 0) {
 #if CUPTI_API_VERSION < 130000
@@ -1839,6 +2338,28 @@ static int activate_capture(void)
             return xprobe_cupti_agent_status();
         }
     }
+    if (needs_nvtx != 0) {
+        static const CUpti_CallbackId nvtx_callback_ids[] = {
+            CUPTI_CBID_NVTX_nvtxRangeStartA,
+            CUPTI_CBID_NVTX_nvtxRangeStartEx,
+            CUPTI_CBID_NVTX_nvtxRangeEnd,
+            CUPTI_CBID_NVTX_nvtxRangePushA,
+            CUPTI_CBID_NVTX_nvtxRangePushEx,
+            CUPTI_CBID_NVTX_nvtxRangePop,
+        };
+
+        for (size_t index = 0U;
+             index < sizeof(nvtx_callback_ids) / sizeof(nvtx_callback_ids[0]);
+             ++index) {
+            result = cuptiEnableCallback(1U, subscriber, CUPTI_CB_DOMAIN_NVTX,
+                                         nvtx_callback_ids[index]);
+            if (result != CUPTI_SUCCESS) {
+                report_cupti_error("cuptiEnableCallback(NVTX)", result);
+                shutdown_agent();
+                return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+            }
+        }
+    }
     atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_READY,
                           memory_order_relaxed);
     atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_ACTIVE,
@@ -1870,7 +2391,7 @@ int xprobe_cupti_agent_start(const char *configured_socket, uint64_t capacity)
     atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_UNAVAILABLE,
                           memory_order_release);
     snapshot_socket_path[0] = '\0';
-    if (allocate_capture(capacity) != XPROBE_CUPTI_AGENT_READY) {
+    if (allocate_capture(capacity, 0) != XPROBE_CUPTI_AGENT_READY) {
         remember_output_error();
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
@@ -1943,9 +2464,52 @@ int xprobe_cupti_agent_initialize(void)
     return xprobe_cupti_agent_start(configured_socket, capacity);
 }
 
+static void initialize_injection_agent(void)
+{
+    if (getenv("XPROBE_CUPTI_OUTPUT") == NULL &&
+        getenv("XPROBE_CUPTI_SOCKET") == NULL) {
+        injection_agent_status = XPROBE_CUPTI_AGENT_READY;
+        return;
+    }
+    injection_agent_status = xprobe_cupti_agent_initialize();
+}
+
 int InitializeInjection(void)
 {
-    return xprobe_cupti_agent_initialize() == XPROBE_CUPTI_AGENT_READY;
+    if (pthread_once(&injection_agent_once, initialize_injection_agent) != 0) {
+        return 0;
+    }
+    return injection_agent_status == XPROBE_CUPTI_AGENT_READY;
+}
+
+int InitializeInjectionNvtx(void *get_export_table)
+{
+    CUptiResult result = cuptiNvtxInitialize(get_export_table);
+
+    if (result != CUPTI_SUCCESS) {
+        report_cupti_error("cuptiNvtxInitialize", result);
+        return 0;
+    }
+    atomic_store_explicit(&nvtx_injection_active, 1, memory_order_release);
+    if (ensure_subscriber() != XPROBE_CUPTI_AGENT_READY) {
+        return 0;
+    }
+    return InitializeInjection();
+}
+
+int InitializeInjectionNvtx2(void *get_export_table)
+{
+    CUptiResult result = cuptiNvtxInitialize2(get_export_table);
+
+    if (result != CUPTI_SUCCESS) {
+        report_cupti_error("cuptiNvtxInitialize2", result);
+        return 0;
+    }
+    atomic_store_explicit(&nvtx_injection_active, 1, memory_order_release);
+    if (ensure_subscriber() != XPROBE_CUPTI_AGENT_READY) {
+        return 0;
+    }
+    return InitializeInjection();
 }
 
 int xprobe_cupti_agent_status(void)

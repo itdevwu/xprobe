@@ -682,6 +682,7 @@ pub fn measure(
         options.match_policy,
         options.samples,
         syscall_lifecycle,
+        nvtx_lifecycle,
     );
     if outcome.pairs.is_empty() {
         return Err(MeasureError::NoMatchedSamples);
@@ -763,9 +764,11 @@ fn correlate_selected<'a>(
     policy: MatchPolicy,
     limit: Option<usize>,
     syscall_lifecycle: bool,
+    nvtx_lifecycle: bool,
 ) -> Outcome<'a> {
     match policy {
         MatchPolicy::Exact if syscall_lifecycle => correlate_syscall_lifecycle(starts, ends, limit),
+        MatchPolicy::Exact if nvtx_lifecycle => correlate_nvtx_lifecycle(starts, ends, limit),
         MatchPolicy::Exact => correlate_exact(starts, ends, limit),
         MatchPolicy::FirstAfter => correlate_first_after(starts, ends, limit),
         MatchPolicy::Nearest => correlate_nearest(starts, ends, limit),
@@ -860,6 +863,63 @@ fn correlate_syscall_lifecycle<'a>(
     Outcome {
         pairs,
         unmatched_start: pending.len() as u64,
+        unmatched_end,
+        ambiguous,
+    }
+}
+
+fn correlate_nvtx_lifecycle<'a>(
+    starts: &[&'a Event],
+    ends: &[&'a Event],
+    limit: Option<usize>,
+) -> Outcome<'a> {
+    let mut timeline = starts
+        .iter()
+        .map(|event| (event.timestamp_ns, 0_u8, *event))
+        .chain(ends.iter().map(|event| (event.timestamp_ns, 1_u8, *event)))
+        .collect::<Vec<_>>();
+    timeline.sort_by_key(|(timestamp, boundary, event)| (*timestamp, *boundary, event.sequence));
+
+    let mut pending = BTreeMap::<CorrelationKey, &Event>::new();
+    let mut pairs = Vec::new();
+    let mut unmatched_start = 0_u64;
+    let mut unmatched_end = 0_u64;
+    let mut ambiguous = 0_u64;
+    for (_, boundary, event) in timeline {
+        let Some(key) = correlation_key(event) else {
+            if boundary == 0 {
+                unmatched_start += 1;
+            } else {
+                unmatched_end += 1;
+            }
+            continue;
+        };
+        if boundary == 0 {
+            if pending.insert(key, event).is_some() {
+                ambiguous += 1;
+            }
+        } else if let Some(start) = pending.remove(&key) {
+            if let Some(latency_ns) = event.timestamp_ns.checked_sub(start.timestamp_ns) {
+                pairs.push(Pair {
+                    start,
+                    end: event,
+                    latency_ns,
+                });
+            } else {
+                ambiguous += 1;
+            }
+        } else {
+            unmatched_end += 1;
+        }
+    }
+    unmatched_start += pending.len() as u64;
+    pairs.sort_by_key(|pair| pair.start.timestamp_ns);
+    if let Some(limit) = limit {
+        pairs.truncate(limit);
+    }
+    Outcome {
+        pairs,
+        unmatched_start,
         unmatched_end,
         ambiguous,
     }
@@ -1581,6 +1641,14 @@ mod tests {
                 7,
                 10,
             ),
+            nvtx_event(
+                EventType::NvtxRangeStart,
+                200,
+                10,
+                NvtxRangeKind::Thread,
+                7,
+                10,
+            ),
         ];
         let options = MeasureOptions {
             session_id: "xp_nvtx".to_owned(),
@@ -1596,6 +1664,7 @@ mod tests {
 
         let result = measure(&events, &options).unwrap();
         assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.samples.unmatched_start, 1);
         assert_eq!(result.measurement.latency_ns.min, 50);
         assert_eq!(result.measurement.latency_ns.max, 80);
         assert_eq!(result.correlation.method, "exact_nvtx_range_id");

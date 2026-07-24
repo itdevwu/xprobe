@@ -1608,7 +1608,12 @@ fn prepare_live_collection(request: &LiveMeasureRequest) -> Result<LiveCollectio
 
     let activation = prepare_cupti_activation(&report, &validation, request)?;
     let arm_config = cupti_arm_config(&validation, request.options.max_events, request.mode)?;
-    let baseline = arm_cupti_capture(&activation, arm_config.as_ref(), request)?;
+    let baseline = arm_cupti_capture(
+        &activation,
+        arm_config.as_ref(),
+        validation.requirements.needs_nvtx,
+        request,
+    )?;
     let socket = activation.socket;
     let baseline_timestamp = baseline
         .as_ref()
@@ -1707,6 +1712,7 @@ fn validate_aggregate_selection(validation: &ValidationResult) -> Result<(), Com
 fn arm_cupti_capture(
     activation: &CuptiActivation,
     config: Option<&cupti::CuptiArmConfig>,
+    needs_nvtx: bool,
     request: &LiveMeasureRequest,
 ) -> Result<Option<cupti::CuptiCapture>, CommandFailure> {
     let (Some(path), Some(config)) = (activation.socket.as_deref(), config) else {
@@ -1721,6 +1727,15 @@ fn arm_cupti_capture(
             return cleanup_failed_arm(activation, request, failure);
         }
     };
+    if needs_nvtx && !capture.nvtx_callbacks_active {
+        let failure = CommandFailure::new(
+            ErrorCode::CuptiNotAvailable,
+            "the mapped CUPTI agent was not initialized through NVTX; restart the target with NVTX_INJECTION64_PATH set to the same agent before the first NVTX call",
+            true,
+        )
+        .with_hint("online CUDA injection cannot retrofit an initialized NVTX dispatch table");
+        return cleanup_failed_arm(activation, request, failure);
+    }
     if capture.state != cupti::CuptiCaptureState::Active {
         let failure = CommandFailure::new(
             ErrorCode::CuptiNotAvailable,
@@ -1805,6 +1820,8 @@ fn cupti_event_filter(
         EventType::GpuMemcpyEnd => cupti::CuptiRecordKind::GpuMemcpyEnd,
         EventType::GpuMemsetStart => cupti::CuptiRecordKind::GpuMemsetStart,
         EventType::GpuMemsetEnd => cupti::CuptiRecordKind::GpuMemsetEnd,
+        EventType::NvtxRangeStart => cupti::CuptiRecordKind::NvtxRangeStart,
+        EventType::NvtxRangeEnd => cupti::CuptiRecordKind::NvtxRangeEnd,
         _ => {
             return Err(CommandFailure::new(
                 ErrorCode::InvalidEventSelector,
@@ -1836,6 +1853,8 @@ fn cupti_event_filter(
     let name = if let Some(name) = selector.api_name.as_ref() {
         cupti::CuptiNameFilter::Exact(name.clone())
     } else if let Some(pattern) = selector.kernel_name_regex.as_deref() {
+        bounded_kernel_name_filter(pattern)
+    } else if let Some(pattern) = selector.nvtx_name_regex.as_deref() {
         bounded_kernel_name_filter(pattern)
     } else {
         cupti::CuptiNameFilter::Any
