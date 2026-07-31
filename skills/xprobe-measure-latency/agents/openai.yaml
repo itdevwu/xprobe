@@ -1,4 +1,4 @@
 interface:
-  display_name: "Xprobe Latency Measurement"
-  short_description: "Route CPU and GPU latency investigations"
-  default_prompt: "Use $xprobe-measure-latency to classify this workload as CPU-only or GPU/mixed, then measure the suspected latency boundary."
+  display_name: "Xprobe Workload Profiling"
+  short_description: "Route bounded CPU and GPU profiling tasks"
+  default_prompt: "Use $xprobe-measure-latency to choose the shortest evidence-based route for this profiling task."
