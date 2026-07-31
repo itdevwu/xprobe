@@ -86,3 +86,7 @@ jobs:
         with:
           files: dist/*.tar.gz*
           generate_release_notes: true
+      - name: Verify public release archive
+        env:
+          XPROBE_RELEASE_REPOSITORY: ${{ github.repository }}
+        run: scripts/verify-public-release.sh "${GITHUB_REF_NAME#v}"

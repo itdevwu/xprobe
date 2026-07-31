@@ -43,6 +43,10 @@ versioned installer. It also rejects CLI or Agent ELF dependencies above
 runner change from silently raising it. The archive test also accepts a mocked
 glibc 2.34 runtime, rejects 2.33, installs into a temporary prefix, runs the
 packaged binary, verifies both Agents and shared resources, and uninstalls it.
+After publishing the GitHub release, `scripts/verify-public-release.sh` downloads
+the public archive and checksum again, repeats the installation test, and
+inspects every shipped ELF. This final gate verifies the artifact users can
+actually download rather than the workflow's local copy.
 
 ## eBPF tests
 
