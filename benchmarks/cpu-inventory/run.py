@@ -89,7 +89,7 @@ def run_benchmark(
             str(perf),
             "record",
             "--quiet",
-            "--frequency",
+            "--freq",
             str(FREQUENCY_HZ),
             "--call-graph",
             "dwarf",
