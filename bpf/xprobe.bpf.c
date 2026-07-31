@@ -6,6 +6,11 @@
 #define __type(name, value) value *name
 
 static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)BPF_FUNC_map_lookup_elem;
+static long (*bpf_map_update_elem)(void *map, const void *key,
+                                   const void *value, __u64 flags) =
+    (void *)BPF_FUNC_map_update_elem;
+static long (*bpf_map_delete_elem)(void *map, const void *key) =
+    (void *)BPF_FUNC_map_delete_elem;
 static __u64 (*bpf_ktime_get_ns)(void) = (void *)BPF_FUNC_ktime_get_ns;
 static __u32 (*bpf_get_smp_processor_id)(void) = (void *)BPF_FUNC_get_smp_processor_id;
 static long (*bpf_probe_read_kernel)(void *dst, __u32 size,
@@ -52,6 +57,34 @@ struct xprobe_linux_event {
     __u32 tid;
     __u32 cpu;
     __u32 probe_id;
+};
+
+struct xprobe_syscall_aggregate_config {
+    __u64 pidns_dev;
+    __u64 pidns_ino;
+    __u32 target_pid;
+    __u32 armed;
+};
+
+struct xprobe_syscall_start {
+    __u64 timestamp_ns;
+    __u32 syscall_number;
+    __u32 reserved;
+};
+
+struct xprobe_syscall_aggregate {
+    __u64 count;
+    __u64 errors;
+    __u64 total_duration_ns;
+    __u64 min_duration_ns;
+    __u64 max_duration_ns;
+};
+
+struct xprobe_syscall_aggregate_summary {
+    __u64 entries;
+    __u64 exits;
+    __u64 unmatched_exits;
+    __u64 dropped_aggregates;
 };
 
 struct xprobe_raw_tracepoint_context {
@@ -133,6 +166,34 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } linux_events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct xprobe_syscall_aggregate_config);
+} syscall_aggregate_config SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, struct xprobe_syscall_start);
+} syscall_aggregate_inflight SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, struct xprobe_syscall_aggregate);
+} syscall_aggregate_groups SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct xprobe_syscall_aggregate_summary);
+} syscall_aggregate_summary SEC(".maps");
 
 SEC("uprobe")
 int xprobe_handle_uprobe(void *context)
@@ -315,6 +376,118 @@ int xprobe_handle_syscall_exit(struct xprobe_raw_tracepoint_context *context)
         return 0;
     values[0] = context->arguments[1];
     return xprobe_emit_linux_event(probe_id, values);
+}
+
+static __attribute__((always_inline)) int
+xprobe_target_syscall_aggregate(struct xprobe_syscall_aggregate_config *current,
+                                struct bpf_pidns_info *nsdata)
+{
+    return current && current->armed &&
+           bpf_get_ns_current_pid_tgid(current->pidns_dev, current->pidns_ino,
+                                       nsdata, sizeof(*nsdata)) == 0 &&
+           current->target_pid == nsdata->tgid;
+}
+
+static __attribute__((always_inline)) void
+xprobe_count_syscall_summary(__u64 *field)
+{
+    if (field)
+        __sync_fetch_and_add(field, 1);
+}
+
+SEC("raw_tracepoint")
+int xprobe_aggregate_syscall_entry(struct xprobe_raw_tracepoint_context *context)
+{
+    __u32 zero = 0;
+    struct xprobe_syscall_aggregate_config *current =
+        bpf_map_lookup_elem(&syscall_aggregate_config, &zero);
+    struct xprobe_syscall_aggregate_summary *summary;
+    struct bpf_pidns_info nsdata = {};
+    struct xprobe_syscall_start start;
+    __u32 thread_id;
+
+    if (!xprobe_target_syscall_aggregate(current, &nsdata) ||
+        (__s64)context->arguments[1] < 0)
+        return 0;
+    thread_id = nsdata.pid;
+    start.timestamp_ns = bpf_ktime_get_ns();
+    start.syscall_number = (__u32)context->arguments[1];
+    start.reserved = 0;
+    summary = bpf_map_lookup_elem(&syscall_aggregate_summary, &zero);
+    if (bpf_map_update_elem(&syscall_aggregate_inflight, &thread_id, &start,
+                            BPF_ANY) != 0) {
+        if (summary)
+            xprobe_count_syscall_summary(&summary->dropped_aggregates);
+        return 0;
+    }
+    if (summary)
+        xprobe_count_syscall_summary(&summary->entries);
+    return 0;
+}
+
+SEC("raw_tracepoint")
+int xprobe_aggregate_syscall_exit(struct xprobe_raw_tracepoint_context *context)
+{
+    __u32 zero = 0;
+    struct xprobe_syscall_aggregate_config *current =
+        bpf_map_lookup_elem(&syscall_aggregate_config, &zero);
+    struct xprobe_syscall_aggregate_summary *summary;
+    struct xprobe_syscall_aggregate *aggregate;
+    struct xprobe_syscall_aggregate initial = {};
+    struct xprobe_syscall_start *start;
+    struct bpf_pidns_info nsdata = {};
+    __u64 duration_ns;
+    __u32 syscall_number;
+    __u32 thread_id;
+
+    if (!xprobe_target_syscall_aggregate(current, &nsdata))
+        return 0;
+    thread_id = nsdata.pid;
+    summary = bpf_map_lookup_elem(&syscall_aggregate_summary, &zero);
+    start = bpf_map_lookup_elem(&syscall_aggregate_inflight, &thread_id);
+    if (!start) {
+        if (summary)
+            xprobe_count_syscall_summary(&summary->unmatched_exits);
+        return 0;
+    }
+    syscall_number = start->syscall_number;
+    duration_ns = bpf_ktime_get_ns() - start->timestamp_ns;
+    bpf_map_delete_elem(&syscall_aggregate_inflight, &thread_id);
+    if (summary)
+        xprobe_count_syscall_summary(&summary->exits);
+
+    aggregate = bpf_map_lookup_elem(&syscall_aggregate_groups, &syscall_number);
+    if (!aggregate) {
+        initial.min_duration_ns = duration_ns;
+        if (bpf_map_update_elem(&syscall_aggregate_groups, &syscall_number,
+                                &initial, BPF_NOEXIST) != 0) {
+            aggregate = bpf_map_lookup_elem(&syscall_aggregate_groups,
+                                            &syscall_number);
+            if (!aggregate) {
+                if (summary)
+                    xprobe_count_syscall_summary(&summary->dropped_aggregates);
+                return 0;
+            }
+        } else {
+            aggregate = bpf_map_lookup_elem(&syscall_aggregate_groups,
+                                            &syscall_number);
+        }
+    }
+    if (!aggregate) {
+        if (summary)
+            xprobe_count_syscall_summary(&summary->dropped_aggregates);
+        return 0;
+    }
+    aggregate->count += 1;
+    aggregate->total_duration_ns += duration_ns;
+    if ((__s64)context->arguments[1] < 0)
+        aggregate->errors += 1;
+    if (aggregate->min_duration_ns == 0 ||
+        duration_ns < aggregate->min_duration_ns)
+        aggregate->min_duration_ns = duration_ns;
+    if (duration_ns > aggregate->max_duration_ns)
+        aggregate->max_duration_ns = duration_ns;
+    return 0;
 }
 
 char _license[] SEC("license") = "GPL";

@@ -5,8 +5,9 @@ use serde_json::{Value, json};
 use xprobe_protocol::{
     AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
     CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
-    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, TraceExportResult,
-    ValidationResult, schema::generated_schemas,
+    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SyscallAggregateResult,
+    SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, ValidationResult,
+    schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -323,6 +324,69 @@ fn cpu_sampling_validation_contract_round_trips() {
         },
         "perf_event": {"status": "available", "detail": "perf_event_paranoid=1"},
         "python_status": "inactive",
+        "issues": [],
+        "warnings": []
+    }));
+}
+
+#[test]
+fn syscall_aggregate_spec_contract_round_trips() {
+    assert_round_trip::<SyscallAggregateSpec>(&json!({
+        "schema_version": "2.0",
+        "name": "syscalls",
+        "target": {"pid": 1234, "process_start_time": 42},
+        "duration_ms": 1000,
+        "timeout_ms": 30000,
+        "max_groups": 256,
+        "max_inflight": 1024
+    }));
+}
+
+#[test]
+fn syscall_aggregate_result_contract_round_trips() {
+    assert_round_trip::<SyscallAggregateResult>(&json!({
+        "schema_version": "2.0",
+        "ok": true,
+        "session_id": "xp_syscalls",
+        "status": "completed",
+        "target": {"pid": 1234, "process_start_time": 42},
+        "inventory": {
+            "name": "syscalls",
+            "duration_ms": 1000,
+            "groups": [{
+                "syscall_number": 202,
+                "syscall_name": "futex",
+                "count": 80,
+                "errors": 2,
+                "duration_ns": {"min": 100, "mean": 250.0, "max": 1000, "total": 20000},
+                "entry_selector_hint": "syscall:futex:entry",
+                "exit_selector_hint": "syscall:futex:exit"
+            }]
+        },
+        "collection": {
+            "completeness": "complete",
+            "observed_entries": 100,
+            "matched_exits": 100,
+            "unmatched_exits": 0,
+            "inflight_at_end": 0,
+            "dropped_aggregates": 0,
+            "group_capacity": 256,
+            "groups": 8,
+            "table_utilization": 0.03125
+        },
+        "warnings": []
+    }));
+}
+
+#[test]
+fn syscall_aggregate_validation_contract_round_trips() {
+    assert_round_trip::<SyscallAggregateValidationResult>(&json!({
+        "schema_version": "2.0",
+        "ok": true,
+        "valid": true,
+        "target": {"pid": 1234, "process_start_time": 42},
+        "requirements": {"needs_ebpf": true, "target_mutation": false},
+        "ebpf": {"status": "available", "detail": "CAP_BPF and CAP_PERFMON"},
         "issues": [],
         "warnings": []
     }));

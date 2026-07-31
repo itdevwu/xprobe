@@ -11,6 +11,7 @@ mod measurement;
 mod process;
 mod resolve;
 pub mod schema;
+mod syscall_aggregate;
 mod validate;
 mod version;
 
@@ -40,6 +41,11 @@ pub use measurement::{
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};
+pub use syscall_aggregate::{
+    SyscallAggregateCollectionSummary, SyscallAggregateCompleteness, SyscallAggregateGroup,
+    SyscallAggregateInventory, SyscallAggregateRequirements, SyscallAggregateResult,
+    SyscallAggregateSpec, SyscallAggregateValidationResult,
+};
 pub use validate::{
     AgentActivation, EndpointSource, PolicyRecommendation, PolicyRecommendationReason,
     ResolvedCudaSelector, ResolvedLinuxSelector, ValidatedEndpoint, ValidationIssue,
