@@ -6,10 +6,32 @@ on:
       - "v*"
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
+  hardware-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require successful hardware validation for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          runs=$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/hardware.yml/runs" \
+            -f head_sha="$commit" \
+            -f status=success \
+            -f per_page=100 \
+            --jq '.total_count')
+          if [ "$runs" -lt 1 ]; then
+            echo "No successful Hardware Integration run exists for $commit" >&2
+            exit 1
+          fi
+
   cupti-agent:
+    needs: hardware-gate
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -22,7 +44,7 @@ jobs:
     container:
       image: ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build tools
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -45,7 +67,7 @@ jobs:
              grep -E '\((RPATH|RUNPATH)\)'; then
             exit 1
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: xprobe-cupti-cuda${{ matrix.cuda_major }}-linux-x86_64
           path: build/cuda/cupti/libxprobe-cupti.so
@@ -55,7 +77,7 @@ jobs:
     needs: cupti-agent
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -66,11 +88,11 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: xprobe-cupti-cuda12-linux-x86_64
           path: build/cuda12/cupti
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: xprobe-cupti-cuda13-linux-x86_64
           path: build/cuda13/cupti
@@ -78,11 +100,11 @@ jobs:
         run: scripts/package-release.sh
       - name: Verify release installation
         run: tests/install/test_install.sh dist/xprobe-*-linux-x86_64.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: xprobe-linux-x86_64
           path: dist/*.tar.gz*
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*.tar.gz*
           generate_release_notes: true

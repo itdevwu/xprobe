@@ -1,5 +1,28 @@
 # Precision and overhead benchmarks
 
+Run the CPU and Python inventory benchmark on a Linux host with `perf`,
+`py-spy`, CPython 3.12 or newer with `-X perf`, perf-event access, and eBPF
+attach permission:
+
+```bash
+just benchmark-cpu
+```
+
+The benchmark uses a fresh target for every case. Native and Python workloads
+are each measured without a profiler, with bounded xprobe CPU sampling, and
+with their corresponding broad profiler (`perf` or `py-spy`). A native syscall
+inventory is measured separately. The native exact measurement uses selector
+hints emitted by the sampled inventory; the Python exact measurement uses GC
+USDT only after validation proves that capability. Profilers never coexist.
+
+The JSON report includes throughput, collector CPU and peak RSS, target RSS,
+artifact size, sample loss, stack and symbol coverage, retained capacity, and
+exact-correlation quality. It rejects incomplete or lossy xprobe captures,
+missing native or Python symbols, malformed comparison artifacts, and empty
+exact measurements. It does not enforce an overhead winner: the observations
+are workload-specific and do not establish that any profiler is universally
+faster.
+
 Run the reproducible GPU benchmark with the pinned CUDA devel image:
 
 ```bash
