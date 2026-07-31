@@ -18,10 +18,39 @@ use PID plus procfs start time; never reuse an old PID-only choice.
 
 ## Map broadly before selecting
 
-When kernel names are unknown, first validate and collect all kernel activity.
 Choose `REPRESENTATIVE_WINDOW_MS` to cover one steady-state request, batch, or
-iteration cycle, not an arbitrarily short interval. The capture is always
-bounded; its duration must still preserve the behavior being diagnosed.
+iteration cycle, not an arbitrarily short interval. Select the broad source
+from the question: sampled stacks for unknown CPU time, syscall aggregation for
+kernel-facing behavior, and activity aggregation for unknown GPU operations.
+Do not run all three by default.
+
+Unknown CPU or Python work starts with sampling:
+
+```bash
+xprobe validate --pid "$PID" --cpu-sample \
+  --json --non-interactive --no-color
+
+xprobe measure --pid "$PID" --cpu-sample \
+  --duration-ms "$REPRESENTATIVE_WINDOW_MS" \
+  --frequency-hz 99 --max-samples 10000 --max-groups 256 \
+  --stack-depth 64 --max-threads 1024 --timeout-ms "$TIMEOUT_MS" \
+  --json --non-interactive --no-color > coarse-cpu.json
+```
+
+Use syscall aggregation only when the question or sampled stacks suggest I/O,
+memory mapping, allocation, scheduling, or another kernel-facing boundary:
+
+```bash
+xprobe validate --pid "$PID" --syscall-aggregate \
+  --json --non-interactive --no-color
+
+xprobe measure --pid "$PID" --syscall-aggregate \
+  --duration-ms "$REPRESENTATIVE_WINDOW_MS" \
+  --max-groups 256 --max-inflight 1024 --timeout-ms "$TIMEOUT_MS" \
+  --json --non-interactive --no-color > coarse-syscalls.json
+```
+
+When kernel names are unknown, collect bounded aggregate kernel activity:
 
 ```bash
 xprobe validate --pid "$PID" \
@@ -58,7 +87,14 @@ measurement; device-specific groups may still need workload-level GPU routing.
 Treat group capacity as a consequence of workload diversity, not event rate.
 On `EVENT_RATE_TOO_HIGH`, split event families or reduce selector scope while
 retaining a representative cycle; reduce duration only when the remaining
-window is still representative. Aggregate mode never returns partial output.
+window is still representative. CPU, syscall, and GPU aggregate modes never
+turn incomplete output into successful evidence.
+
+For a mixed workload whose CPU and GPU phases must cover the same controlled
+request, launch the CPU sample and relevant GPU aggregate as independent
+concurrent commands. Use distinct output paths and bounds, preserve either
+failure, and measure workload throughput against a no-profiler baseline. These
+inventories support narrowing but do not establish cross-source causality.
 
 ## Derive CUDA selectors
 
@@ -79,8 +115,19 @@ contains literal and validate it before collection.
 
 ## Derive CPU selectors
 
-Choose the narrowest observable boundary supported by existing evidence. For a
-function, resolve the mapped object in the target and inspect its symbols:
+Read `collection.completeness`, `observed_samples`, `grouped_samples`,
+`lost_samples`, stack truncation, thread coverage, and table utilization before
+ranking `inventory.hotspots`.
+Then read resolved native/Python/unresolved frame totals and `python_status`.
+An `active` Python map can expose Python function frames. An `inactive` or
+`unsupported` status uses a visible native fallback; incomplete Python coverage
+also leaves native CPython, extension, framework, and system-library frames
+usable. Report that fallback instead of claiming Python semantic attribution.
+
+Prefer each hotspot's `entry_selector_hint` and `return_selector_hint`. These
+are emitted only for attachable native ELF symbols observed in this target and
+still require validation. When no hint exists and an exact native boundary is
+necessary, the agent may inspect the mapped object itself:
 
 ```bash
 readlink -f "/proc/$PID/exe"
@@ -99,12 +146,12 @@ local code, derive a file offset with `readelf`/`objdump` and use
 `validate`; do not infer a runtime virtual address from one process and reuse it
 as a file offset.
 
-For eager PyTorch, inspect the mapped CPython executable, `torch._C`, and the
-loaded libtorch objects. Prefer an exported dispatcher or native operator
-signature observed in that exact installed build, such as an
-`at::_ops::<operator>::call(...)` boundary, and validate both entry and return
-before measuring with `stack-nested`. Treat `_PyEval_EvalFrameDefault` only as a
-broad interpreter boundary; xprobe does not turn it into Python function names.
+For eager PyTorch, prefer a sampled hotspot or emitted selector hint from the
+mapped CPython executable, `torch._C`, or a loaded libtorch object. A validated
+exported dispatcher or native operator signature such as an
+`at::_ops::<operator>::call(...)` boundary can be measured with `stack-nested`.
+Treat `_PyEval_EvalFrameDefault` only as a native interpreter boundary when
+Python semantic frames are unavailable.
 
 After `torch.compile` or Triton warmup, do not assume an eager operator boundary
 still encloses the fused work. Inventory CUDA kernels first and narrow using
@@ -113,12 +160,26 @@ symbol is not a valid uprobe target. Never reuse a C++ signature, mangled name,
 file offset, or generated kernel name across PyTorch builds without resolving
 and validating it again.
 
-For kernel-facing latency, first use application logs, `/proc` state, or a
-bounded syscall summary to identify a candidate. Then validate
+For kernel-facing latency, use application evidence or a bounded syscall
+summary to identify a candidate. Then validate
 `syscall:NAME:entry` to `syscall:NAME:exit` with `exact`. Use
 `tracepoint:CATEGORY:NAME` only when the kernel event itself is the intended
 boundary. Do not start an unknown high-rate workload with unfiltered raw
 syscall tracepoints: select first, then collect detailed evidence.
+
+For a garbage-collection hypothesis, check target capability rather than its
+process name:
+
+```bash
+xprobe validate --pid "$PID" \
+  --from python:gc_start --to python:gc_end --match exact \
+  --json --non-interactive --no-color
+```
+
+If valid, measure a bounded number of exact same-thread GC lifecycles. If the
+mapped CPython build lacks `python:gc__start` and `python:gc__done` USDT notes,
+validation rejects the selector; retain sampled native/Python evidence and do
+not substitute a guessed symbol.
 
 ## Measure one narrow hypothesis
 
@@ -129,6 +190,7 @@ Choose one next boundary from evidence:
 - kernel end to next activity start with `stream-order` for one-stream gaps;
 - host function entry to return with `stack-nested` for CPU span;
 - named syscall entry to exit with `exact` for kernel-facing latency;
+- Python GC start to end with `exact` for one CPython collection lifecycle;
 - host marker to GPU activity with `first-after` only as a disclosed heuristic.
 
 After capture, analyze the artifact and all result quality fields. An aggregate
@@ -150,8 +212,9 @@ skills/xprobe-measure-latency/scripts/analyze_trace.py selected-kernel.jsonl \
 
 ## Escalate at the right boundary
 
-xprobe can isolate slow kernels, launch gaps, copies, synchronization boundaries,
-host spans, and host-to-GPU timing. Once the remaining time is inside a single
-kernel, use NCU or PC sampling for stalls, cache behavior, occupancy, instruction
-mix, or Tensor Core utilization. Use a CPU sampling profiler when the unresolved
-time is inside an uninstrumented host span.
+xprobe can isolate sampled CPU hotspots, CPython GC, syscall cost, slow kernels,
+launch gaps, copies, synchronization boundaries, host spans, and host-to-GPU
+timing. Once the remaining time is inside a single kernel, use NCU or PC sampling
+for stalls, cache behavior, occupancy, instruction mix, or Tensor Core
+utilization. When sampled native code has no stable observable boundary, hand it
+to a runtime-specific profiler or add application instrumentation.

@@ -63,11 +63,24 @@ just test-bpf-live
 ```
 
 The live suite captures function entry/return, mmap/munmap lifecycle, generic
-raw tracepoint, and host-capacity failure paths from controlled targets. It
+raw tracepoint, CPython-compatible GC USDT lifecycle, syscall aggregate, and
+host-capacity failure paths from controlled targets. It
 requires Docker daemon access and grants the container `BPF`,
 `PERFMON`, `SYS_ADMIN`, and `SYS_RESOURCE`, with seccomp disabled for BPF/perf
 syscalls. It does not use `--privileged`, does not require GPU access, mounts the
 workspace read-only, and removes the container after the test.
+
+Run the ignored live CPU sampling tests on a host whose perf policy permits
+sibling-process sampling:
+
+```bash
+just test-cpu-live
+```
+
+They cover a busy native process and CPython 3.12+ `-X perf` symbolization.
+The target interpreter must provide perf trampoline support for the Python
+case; unsupported interpreters remain a valid native-only product path but are
+not a substitute for this live gate.
 
 Resolve real CPython, native extension, and libtorch C++ symbols with a local
 Python environment containing PyTorch:

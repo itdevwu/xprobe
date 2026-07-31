@@ -11,9 +11,10 @@
 
 `xprobe` is an AI harness for measuring latency between two observable events
 in a process, on the CPU, NVIDIA GPU, or across both. Its bounded native
-profiler combines eBPF function, syscall, and tracepoint evidence with NVIDIA
-CUPTI, an agent-friendly CLI, strict JSON contracts, explicit correlation
-quality, and no daemon or server lifecycle.
+profiler combines sampled native/Python stacks, eBPF function, syscall,
+tracepoint and CPython runtime evidence with NVIDIA CUPTI, an agent-friendly
+CLI, strict JSON contracts, explicit correlation quality, and no daemon or
+server lifecycle.
 
 ## Install
 
@@ -35,24 +36,25 @@ Node.js is only needed for Skill installation, not for xprobe itself. See
 
 ## Measure
 
-Confirm the local capabilities first. `ok: true` means diagnosis completed;
-read the individual checks before selecting events.
+For an unknown CPU workload, start with one representative sampled inventory:
 
 ```bash
-xprobe doctor --json --non-interactive --no-color
-
-xprobe discover --pid 4242 --limit 50 \
+xprobe validate --pid 4242 --cpu-sample \
   --json --non-interactive --no-color
 
+xprobe measure --pid 4242 \
+  --cpu-sample --duration-ms 1000 \
+  --json --non-interactive --no-color
+```
+
+Use its hotspot and selector evidence, or a GPU aggregate inventory, to state a
+narrow hypothesis. Then validate and measure that boundary directly:
+
+```bash
 xprobe validate --pid 4242 \
   --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
   --match exact --json --non-interactive --no-color
-
-xprobe measure --pid 4242 \
-  --from 'cuda:kernel_start' --to 'cuda:kernel_end' \
-  --match exact --aggregate --duration-ms 1000 --max-groups 4096 \
-  --json --non-interactive --no-color
 
 xprobe measure --pid 4242 \
   --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
@@ -62,12 +64,11 @@ xprobe measure --pid 4242 \
   --json --non-interactive --no-color
 ```
 
-Kernel launch latency is only one event pair. The same workflow measures host
-function spans, syscall latency, named Linux events, CUDA API calls, GPU
-operation durations, transfers, NVTX application ranges, and paths across CPU
-and GPU events after selecting the correct process. Aggregate mode provides a
-bounded coarse inventory of GPU operations before an exact evidence
-measurement narrows the question.
+Kernel launch latency is only one event pair. xprobe can first inventory sampled
+CPU/Python hotspots, syscall lifecycles, or GPU activity, then measure host
+function spans, CPython GC, syscall latency, named Linux events, CUDA API calls,
+GPU operation durations, transfers, NVTX ranges, and CPU/GPU paths after
+selecting the correct process.
 
 `measure` also accepts completed `--input` captures and versioned live
 `--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
@@ -82,8 +83,8 @@ is also preserved when correlation or clock validation fails.
 | --- | --- |
 | `doctor` | Report local eBPF, ptrace, NVIDIA, CUDA, and CUPTI capabilities |
 | `discover` | List NVML-confirmed CUDA context holders under a process-tree root |
-| `validate` | Resolve two selectors and report collection, mutation, clock, and policy requirements without attaching |
-| `measure` | Collect or import bounded events, correlate pairs, emit statistics and full event evidence |
+| `validate` | Check an event pair or inventory mode and report requirements without attaching |
+| `measure` | Inventory bounded work or correlate bounded event evidence |
 
 `measure --pid` automatically loads the matching CUDA 12 or CUDA 13 CUPTI Agent
 when a selected endpoint requires it. It reports the target mutation on stderr
@@ -97,7 +98,9 @@ attach cannot retrofit an initialized NVTX dispatch.
 | Surface | Current support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.34 or newer |
-| Host events | PID-scoped ELF function, named syscall, and tracepoint boundaries |
+| CPU inventory | PID-scoped sampled user stacks with native ELF and CPython perf-map symbols |
+| Host events | ELF functions, named syscall/tracepoint boundaries, and CPython GC USDT |
+| Coarse aggregation | Bounded syscall lifecycle and CUDA kernel/memcpy/memset groups |
 | CUDA callbacks | Runtime and Driver API entry/exit |
 | GPU activity | Kernel, memcpy, and memset start/end |
 | Application ranges | Bounded ASCII NVTX thread and process ranges |

@@ -71,6 +71,8 @@ uprobe:<binary>:+0x<file-offset>:return
 syscall:<name>:entry
 syscall:<name>:exit
 tracepoint:<category>:<name>
+python:gc_start
+python:gc_end
 ```
 
 The `symbol=` form allows `::` and other punctuation in a full C++ signature.
@@ -85,6 +87,12 @@ records the six scalar syscall ABI registers on entry, and records the scalar
 return value on exit. It never dereferences pointer arguments. Named
 tracepoints record identity and timestamp only; they do not copy the tracepoint
 payload. Unsupported syscall names and unavailable tracepoints fail explicitly.
+
+Python GC selectors are capability-based, not process-name based. Validation
+reads the target's mapped CPython executable and `libpython` ELF metadata and
+requires both `python:gc__start` and `python:gc__done` USDT markers. Captured
+events contain process/thread identity, timestamp, mapped binary, provider, and
+marker name without copying generation or object payloads.
 
 CUDA forms include Runtime/Driver API entry/exit, kernel/memcpy/memset activity
 start/end, and NVTX range boundaries. Kernel selectors accept `name~REGEX`;
@@ -102,13 +110,17 @@ xprobe validate --pid 4242 \
   --match exact --json --non-interactive --no-color
 ```
 
-Validation is read-only. It verifies target identity, resolves host selectors,
-parses CUDA filters, and checks collection and correlation requirements.
+Validation is read-only. It verifies target identity, resolves host and Python
+USDT selectors, parses CUDA filters, and checks collection and correlation
+requirements. `validate --cpu-sample` checks target threads, perf-event access,
+and Python symbolization status. `validate --syscall-aggregate` checks the
+bounded eBPF aggregate path. Inventory modes do not take event-pair selectors.
 Results conform to `schemas/validate.schema.json`.
 
 Supported policies are `exact`, `first-after`, `nearest`, `stack-nested`, and
 `stream-order`. Exact uses deterministic CUPTI correlation IDs, NVTX range
-kind/ID, or one named syscall's per-thread entry/exit lifecycle. Nested
+kind/ID, one named syscall's per-thread entry/exit lifecycle, or one CPython GC
+start/end lifecycle on the same thread. Nested
 requires entry/return of the same host function. Stream order requires GPU
 activity endpoints. Temporal policies always warn that they are heuristic.
 `policy_recommendation` reports the strongest compatible policy, a stable
@@ -152,6 +164,32 @@ xprobe measure --pid 4242 \
   --json --non-interactive --no-color
 ```
 
+CPU/Python hotspot inventory:
+
+```bash
+xprobe measure --pid 4242 --cpu-sample --duration-ms 1000 \
+  --frequency-hz 99 --max-samples 10000 --max-groups 256 \
+  --stack-depth 64 --max-threads 1024 \
+  --json --non-interactive --no-color
+```
+
+Syscall lifecycle inventory:
+
+```bash
+xprobe measure --pid 4242 --syscall-aggregate --duration-ms 1000 \
+  --max-groups 256 --max-inflight 1024 \
+  --json --non-interactive --no-color
+```
+
+CPython garbage-collection duration:
+
+```bash
+xprobe measure --pid 4242 \
+  --from python:gc_start --to python:gc_end \
+  --match exact --samples 100 --max-events 1000 \
+  --json --non-interactive --no-color
+```
+
 NVTX application range:
 
 ```bash
@@ -191,6 +229,28 @@ xprobe measure --pid 4242 \
 Exactly one source mode is used: `--pid`, one or more `--input`, or `--spec`.
 At least one positive `--samples` or `--duration-ms` bound is required in direct
 mode. `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000.
+
+`--cpu-sample` is live-only and requires `--duration-ms`. It opens bounded
+userspace callchain sampling events for the target's current threads. Defaults
+are 99 Hz, 10,000 observed samples, 256 retained stack groups, depth 64, and
+1,024 threads. The result uses
+`schemas/cpu-sample-inventory-result.schema.json`: exact raw stack counts are
+grouped deterministically, hotspots report inclusive/exclusive counts and
+proportions, and attachable native frames include uprobe selector hints. Native
+ELF and `/tmp/perf-<pid>.map` Python symbols are resolved independently.
+`python_status` and resolved/unresolved frame counts prevent native fallback
+from being mislabeled as Python semantic coverage. Lost samples, truncated
+stacks, thread coverage, and capacity pressure remain visible.
+
+`--syscall-aggregate` is live-only and requires `--duration-ms`. PID-filtered
+raw syscall entry/exit programs retain at most `--max-inflight` thread starts
+and `--max-groups` syscall groups in BPF maps, then emit one bounded summary.
+Known x86_64 numbers include names and exact entry/exit selector hints; unknown
+numbers remain numeric. `schemas/syscall-aggregate-result.schema.json` exposes
+entries, matched and unmatched exits, inflight-at-end, drops, occupancy, errors,
+and total/min/max/mean duration. It contains no pointer values or per-call event
+stream.
+
 `--aggregate` is live-only, duration-bounded, and accepts one matching kernel,
 memcpy, or memset activity start/end pair. It uses `--max-groups` (default
 4,096), does not accept `--samples` or `--events-out`, and emits
@@ -204,9 +264,16 @@ Each kernel group reports `name_complete`. CUPTI names that fill the fixed
 prefix instead of claiming an exact full name, so the next capture can still
 filter in the Agent hot path.
 
+The three inventory modes have distinct result contracts and contain no exact
+event timeline. They cannot be passed to `measure --input` or exported with
+`--events-out`. Their groups and hotspots are evidence for choosing selectors;
+read-only validation still precedes the resulting exact measurement.
+
 Live host endpoints attach PID-scoped eBPF probes. Linux syscall endpoints use
 raw tracepoints so they do not depend on tracingfs event IDs; ordinary named
-tracepoints use their kernel category and name. A samples-bound Linux capture
+tracepoints use their kernel category and name. CPython GC endpoints attach to
+the exact mapped ELF selected by validation. Every endpoint link is attached
+before collection is armed. A samples-bound Linux capture
 allows bounded startup slack for a target already inside an event boundary. A
 duration capture that fills `--max-events` returns `EVENT_RATE_TOO_HIGH` rather
 than reporting partial success. CUDA endpoints automatically activate the CUPTI

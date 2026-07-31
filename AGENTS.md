@@ -22,6 +22,9 @@
 - Resolve architecture-specific syscall names in core. In BPF, filter process
   identity and syscall number before reading scalar registers or reserving a
   record. Arm multi-link collectors only after every link is attached.
+- Resolve runtime probes from mapped binary capabilities, not process names.
+  libbpf USDT attachment requires its support maps even when xprobe does not
+  read marker arguments.
 
 ## Failures and safety
 
@@ -43,6 +46,9 @@
   default. Named tracepoints retain identity and timestamps unless a versioned
   scalar payload is explicitly designed. Never describe temporal correlation
   as exact causality.
+- Treat sampled hotspot proportions as estimates. Preserve sample loss, stack
+  truncation, thread coverage, symbol coverage, and native fallback when Python
+  semantic symbols are unavailable.
 
 ## Agent workflow
 

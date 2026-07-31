@@ -33,7 +33,7 @@ attachment, collection, correlation, logical CUPTI shutdown, and cleanup.
 | `xprobe/collector` | eBPF collection, CUPTI control protocol and ABI decoding |
 | `xprobe/correlator` | Selector matching, pair evidence, statistics and quality |
 | `xprobe/exporter` | Event JSONL and Chrome Trace Event Format |
-| `bpf/` | PID-scoped uprobe, syscall, and named tracepoint programs |
+| `bpf/` | PID-scoped uprobe, USDT, syscall, tracepoint, and aggregate programs |
 | `cupti/` | Reusable in-process CUDA callback/activity agent |
 
 ## Identity and discovery
@@ -58,9 +58,17 @@ symbol table. A full C++ signature uses the explicit `symbol=` selector form;
 the resolver checks exported dynamic symbols first, falls back to the complete
 table, and returns both the attachable mangled name and readable signature.
 
+CPU stack analysis resolves sampled instruction pointers through the target's
+mapped ELF load segments and symbol tables. CPython frames are resolved
+independently from `/tmp/perf-<pid>.map` when the interpreter exposes an active
+perf trampoline. Native coverage remains usable when Python semantic symbols
+are inactive or unsupported. CPython GC resolution parses `.note.stapsdt` from
+the mapped interpreter or `libpython` and accepts the selector only when both
+required markers are present in one ELF.
+
 ## Validation
 
-`validate` is read-only. It resolves ELF probes and Linux syscall numbers,
+`validate` is read-only. It resolves ELF, USDT, and Linux syscall probes,
 parses named tracepoint and CUDA selectors, checks correlation-policy
 compatibility, and reports eBPF, CUPTI, callback, activity, and clock
 requirements. CUPTI activation is one of:
@@ -77,6 +85,11 @@ the Agent before NVTX initialized. Online attach cannot rewrite that dispatch
 table, so validation returns an explicit issue instead of promising injection.
 Malformed selectors, unresolved symbols, invalid policies, and unavailable
 required host collection remain explicit issues or errors.
+
+CPU sampling and syscall aggregation use dedicated validation contracts. They
+check target identity and current perf-event or eBPF capability without
+attaching, report no target mutation, and preserve unavailable Python semantic
+symbolization as status rather than inventing frames.
 
 ## Collection
 
@@ -95,6 +108,25 @@ layout. Ring exhaustion, scalar-read failure, malformed records, and
 duration-capacity exhaustion remain explicit failures. Rust ownership detaches
 all links on every return path.
 
+CPython GC uses the same bounded Linux ring and two `SEC("usdt")` programs.
+libbpf attaches each marker to the exact mapped ELF returned by validation;
+both links attach before the shared map is armed. Events retain identity,
+timestamp, provider, and marker name only. Exact correlation follows one
+ordered start/end lifecycle per process thread.
+
+CPU inventory opens one bounded software CPU-clock perf event per current
+target thread and samples userspace callchains into fixed capacities. It counts
+exact raw stacks before deterministic top-group truncation, then resolves native
+ELF and optional Python perf-map frames into stack groups and
+inclusive/exclusive hotspots. Sample loss, truncated callchains, thread fanout,
+group pressure, and symbol coverage remain first-class output.
+
+Syscall inventory uses PID-filtered raw entry/exit programs with a bounded LRU
+map for per-thread starts and a bounded per-CPU hash for aggregate groups. The
+hot path retains syscall number, timestamp, scalar return status, and integer
+duration accounting; it emits no per-call ring records. Userspace merges the
+per-CPU values and maps known x86_64 numbers to selector hints.
+
 CUDA events use an in-process CUPTI Agent. CUDA 12 and CUDA 13 builds share the
 same source and capture ABI but link their matching CUPTI SONAME. Loading the
 Agent creates a control socket; `measure` separately arms one fresh,
@@ -112,7 +144,12 @@ TID with the returned nesting level; process keys use the returned 64-bit NVTX
 range ID and permit a different end thread. STOP disables callback domains but
 does not unsubscribe the routing required by CUDA 13.
 
-Broad GPU inventory uses the same `measure` primitive with aggregate mode. The
+Broad inventory remains in the foreground `measure` primitive. CPU sampling,
+syscall aggregation, and GPU aggregation have separate result schemas because
+their quality and capacity meanings differ. Their groups are hypotheses for a
+later validated exact capture, not event timelines that can be re-correlated.
+
+Broad GPU inventory uses aggregate mode. The
 Agent updates a `--max-groups`-bounded table for matching kernel, memcpy, or
 memset activity and returns only final count/duration/byte summaries. Exact
 measurement remains the evidence path; aggregate output has a separate result
@@ -156,7 +193,7 @@ All sources normalize into the versioned `Event` type. `measure` supports:
 
 | Policy | Pairing | Confidence |
 | --- | --- | --- |
-| `exact` | CUPTI correlation ID, NVTX range ID, or same-thread syscall lifecycle | exact |
+| `exact` | CUPTI correlation ID, NVTX range ID, or same-thread syscall/CPython GC lifecycle | exact |
 | `first-after` | First unused end at or after each start | heuristic |
 | `nearest` | Nearest unused end by timestamp | heuristic |
 | `stack-nested` | Per-thread LIFO host entry/return | high |

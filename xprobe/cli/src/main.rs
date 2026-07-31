@@ -283,7 +283,7 @@ struct MeasureArgs {
     #[arg(long)]
     agent: Option<PathBuf>,
 
-    /// Write matched start/end evidence events to this file.
+    /// Write the complete bounded event capture to this file.
     #[arg(long)]
     events_out: Option<PathBuf>,
 

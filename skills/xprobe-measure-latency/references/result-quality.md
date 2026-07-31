@@ -2,7 +2,8 @@
 
 Prefer `exact` when CUDA endpoints carry the same CUPTI correlation ID or when
 one named syscall has entry/exit records from the same thread and process
-identity. Prefer `stack-nested` for entry/return pairs of the same host
+identity. CPython GC exact matching likewise requires ordered start/end markers
+on the same thread and process identity. Prefer `stack-nested` for entry/return pairs of the same host
 function. Use `stream-order` only for GPU activity endpoints on the same device,
 context, and stream. Treat `first-after` and `nearest` as temporal heuristics,
 never request causality.
@@ -14,11 +15,24 @@ changed, collection was incomplete, or clock alignment failed. Report unmatched
 and ambiguous counts with matched samples. `estimated_error_ns: null` means no
 quantified interpolation error bound.
 
-Aggregate inventory is a different contract. Require `completeness: complete`,
-zero dropped activities, equal observed and grouped activity counts, and
-reasonable table utilization before using its group names or selector hints.
-Its min/max/mean come from exact integer totals, but it has no event ordering,
-percentiles, stream overlap, or correlation evidence.
+Inventory modes are separate contracts:
+
+- For CPU sampling, require `completeness: complete`, zero lost samples,
+  `observed_samples == grouped_samples`, acceptable stack truncation, expected
+  thread coverage, and reasonable group-table utilization. Read native,
+  Python, and unresolved frame counts before using hotspot names. Sample
+  proportions have sampling uncertainty and are not exact time shares.
+- For syscall aggregation, require `completeness: complete`, zero dropped
+  aggregates, acceptable unmatched/inflight counts, and reasonable group-table
+  utilization. Durations are exact for retained matched lifecycles, but groups
+  contain no event order or percentiles.
+- For GPU aggregate inventory, require `completeness: complete`, zero dropped
+  activities, equal observed and grouped activity counts, and reasonable table
+  utilization. Min/max/mean derive from integer totals, but there is no event
+  ordering, stream overlap, or correlation evidence.
+
+Do not compare capacities or completeness fields across these schemas as if
+they described the same collector.
 
 ## Concurrency
 
@@ -55,10 +69,12 @@ minimum_records = samples * (start_records_per_sample + end_records_per_sample)
 max_events >= minimum_records + expected_unmatched_records
 ```
 
-Use at least 2x headroom for stable narrow selectors. For broad activity
-inventory, use aggregate mode and size `max-groups` from expected operation
-diversity rather than event rate. Keep enough duration to cover a representative
-cycle; table saturation is an explicit failure.
+Use at least 2x headroom for stable narrow selectors. For broad aggregate
+inventory, size `max-groups` from expected operation or syscall diversity rather
+than event rate. For CPU sampling, size `max-samples` from frequency times
+duration, `max-threads` from target fanout, `stack-depth` from expected call
+depth, and `max-groups` from stack diversity. Keep enough duration to cover a
+representative cycle; saturation or sample loss is an explicit quality failure.
 
 `duration-ms` limits correlation to a window beginning at the first selected
 event. In live mode it also sets a collection stop from ARM completion, so finish
@@ -71,5 +87,7 @@ cleanup limit.
 Record an application-level latency distribution before profiling and repeat it
 afterward under the same workload. Report the difference and whether automatic
 injection occurred. The injected shared object remains mapped but is logically
-disabled after collection. Do not interpret a one-off profiled request as an
-unperturbed baseline.
+disabled after collection. For mixed concurrent inventories, report each
+collector's wall time, available CPU/RSS observations, and combined workload
+throughput. Do not interpret a one-off profiled request as an unperturbed
+baseline or claim universal superiority over another profiler.

@@ -1,0 +1,34 @@
+{
+  "scenarios": [
+    {
+      "name": "existing_artifact",
+      "sources": ["skill"],
+      "required": ["measure --input", "skip installation", "unless a new capture is required"]
+    },
+    {
+      "name": "known_selector",
+      "sources": ["skill"],
+      "required": ["known live boundary", "run read-only validate", "do not run a broad inventory solely to satisfy a checklist"]
+    },
+    {
+      "name": "unknown_cpu",
+      "sources": ["skill", "investigation"],
+      "required": ["unknown cpu or python workload", "--cpu-sample", "observed_samples", "entry_selector_hint"]
+    },
+    {
+      "name": "python_semantics",
+      "sources": ["skill", "investigation"],
+      "required": ["python_status", "native frames", "python:gc_start", "capability rather than its process name"]
+    },
+    {
+      "name": "mixed_cpu_gpu",
+      "sources": ["skill", "investigation"],
+      "required": ["bounded cpu sample inventory", "gpu aggregate", "independent concurrent commands", "separate bounds, outputs, failures"]
+    },
+    {
+      "name": "unsupported_python_runtime",
+      "sources": ["skill", "investigation"],
+      "required": ["`inactive` or `unsupported`", "native fallback", "do not claim xprobe identifies python semantics"]
+    }
+  ]
+}
