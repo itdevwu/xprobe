@@ -248,6 +248,8 @@ def run_case(
         metadata = json.loads(ready_line)
         wait_for_metrics(metrics)
         validation = prepare(target.pid) if prepare else None
+        if validation is not None and validation.get("valid") is not True:
+            raise AssertionError({"name": name, "validation": validation})
         before = read_metrics(metrics)
         resource_metrics = output / f"{name}-resources.txt"
         command = [argument.format(pid=target.pid) for argument in profiler_template]
@@ -288,8 +290,6 @@ def run_case(
             "artifact_bytes": artifact.stat().st_size if artifact else len(completed.stdout),
         }
         if validation is not None:
-            if validation.get("valid") is not True:
-                raise AssertionError({"name": name, "validation": validation})
             case["validation"] = {
                 "valid": True,
                 "target": validation["target"],
