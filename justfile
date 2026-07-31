@@ -5,6 +5,7 @@ cuda12_devel_image := "nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a6287
 cuda12_compat_build_image := "nvidia/cuda:12.9.1-devel-ubuntu22.04@sha256:bd4e2680a261c212f1e2fea241606f71497dc67a417f73175d794ec8212b5ba8"
 cuda12_min_devel_image := "nvidia/cuda:12.0.1-devel-ubuntu22.04@sha256:0632323ec456b33654d489f3ddd336f3b3ea1c87e6421a91a37f6768e659f08c"
 cuda13_devel_image := "nvcr.io/nvidia/cuda:13.3.0-devel-ubuntu24.04@sha256:69e9e39eb8fe2cda271654a0f5eac2f1bb946b2fb9c460eb19c7c3c155f4e64e"
+pytorch_image := "nvcr.io/nvidia/pytorch:25.06-py3@sha256:3cb18e2c438db8af2d3a659ca27fac5da328640261c38c48a34edcd223c38af9"
 
 default:
     @just --list
@@ -73,10 +74,10 @@ test-pytorch-symbols: build
     python3 tests/integration/test_pytorch_symbols.py --python "${PYTORCH_PYTHON:?set PYTORCH_PYTHON to a Python with torch}"
 
 test-pytorch-live: build
-    python3 tests/integration/test_pytorch.py "{{cuda_smoke_image}}" "${PYTORCH_ENV:?set PYTORCH_ENV to a Mamba environment with torch}"
+    if [[ -n "${PYTORCH_ENV:-}" ]]; then python3 tests/integration/test_pytorch.py "{{cuda_smoke_image}}" "${PYTORCH_ENV}"; else python3 tests/integration/test_pytorch.py "{{pytorch_image}}"; fi
 
 test-pytorch-cuda-live: build
-    python3 tests/integration/test_pytorch_cuda.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV:?set PYTORCH_ENV to a Mamba environment with torch}"
+    if [[ -n "${PYTORCH_ENV:-}" ]]; then python3 tests/integration/test_pytorch_cuda.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV}"; else python3 tests/integration/test_pytorch_cuda.py --image "{{pytorch_image}}"; fi
 
 test-nvtx-live: build
     python3 tests/integration/test_nvtx.py --image "{{cuda13_devel_image}}"
