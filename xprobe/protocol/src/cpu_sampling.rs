@@ -1,10 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    CaptureCompleteness, CheckResult, SchemaVersion, SessionStatus, TargetIdentity,
-    ValidationIssue, Warning,
-};
+use crate::{CheckResult, SchemaVersion, SessionStatus, TargetIdentity, ValidationIssue, Warning};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -93,7 +90,7 @@ pub enum PythonSymbolizationStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CpuSampleCollectionSummary {
-    pub completeness: CaptureCompleteness,
+    pub completeness: CpuCaptureCompleteness,
     pub observed_samples: u64,
     pub grouped_samples: u64,
     pub lost_samples: u64,
@@ -106,6 +103,13 @@ pub struct CpuSampleCollectionSummary {
     pub threads_observed: u32,
     pub threads_attached: u32,
     pub thread_capacity: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CpuCaptureCompleteness {
+    Complete,
+    Incomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -19,10 +19,10 @@ pub use capability::{
 };
 pub use capture::HostCaptureResult;
 pub use cpu_sampling::{
-    CpuFrameLanguage, CpuHotspot, CpuSampleCollectionSummary, CpuSampleEvent, CpuSampleInventory,
-    CpuSampleInventoryResult, CpuSamplingRequirements, CpuSamplingSpec,
-    CpuSamplingValidationResult, CpuStackFrame, CpuStackGroup, CpuSymbolizationSummary,
-    PythonSymbolizationStatus,
+    CpuCaptureCompleteness, CpuFrameLanguage, CpuHotspot, CpuSampleCollectionSummary,
+    CpuSampleEvent, CpuSampleInventory, CpuSampleInventoryResult, CpuSamplingRequirements,
+    CpuSamplingSpec, CpuSamplingValidationResult, CpuStackFrame, CpuStackGroup,
+    CpuSymbolizationSummary, PythonSymbolizationStatus,
 };
 pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
