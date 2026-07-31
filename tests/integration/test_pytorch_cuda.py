@@ -23,10 +23,18 @@ def main() -> None:
 
 
 def run_container(args: argparse.Namespace) -> None:
-    if not args.image or not args.pytorch_env:
-        raise SystemExit("--image and --pytorch-env are required")
+    if not args.image:
+        raise SystemExit("--image is required")
     workspace = pathlib.Path(__file__).resolve().parents[2]
-    pytorch_env = pathlib.Path(args.pytorch_env).resolve()
+    python = "python3"
+    environment_arguments = []
+    if args.pytorch_env:
+        pytorch_env = pathlib.Path(args.pytorch_env).resolve()
+        python = "/opt/xprobe-pytorch/bin/python"
+        environment_arguments = [
+            "--volume",
+            f"{pytorch_env}:/opt/xprobe-pytorch:ro",
+        ]
     completed = subprocess.run(
         [
             "docker",
@@ -40,12 +48,11 @@ def run_container(args: argparse.Namespace) -> None:
             "seccomp=unconfined",
             "--volume",
             f"{workspace}:/workspace:ro",
-            "--volume",
-            f"{pytorch_env}:/opt/xprobe-pytorch:ro",
+            *environment_arguments,
             "--workdir",
             "/workspace",
             args.image,
-            "/opt/xprobe-pytorch/bin/python",
+            python,
             "/workspace/tests/integration/test_pytorch_cuda.py",
             "--inner",
         ],
@@ -220,6 +227,12 @@ def inventory(
 ) -> dict:
     set_mode(mode_path, mode)
     time.sleep(0.1)
+    validate_pair(
+        xprobe,
+        pid,
+        f"cuda:{activity}_start",
+        f"cuda:{activity}_end",
+    )
     return run_xprobe(
         xprobe,
         [
@@ -256,6 +269,7 @@ def exact_measure(
 ) -> dict:
     set_mode(mode_path, mode)
     time.sleep(0.1)
+    validate_pair(xprobe, pid, start_selector, end_selector)
     return run_xprobe(
         xprobe,
         [
@@ -278,6 +292,33 @@ def exact_measure(
             "30000",
         ],
     )
+
+
+def validate_pair(
+    xprobe: pathlib.Path,
+    pid: int,
+    start_selector: str,
+    end_selector: str,
+) -> dict:
+    result = run_xprobe(
+        xprobe,
+        [
+            "validate",
+            "--pid",
+            str(pid),
+            "--from",
+            start_selector,
+            "--to",
+            end_selector,
+            "--match",
+            "exact",
+        ],
+    )
+    assert result["valid"] is True, result
+    assert result["target"]["pid"] == pid, result
+    assert result["policy_recommendation"]["policy"] == "exact", result
+    assert result["requirements"]["agent_activation"] == "already_loaded", result
+    return result
 
 
 def run_xprobe(xprobe: pathlib.Path, arguments: list[str]) -> dict:

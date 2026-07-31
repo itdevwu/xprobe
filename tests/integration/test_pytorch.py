@@ -5,11 +5,21 @@ import sys
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: test_pytorch.py <container-image> <pytorch-env>")
+    if len(sys.argv) not in {2, 3}:
+        raise SystemExit(
+            "usage: test_pytorch.py <container-image> [pytorch-environment]"
+        )
 
     workspace = pathlib.Path(__file__).resolve().parents[2]
-    pytorch_env = pathlib.Path(sys.argv[2]).resolve()
+    python = "python3"
+    environment_arguments = []
+    if len(sys.argv) == 3:
+        pytorch_env = pathlib.Path(sys.argv[2]).resolve()
+        python = "/opt/xprobe-pytorch/bin/python"
+        environment_arguments = [
+            "--volume",
+            f"{pytorch_env}:/opt/xprobe-pytorch:ro",
+        ]
     completed = subprocess.run(
         [
             "docker",
@@ -27,15 +37,14 @@ def main() -> None:
             "seccomp=unconfined",
             "--volume",
             f"{workspace}:/workspace:ro",
-            "--volume",
-            f"{pytorch_env}:/opt/xprobe-pytorch:ro",
+            *environment_arguments,
             "--workdir",
             "/workspace",
             sys.argv[1],
-            "/opt/xprobe-pytorch/bin/python",
+            python,
             "/workspace/tests/integration/test_pytorch_symbols.py",
             "--python",
-            "/opt/xprobe-pytorch/bin/python",
+            python,
             "--xprobe",
             "/workspace/target/debug/xprobe",
             "--measure",

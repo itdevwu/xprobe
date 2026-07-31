@@ -65,27 +65,31 @@ requires Docker daemon access and grants the container `BPF`,
 syscalls. It does not use `--privileged`, does not require GPU access, mounts the
 workspace read-only, and removes the container after the test.
 
-Resolve real CPython, native extension, and libtorch C++ symbols with a Mamba
-environment containing PyTorch:
+Resolve real CPython, native extension, and libtorch C++ symbols with a local
+Python environment containing PyTorch:
 
 ```bash
 PYTORCH_PYTHON=/path/to/env/bin/python just test-pytorch-symbols
 ```
 
 Run the corresponding live `torch.mm` entry/return measurement in the pinned
-BPF container:
+NVIDIA PyTorch container:
 
 ```bash
-PYTORCH_ENV=/path/to/env just test-pytorch-live
+just test-pytorch-live
 ```
 
-With a CUDA-enabled PyTorch environment, run eager matrix multiplication,
-convolution, compiled Triton, bidirectional transfer, selected-kernel, and
+By default the live recipes use a pinned NVIDIA PyTorch image with Ubuntu 24.04
+and CUDA 12.9, so hardware CI does not depend on a runner-local Mamba
+environment. During local development, set `PYTORCH_ENV=/path/to/env` to mount
+an existing environment into the already-pinned CUDA fixtures instead of
+pulling the PyTorch image. Run eager matrix multiplication, convolution,
+compiled Triton, bidirectional transfer, selected-kernel, and
 stream-synchronization profiling on the local GPU. The test also wraps an eager
 operation in an NVTX range and verifies exact range-ID matching:
 
 ```bash
-PYTORCH_ENV=/path/to/env just test-pytorch-cuda-live
+just test-pytorch-cuda-live
 ```
 
 ## GPU checks

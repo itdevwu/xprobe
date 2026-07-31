@@ -125,6 +125,37 @@ def measure(
     object_path: str,
 ) -> dict:
     selector = f"uprobe:{object_path}:symbol={MM_SYMBOL}"
+    validated = subprocess.run(
+        [
+            binary,
+            "validate",
+            "--pid",
+            str(pid),
+            "--from",
+            f"{selector}:entry",
+            "--to",
+            f"{selector}:return",
+            "--match",
+            "stack-nested",
+            "--json",
+            "--non-interactive",
+            "--no-color",
+        ],
+        cwd=workspace,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if validated.returncode != 0:
+        raise AssertionError(
+            f"validate failed:\n{validated.stdout}\n{validated.stderr}"
+        )
+    validation = json.loads(validated.stdout)
+    assert validation["valid"] is True, validation
+    assert validation["target"]["pid"] == pid, validation
+    assert (
+        validation["policy_recommendation"]["policy"] == "stack_nested"
+    ), validation
     completed = subprocess.run(
         [
             binary,
