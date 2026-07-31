@@ -47,7 +47,8 @@ def main() -> None:
     assert_tracepoint_capture(captures["tracepoint"])
     assert_capacity_failure(captures["capacity"])
     assert_syscall_inventory(captures["syscall_inventory"])
-    print("captured syscall inventory plus mmap, munmap, and named tracepoint latency evidence")
+    assert_python_gc_capture(captures["python_gc"])
+    print("captured syscall inventory plus syscall, tracepoint, and Python GC latency evidence")
 
 
 def assert_syscall_capture(result: dict, name: str) -> None:
@@ -113,6 +114,28 @@ def assert_syscall_inventory(result: dict) -> None:
     assert mmap["count"] > 0
     assert mmap["duration_ns"]["total"] >= mmap["duration_ns"]["max"]
     assert mmap["entry_selector_hint"] == "syscall:mmap:entry"
+
+
+def assert_python_gc_capture(result: dict) -> None:
+    assert result["ok"] is True
+    assert result["measurement"]["samples"]["matched"] == 3
+    assert result["correlation"]["method"] == "exact_python_gc_tid_lifecycle"
+    assert result["correlation"]["confidence"] == "exact"
+    assert result["collection"]["dropped_events"] == 0
+    for pair in result["evidence"]:
+        start = pair["start"]
+        end = pair["end"]
+        assert start["event_type"] == "python_gc_start"
+        assert end["event_type"] == "python_gc_end"
+        assert start["tid"] == end["tid"]
+        assert start["host"]["probe_kind"] == "usdt"
+        assert end["host"]["probe_kind"] == "usdt"
+        assert start["host"]["symbol"] == "gc__start"
+        assert end["host"]["symbol"] == "gc__done"
+        assert start["host"]["arguments"] == []
+        assert end["host"]["arguments"] == []
+        assert start["attributes"]["usdt_provider"] == "python"
+        assert pair["latency_ns"] == end["timestamp_ns"] - start["timestamp_ns"]
 
 
 if __name__ == "__main__":

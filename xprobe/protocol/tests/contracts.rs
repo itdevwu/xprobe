@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 use xprobe_protocol::{
     AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
     CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
-    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SyscallAggregateResult,
-    SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, ValidationResult,
-    schema::generated_schemas,
+    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedLinuxSelector, ResolvedProbe,
+    SyscallAggregateResult, SyscallAggregateSpec, SyscallAggregateValidationResult,
+    TraceExportResult, ValidationResult, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -518,6 +518,19 @@ fn resolved_probe_contract_round_trips() {
             "end_address": 140_737_488_420_864_u64,
             "file_offset": 0
         }
+    }));
+}
+
+#[test]
+fn resolved_python_usdt_contract_round_trips() {
+    assert_round_trip::<ResolvedLinuxSelector>(&json!({
+        "event_type": "python_gc_start",
+        "probe_kind": "usdt",
+        "category": "python",
+        "name": "gc__start",
+        "syscall_number": null,
+        "binary_path": "/usr/bin/python3.12",
+        "provider": "python"
     }));
 }
 

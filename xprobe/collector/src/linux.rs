@@ -81,7 +81,7 @@ impl LinuxCaptureError {
                 ErrorCode::PermissionDenied
             }
             Self::Libbpf {
-                operation: "attach tracepoint",
+                operation: "attach tracepoint" | "attach USDT",
                 source,
             } if source.kind() == ErrorKind::NotFound => ErrorCode::InvalidEventSelector,
             Self::TargetNamespace { .. }
@@ -319,7 +319,7 @@ fn collect_raw_events(
     let ring_buffer = ring_builder
         .build()
         .map_err(|source| libbpf_error("build Linux ring buffer", source))?;
-    let _links = attach_probes(object, &request.probes)?;
+    let _links = attach_probes(object, request.target.pid, &request.probes)?;
     arm_object(object)?;
     if let Some(ready) = &request.ready {
         ready.send(()).map_err(|_| {
@@ -374,6 +374,7 @@ fn arm_object(object: &Object) -> Result<(), LinuxCaptureError> {
 
 fn attach_probes(
     object: &Object,
+    target_pid: u32,
     probes: &[ResolvedLinuxSelector],
 ) -> Result<Vec<Link>, LinuxCaptureError> {
     let mut links = Vec::with_capacity(probes.len());
@@ -430,6 +431,28 @@ fn attach_probes(
         };
         links.push(link);
     }
+    for (index, probe) in probes.iter().enumerate() {
+        if probe.probe_kind != HostProbeKind::Usdt {
+            continue;
+        }
+        let program_name = format!("xprobe_handle_usdt_{}", index + 1);
+        let program = object
+            .progs_mut()
+            .find(|program| program.name() == OsStr::new(&program_name))
+            .ok_or_else(|| missing("program", &program_name))?;
+        let pid = i32::try_from(target_pid)
+            .map_err(|_| LinuxCaptureError::InvalidRequest("target PID exceeds i32".to_owned()))?;
+        links.push(
+            program
+                .attach_usdt(
+                    pid,
+                    probe.binary_path.as_deref().expect("validated USDT path"),
+                    probe.provider.as_deref().expect("validated USDT provider"),
+                    &probe.name,
+                )
+                .map_err(|source| libbpf_error("attach USDT", source))?,
+        );
+    }
     Ok(links)
 }
 
@@ -457,9 +480,26 @@ fn validate_request(request: &LinuxCaptureRequest) -> Result<(), LinuxCaptureErr
                     EventType::SyscallEntry | EventType::SyscallExit
                 ) && probe.category == "syscalls"
                     && probe.syscall_number.is_some()
+                    && probe.binary_path.is_none()
+                    && probe.provider.is_none()
             }
             HostProbeKind::Tracepoint => {
-                probe.event_type == EventType::Tracepoint && probe.syscall_number.is_none()
+                probe.event_type == EventType::Tracepoint
+                    && probe.syscall_number.is_none()
+                    && probe.binary_path.is_none()
+                    && probe.provider.is_none()
+            }
+            HostProbeKind::Usdt => {
+                matches!(
+                    probe.event_type,
+                    EventType::PythonGcStart | EventType::PythonGcEnd
+                ) && probe.category == "python"
+                    && probe.syscall_number.is_none()
+                    && probe
+                        .binary_path
+                        .as_deref()
+                        .is_some_and(|path| !path.is_empty())
+                    && probe.provider.as_deref() == Some("python")
             }
             _ => false,
         };
@@ -498,10 +538,15 @@ fn normalize_event(
         Vec::new()
     };
     let mut attributes = BTreeMap::new();
-    attributes.insert(
-        "tracepoint_category".to_owned(),
-        Value::String(probe.category.clone()),
-    );
+    if probe.probe_kind == HostProbeKind::Usdt {
+        let provider = probe.provider.as_ref().expect("validated USDT provider");
+        attributes.insert("usdt_provider".to_owned(), Value::String(provider.clone()));
+    } else {
+        attributes.insert(
+            "tracepoint_category".to_owned(),
+            Value::String(probe.category.clone()),
+        );
+    }
     Ok(Event {
         schema_version: SchemaVersion::current(),
         session_id: session_id.to_owned(),
@@ -519,7 +564,7 @@ fn normalize_event(
         process_start_time: Some(request.target.process_start_time),
         host: Some(HostEvent {
             probe_kind: probe.probe_kind.clone(),
-            binary_path: None,
+            binary_path: probe.binary_path.clone(),
             build_id: None,
             symbol: Some(probe.name.clone()),
             symbol_demangled: None,
@@ -584,6 +629,25 @@ mod tests {
             category: "syscalls".to_owned(),
             name: "mmap".to_owned(),
             syscall_number: Some(9),
+            binary_path: None,
+            provider: None,
+        }
+    }
+
+    fn python_gc(event_type: EventType) -> ResolvedLinuxSelector {
+        let name = if event_type == EventType::PythonGcStart {
+            "gc__start"
+        } else {
+            "gc__done"
+        };
+        ResolvedLinuxSelector {
+            event_type,
+            probe_kind: HostProbeKind::Usdt,
+            category: "python".to_owned(),
+            name: name.to_owned(),
+            syscall_number: None,
+            binary_path: Some("/usr/bin/python3".to_owned()),
+            provider: Some("python".to_owned()),
         }
     }
 
@@ -658,6 +722,30 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_python_gc_usdt_without_payloads() {
+        let request = request(vec![python_gc(EventType::PythonGcStart)]);
+        let raw = RawEvent {
+            timestamp_ns: 100,
+            sequence: 1,
+            values: [0; 6],
+            pid: 1234,
+            tid: 1235,
+            cpu: 2,
+            probe_id: 1,
+        };
+
+        let event = normalize_event(&raw, &request, "session").unwrap();
+        let host = event.host.unwrap();
+        assert_eq!(event.event_type, EventType::PythonGcStart);
+        assert_eq!(host.probe_kind, HostProbeKind::Usdt);
+        assert_eq!(host.binary_path.as_deref(), Some("/usr/bin/python3"));
+        assert_eq!(host.symbol.as_deref(), Some("gc__start"));
+        assert!(host.arguments.is_empty());
+        assert_eq!(event.attributes["usdt_provider"], "python");
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
     fn rejects_inconsistent_or_unbounded_requests() {
         let mut invalid = request(vec![ResolvedLinuxSelector {
             event_type: EventType::Tracepoint,
@@ -665,6 +753,8 @@ mod tests {
             category: "syscalls".to_owned(),
             name: "mmap".to_owned(),
             syscall_number: Some(9),
+            binary_path: None,
+            provider: None,
         }]);
         assert!(matches!(
             validate_request(&invalid),

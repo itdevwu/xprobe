@@ -129,6 +129,8 @@
         "gpu_memset_end",
         "nvtx_range_start",
         "nvtx_range_end",
+        "python_gc_start",
+        "python_gc_end",
         "marker"
       ]
     },
@@ -273,6 +275,12 @@
     "ResolvedLinuxSelector": {
       "type": "object",
       "properties": {
+        "binary_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "category": {
           "type": "string"
         },
@@ -284,6 +292,12 @@
         },
         "probe_kind": {
           "$ref": "#/$defs/HostProbeKind"
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "syscall_number": {
           "type": [

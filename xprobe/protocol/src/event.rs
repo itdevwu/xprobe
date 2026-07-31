@@ -35,6 +35,8 @@ pub enum EventType {
     GpuMemsetEnd,
     NvtxRangeStart,
     NvtxRangeEnd,
+    PythonGcStart,
+    PythonGcEnd,
     Marker,
 }
 

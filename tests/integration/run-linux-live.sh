@@ -2,12 +2,14 @@
 set -euo pipefail
 
 target=/workspace/build/tests/xprobe-syscall-target
+python_gc_target=/workspace/build/tests/xprobe-python-gc-usdt-target
 binary=/workspace/target/debug/xprobe
 mmap_capture=/tmp/xprobe-mmap.json
 munmap_capture=/tmp/xprobe-munmap.json
 tracepoint_capture=/tmp/xprobe-tracepoint.json
 capacity_capture=/tmp/xprobe-capacity.json
 syscall_inventory=/tmp/xprobe-syscall-inventory.json
+python_gc_capture=/tmp/xprobe-python-gc.json
 capacity_stderr=/tmp/xprobe-capacity.stderr
 
 "${target}" &
@@ -16,9 +18,28 @@ cleanup() {
   kill "${target_pid}" 2>/dev/null || true
   wait "${target_pid}" 2>/dev/null || true
   rm -f "${mmap_capture}" "${munmap_capture}" "${tracepoint_capture}" \
-    "${capacity_capture}" "${capacity_stderr}" "${syscall_inventory}"
+    "${capacity_capture}" "${capacity_stderr}" "${syscall_inventory}" \
+    "${python_gc_capture}"
 }
 trap cleanup EXIT
+
+"${python_gc_target}" &
+python_gc_pid=$!
+cleanup_python_gc() {
+  kill "${python_gc_pid}" 2>/dev/null || true
+  wait "${python_gc_pid}" 2>/dev/null || true
+}
+trap 'cleanup_python_gc; cleanup' EXIT
+
+"${binary}" measure \
+  --pid "${python_gc_pid}" \
+  --from python:gc_start \
+  --to python:gc_end \
+  --match exact \
+  --samples 3 \
+  --max-events 64 \
+  --timeout-ms 5000 \
+  --json --non-interactive --no-color >"${python_gc_capture}"
 
 "${binary}" measure \
   --pid "${target_pid}" \
@@ -83,4 +104,6 @@ printf ',"capacity":'
 cat "${capacity_capture}"
 printf ',"syscall_inventory":'
 cat "${syscall_inventory}"
+printf ',"python_gc":'
+cat "${python_gc_capture}"
 printf '}\n'

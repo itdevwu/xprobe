@@ -87,6 +87,14 @@ struct xprobe_syscall_aggregate_summary {
     __u64 dropped_aggregates;
 };
 
+/* libbpf populates these maps while attaching SEC("usdt") programs. xprobe
+ * does not read USDT arguments, but the value layout must match usdt.bpf.h. */
+struct xprobe_usdt_spec {
+    __u8 arguments[12][16];
+    __u64 cookie;
+    __s16 argument_count;
+};
+
 struct xprobe_raw_tracepoint_context {
     __u64 arguments[2];
 };
@@ -195,6 +203,20 @@ struct {
     __type(value, struct xprobe_syscall_aggregate_summary);
 } syscall_aggregate_summary SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 16);
+    __type(key, int);
+    __type(value, struct xprobe_usdt_spec);
+} __bpf_usdt_specs SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 64);
+    __type(key, long);
+    __type(value, __u32);
+} __bpf_usdt_ip_to_spec_id SEC(".maps");
+
 SEC("uprobe")
 int xprobe_handle_uprobe(void *context)
 {
@@ -291,6 +313,17 @@ XPROBE_TRACEPOINT_PROGRAM(2)
 
 XPROBE_RAW_TRACEPOINT_PROGRAM(1)
 XPROBE_RAW_TRACEPOINT_PROGRAM(2)
+
+#define XPROBE_USDT_PROGRAM(slot)                                            \
+    SEC("usdt")                                                              \
+    int xprobe_handle_usdt_##slot(void *context)                              \
+    {                                                                         \
+        (void)context;                                                        \
+        return xprobe_emit_linux_event(slot, 0);                              \
+    }
+
+XPROBE_USDT_PROGRAM(1)
+XPROBE_USDT_PROGRAM(2)
 
 static __attribute__((always_inline)) __u32
 xprobe_syscall_probe_id(const __s64 numbers[2], __s64 syscall_number)
