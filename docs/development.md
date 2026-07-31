@@ -20,6 +20,11 @@ Agents without a GPU in pinned NVIDIA devel images, checks their SONAMEs, and
 rejects ABI-only output or build-time RPATHs. Live CUDA behavior remains a
 hardware test on an NVIDIA runner.
 
+The self-hosted hardware runner must use Actions Runner 2.329.0 or newer and
+provide passwordless `sudo`, `perf`, `py-spy`, and `/usr/bin/python3` with
+`-X perf`. These are host profiler prerequisites, not release archive
+dependencies.
+
 ## Release packaging
 
 A release archive requires one Agent built against each supported CUPTI major:
@@ -47,6 +52,11 @@ After publishing the GitHub release, `scripts/verify-public-release.sh` download
 the public archive and checksum again, repeats the installation test, and
 inspects every shipped ELF. This final gate verifies the artifact users can
 actually download rather than the workflow's local copy.
+
+Before creating a tag, manually run `Hardware Integration` for the exact commit
+to be tagged. The release workflow queries GitHub Actions for a successful run
+whose `head_sha` matches that commit and fails before building artifacts when
+the hardware result is absent.
 
 ## eBPF tests
 
@@ -81,6 +91,18 @@ They cover a busy native process and CPython 3.12+ `-X perf` symbolization.
 The target interpreter must provide perf trampoline support for the Python
 case; unsupported interpreters remain a valid native-only product path but are
 not a substitute for this live gate.
+
+Run the comparative CPU/Python perturbation benchmark after changing CPU
+sampling, symbolization, syscall aggregation, Python GC probes, or the Skill's
+broad-to-narrow route:
+
+```bash
+just benchmark-cpu
+```
+
+The benchmark requires `perf` and `py-spy` and may require root on hosts whose
+perf-event or eBPF policy denies attachment. See `docs/benchmarks.md` for its
+reported metrics and interpretation.
 
 Resolve real CPython, native extension, and libtorch C++ symbols with a local
 Python environment containing PyTorch:

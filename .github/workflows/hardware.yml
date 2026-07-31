@@ -9,13 +9,25 @@ permissions:
 jobs:
   gpu-and-bpf:
     runs-on: [self-hosted, linux, x64, nvidia]
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
       - uses: taiki-e/install-action@just
+      - name: Verify CPU profiler prerequisites
+        run: |
+          command -v perf
+          command -v py-spy
+          sudo -n true
+          /usr/bin/python3 -X perf -c \
+            "import sys; assert sys._xoptions.get('perf') is True"
       - run: just test-bpf-live
+      - name: Test CPU and Python sampling
+        run: >-
+          sudo --preserve-env=PATH,CARGO_HOME,RUSTUP_HOME
+          "$(command -v just)" test-cpu-live
       - run: just test-cupti-live-cuda12
       - run: just test-nvtx-live-cuda12
       - run: just test-cupti-live-cuda12-min
@@ -31,3 +43,17 @@ jobs:
       - run: just benchmark-aggregate
       - run: just benchmark-multiprocess
       - run: just benchmark-pytorch
+      - name: Benchmark CPU inventory
+        run: >-
+          sudo --preserve-env=PATH
+          /usr/bin/python3 benchmarks/cpu-inventory/run.py
+          --xprobe "$PWD/target/debug/xprobe"
+          --python /usr/bin/python3
+          --perf "$(command -v perf)"
+          --py-spy "$(command -v py-spy)"
+          | tee cpu-inventory-benchmark.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cpu-inventory-benchmark
+          path: cpu-inventory-benchmark.json
+          if-no-files-found: error
