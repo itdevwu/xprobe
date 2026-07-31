@@ -50,16 +50,34 @@ def check_skill(workspace: pathlib.Path) -> None:
     assert re.search(r"^description: .+", frontmatter.group(1), re.MULTILINE)
     normalized_skill = re.sub(r"\s+", " ", skill)
 
-    ordered_steps = [
-        "xprobe --version",
-        "xprobe doctor",
-        "xprobe discover",
-        "xprobe validate",
-        "xprobe measure",
-        "Check `status`",
-    ]
-    positions = [normalized_skill.index(step) for step in ordered_steps]
-    assert positions == sorted(positions)
+    for route in (
+        "Existing artifact",
+        "Known live boundary",
+        "Unknown CPU workload",
+        "Unknown GPU or mixed workload",
+        "Multiple processes",
+        "Setup or repair",
+    ):
+        assert route in normalized_skill
+    for adaptive_rule in (
+        "Choose the shortest route",
+        "Skip installation, `doctor`, `discover`, and live attachment",
+        "Do not run a broad inventory solely to satisfy a checklist",
+        "Do not run CUDA discovery",
+        "collect only the broad bounded inventories needed by the question",
+        "A completed-artifact analysis does not require a local collector",
+        "Run `doctor` when capability is unknown",
+    ):
+        assert adaptive_rule in normalized_skill
+    for invariant in (
+        "schema version `2.0`",
+        "PID plus procfs start time",
+        "Run read-only `validate` before every live measurement",
+        "Bound every capture",
+        "leave the CUPTI shared object mapped",
+        "temporal correlation is not exact causality",
+    ):
+        assert invariant in normalized_skill
     for quality_field in (
         "unmatched",
         "ambiguous",
@@ -69,19 +87,16 @@ def check_skill(workspace: pathlib.Path) -> None:
         "clock alignment",
         "correlation method",
         "confidence",
-        "evidence",
+        "evidence pair",
     ):
         assert quality_field in normalized_skill
     for investigation_step in (
-        "application-level latency baseline",
         "CPU-only",
         "GPU or mixed",
-        "do not run `discover`",
-        "representative coarse inventory",
-        "Scope breadth and collection duration are independent",
+        "Scope breadth and capture duration are independent",
         "scripts/analyze_trace.py",
         "selector hints",
-        "busy union",
+        "busy_union_ns",
         "overlap factor",
         "NCU or PC sampling",
     ):
@@ -115,6 +130,11 @@ def check_skill(workspace: pathlib.Path) -> None:
         policies.add(specification["match_policy"])
     assert modes == {"exact", "aggregate"}
     assert {"exact", "first_after", "stack_nested", "stream_order"} <= policies
+
+    openai_yaml = (skill_root / "agents/openai.yaml").read_text()
+    assert 'display_name: "Xprobe Workload Profiling"' in openai_yaml
+    assert 'short_description: "Route bounded CPU and GPU profiling tasks"' in openai_yaml
+    assert "$xprobe-measure-latency" in openai_yaml
 
     investigation = (skill_root / "references/investigation.md").read_text()
     quality = (skill_root / "references/result-quality.md").read_text()
@@ -166,6 +186,7 @@ def check_skill(workspace: pathlib.Path) -> None:
         assert required in normalized_trace_analysis
     for required in (
         "v0.4.0/install.sh",
+        "xprobe `0.4.x`",
         "npx skills@1 add",
         "xprobe --version",
         "xprobe doctor",
@@ -185,6 +206,7 @@ def check_skill(workspace: pathlib.Path) -> None:
         "GLIBC_2.34 ceiling",
         "downloading the public archive",
         "transient infrastructure failure",
+        "Choose the shortest Skill route",
     ):
         assert required in engineering_rules
 

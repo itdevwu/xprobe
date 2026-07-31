@@ -26,9 +26,10 @@ For automation, add `--agent codex|claude-code|cursor --copy --yes`. Omit
 install its whole directory so its references, examples, and analysis script
 remain available.
 
-The Skill checks, installs, and verifies the CLI before it first runs `doctor`.
-It then maps a representative workload broadly, uses artifact evidence to narrow
-selectors, and includes `scripts/analyze_trace.py` for deterministic kernel,
+The Skill routes setup, completed-artifact analysis, known-boundary measurement,
+unknown CPU/GPU investigation, and multi-process work independently. It checks
+or installs the CLI only for live work, uses broad inventory only when selectors
+are unknown, and includes `scripts/analyze_trace.py` for deterministic kernel,
 copy, overlap, stream, and gap summaries. The xprobe repository tests
 installation with `skills` CLI 1.5.20 in isolated
 home directories. This pinned test protects released behavior while the
@@ -51,8 +52,8 @@ just test-skill-install
 The test requires the visible command set to be exactly `doctor`, `discover`,
 `validate`, and `measure`. It invokes the first three in strict JSON mode,
 checks injection requirements, verifies schemas, exercises the bundled trace
-analyzer, and checks that the Skill uses only the four-command bounded workflow
-and inspects result quality/evidence.
+analyzer, and checks adaptive task routing, bounded live collection, mutation
+guards, and result quality/evidence.
 The installation test uses the real third-party CLI in isolated home directories
 and verifies byte-for-byte copies for Codex, Claude Code, and Cursor.
 

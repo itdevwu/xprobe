@@ -1,110 +1,104 @@
 ---
 name: xprobe-measure-latency
-description: Investigate unknown Linux CPU/CUDA latency with bounded xprobe captures, derive selectors from trace evidence, analyze multi-stream GPU activity, and measure host functions, CUDA APIs, kernels, memory copies, memory sets, and event-to-event gaps. Use when an agent must profile a running process, narrow a performance regression, inspect an xprobe JSONL artifact, or decide when duration evidence should hand off to Nsight Compute or another microarchitectural profiler.
+description: Profile live or recorded Linux CPU and NVIDIA CUDA workloads with bounded xprobe evidence. Use when an agent needs to install or repair xprobe, inspect an existing xprobe JSONL artifact, inventory unknown CPU/GPU activity, validate and measure a known function, syscall, CUDA API, kernel, transfer, synchronization point, NVTX range, or event-to-event latency, compare selected worker processes, investigate a performance regression, or decide when to hand an isolated kernel or host span to another profiler.
 ---
 
-# Investigate latency with xprobe
+# Profile workloads with xprobe
 
-Use JSON mode to make a wide, coarse workload inventory before measuring one
-boundary narrowly and finely. Read [references/setup.md](references/setup.md)
-to install or repair the CLI and this Skill. Read
-[references/investigation.md](references/investigation.md) before profiling an
-unknown workload. Read [references/result-quality.md](references/result-quality.md)
-before interpreting correlation, clocks, concurrency, or overhead. The exact
-CLI and selector syntax is in [references/cli-contract.md](references/cli-contract.md).
-For more than one selected process, follow
-[references/multi-process.md](references/multi-process.md).
+Choose the shortest route that answers the user's question. Do not run the full
+investigation playbook when the target, selectors, or completed artifact already
+provide the missing evidence.
 
-## Workflow
+## Route the task
 
-1. Run `xprobe --version`. When the command is absent or not 0.4.0, read
-   [references/setup.md](references/setup.md) and install or repair the CLI
-   yourself; do not ask the user to perform a separate CLI installation.
-   Confirm every JSON response has `schema_version: "2.0"`; do not assume a
-   pre-0.3 or future protocol is compatible with this Skill.
-2. Establish an application-level latency baseline, process readiness, and
-   warmup. Classify the workload before selecting collectors: for CPU-only work,
-   choose the owning PID and skip CUDA discovery; for GPU or mixed work, wait
-   for CUDA context creation and JIT warmup before discovery. Keep a repeatable
-   request or batch trigger ready for the measurement window.
-3. Run `xprobe doctor --json --non-interactive --no-color`. Check individual
-   capabilities; `ok: true` only means diagnosis completed.
-4. For GPU or mixed work, run `xprobe discover --pid ROOT_PID --limit 200 --json
-   --non-interactive --no-color`. It returns NVML-confirmed CUDA context holders
-   under that process tree. Choose a worker from workload, PID/start-time,
-   command line, and GPU UUID evidence. When several ranks are relevant, retain
-   every selected PID plus process start time and use the multi-process workflow.
-   For CPU-only work, do not run `discover`; continue with the selected process
-   PID.
-5. Map GPU or mixed work before choosing a name. Validate broad kernel, memcpy,
-   or memset activity endpoints, then collect one bounded, representative coarse
-   inventory per event family with `measure --aggregate --duration-ms ...`.
-   For CPU-only work, use existing application evidence or a bounded system
-   summary to choose a function, named syscall, or tracepoint family before
-   detailed collection; do not require CUDA or CUPTI, and do not begin with an
-   unfiltered high-rate raw tracepoint. Scope breadth and collection duration are
-   independent: keep the selector broad where a bounded aggregate exists, choose
-   a duration that covers the workload cycle being diagnosed, and give
-   `--max-groups` headroom. For defensibly homogeneous workers, inventory one
-   representative worker and apply its evidence-derived narrow selector to all
-   selected workers.
-6. Use aggregate names, selector hints, counts, duration totals and bounds, and
-   transfer bytes to form one narrow hypothesis. For an exact GPU artifact, run
-   `scripts/analyze_trace.py` and use launch variants, stream distribution, busy
-   union, overlap factor, and adjacent gaps. Read
-   [references/trace-analysis.md](references/trace-analysis.md) when interpreting
-   the report. When the application already marks the narrowed operation with a
-   bounded ASCII NVTX range, that range can provide exact application-level
-   start/end boundaries. For CPU-only work, use resolved host selectors or
-   filtered syscall/tracepoint evidence to form the hypothesis instead.
-7. Run one read-only `xprobe validate` per selected worker. Compare every
-   response target with the PID plus process start time retained from discovery
-   before mutation, and stop that worker when `valid` is false. If
-   `agent_activation` is `injection_required`, disclose that `measure` will
-   ptrace the target and leave the CUPTI shared object mapped. Use
-   `policy_recommendation` explicitly; xprobe never changes policy for the
-   caller. If it is `startup_required`, restart that worker with
-   `NVTX_INJECTION64_PATH` pointing to the matching xprobe CUPTI Agent before
-   its first NVTX call, reacquire PID plus start time, and validate again.
-   Online injection cannot retrofit NVTX dispatch into an initialized process.
-8. Run one bounded `xprobe measure` for that hypothesis. Set samples or duration,
-   timeout, and max-events; write `--events-out` when the capture may need audit
-   or offline re-correlation. Use a versioned `--spec FILE` containing the stable
-   target identity. For multiple workers, launch the independent calls
-   concurrently, preserve per-worker outputs and failures, and never correlate
-   across process artifacts.
-9. Check `status`, matched/unmatched/ambiguous/dropped counts, collection
-   completeness, buffer utilization, clock alignment, estimated error,
-   correlation method/confidence/score, warnings, and every evidence pair.
-10. Repeat only with a stated reason: select another event family, narrow the
-    selector, select another worker or stream, change an explicitly compatible
-    policy, or test the next boundary.
-    Recheck application latency after profiling and report observed overhead.
+- **Existing artifact**: Read [references/trace-analysis.md](references/trace-analysis.md)
+  and [references/result-quality.md](references/result-quality.md). Analyze the
+  artifact directly or use `measure --input` to test compatible selectors or a
+  policy. Skip installation, `doctor`, `discover`, and live attachment unless a
+  separate live capture is actually needed.
+- **Known live boundary**: Read [references/cli-contract.md](references/cli-contract.md)
+  and [references/result-quality.md](references/result-quality.md). Confirm the
+  target identity, validate the supplied selectors, and run a bounded measure.
+  Do not run a broad inventory solely to satisfy a checklist.
+- **Unknown CPU workload**: Read
+  [references/investigation.md](references/investigation.md), classify the
+  suspected host boundary, and narrow from application, symbol, syscall, or
+  tracepoint evidence. Do not run CUDA discovery.
+- **Unknown GPU or mixed workload**: Read
+  [references/investigation.md](references/investigation.md). Establish
+  readiness, discover CUDA context holders, collect only the broad bounded
+  inventories needed by the question, derive selectors from evidence, then
+  validate and measure narrowly.
+- **Multiple processes**: Also read
+  [references/multi-process.md](references/multi-process.md). Select relevant
+  PID/start-time identities and run independent bounded commands concurrently
+  when aligned capture windows matter. Keep every result and artifact separate.
+- **Setup or repair**: Read [references/setup.md](references/setup.md) only when
+  live commands are needed and the CLI is absent, incompatible, or unhealthy.
+  A completed-artifact analysis does not require a local collector.
 
-For completed captures, replace `--pid` with one or more `--input` arguments.
-Begin with the [coarse kernel inventory](examples/coarse-kernel-inventory.json)
-or [coarse memcpy inventory](examples/coarse-memcpy-inventory.json), then use the
-[kernel duration](examples/kernel-duration.json),
-[same-stream gap](examples/same-stream-kernel-gap.json),
-[host span](examples/host-function-span.json), and
-[syscall duration](examples/syscall-duration.json),
-[memcpy duration](examples/memcpy-duration.json) specs, plus the
-[CUDA synchronization API](examples/cuda-api-duration.json) shape, after
-replacing target identity and selectors. Each bounded call answers one
-hypothesis; orchestration remains the agent framework's responsibility.
+For live work, classify the selected path as CPU-only or GPU/mixed before
+choosing collectors. Run `doctor` when capability is unknown or a command
+reports an environment failure; it is not a prerequisite for every valid
+offline or already-diagnosed workflow.
 
-## Stop conditions
+## Preserve these invariants
 
-- Stop on target reuse, permission failure, invalid selectors, unavailable
-  collectors, drops, incomplete capture, unknown clock alignment, or unexamined
-  ambiguity. Treat an NVTX ARM-time feature mismatch as a startup failure rather
-  than retrying online injection. Read structured `details`, `hints`, and any
-  failed-capture artifact.
-- Do not claim request causality from `first-after` or `nearest`. Do not compare
-  or sum events across streams as if they were serial.
-- Stop using xprobe once evidence isolates time inside one kernel. Kernel
-  duration cannot explain warp stalls, cache misses, occupancy, instruction mix,
-  or Tensor Core utilization; hand that question to NCU or PC sampling.
-- Avoid continuous or repeated exploratory capture in one production process.
-  Use representative bounded inventories, narrow formal measurements, and a
-  post-profile baseline.
+- Use JSON mode and require schema version `2.0`. Treat malformed output and
+  unknown schema versions as errors.
+- Identify each live target by PID plus procfs start time. Recheck the identity
+  around validation and attachment; never substitute a newly observed PID.
+- Run read-only `validate` before every live measurement or target mutation.
+  Use its explicit policy recommendation, but never change policy silently.
+- Bound every capture by samples or duration, timeout, and exact-event or
+  aggregate-group capacity. Scope breadth and capture duration are independent.
+- When validation reports `injection_required`, disclose that `measure` will
+  ptrace the process and leave the CUPTI shared object mapped. When it reports
+  `startup_required` for NVTX, restart with the matching Agent before the first
+  NVTX call; online injection cannot retrofit initialized NVTX dispatch.
+- Inspect status, collection completeness, buffer utilization, unmatched,
+  ambiguous, and dropped counts, clock alignment and estimated error,
+  correlation method, confidence, and every evidence pair before interpreting
+  a result.
+- Keep stream and process identity in every claim. Summed concurrent GPU
+  duration is not wall time; temporal correlation is not exact causality.
+
+## Choose collection depth from evidence
+
+Use broad-to-narrow collection when selectors are unknown. Keep the broad scope
+representative but collect aggregate kernel, memcpy, or memset families only
+when they could answer the current question. Use selector hints, counts,
+duration totals, transfer bytes, and bounds to state a narrower hypothesis.
+
+When a trustworthy selector is supplied by the user, application, an NVTX
+range, a previous artifact, or a matching build's symbol inspection, validate
+it directly. A failed validation is evidence to revise the selector; it is not
+a reason to run unrelated inventories.
+
+Use one bounded live capture per stated hypothesis when source activation or
+capture windows differ. A single exact Event JSONL artifact may support several
+offline correlations without reattaching. Independent worker captures or
+non-conflicting hypotheses may run concurrently when the caller can preserve
+their bounds, outputs, failures, and perturbation separately.
+
+Record an application baseline when the question concerns a regression,
+slowdown, or profiler overhead. Warm up readiness-sensitive framework/JIT work
+before selecting a representative window. Do not require a new baseline for
+schema validation or a purely offline artifact question.
+
+For exact GPU artifacts, run `scripts/analyze_trace.py` and inspect launch
+variants, stream distribution, `busy_union_ns`, overlap factor, and adjacent
+gaps. Aggregate output has no event ordering and cannot be re-correlated.
+
+## Stop or hand off deliberately
+
+Stop on target reuse, permission failure, invalid selectors, unavailable
+required collectors, drops, incomplete capture, or a clock/correlation problem
+that invalidates the intended claim. Preserve failed-capture artifacts and
+structured details instead of reporting partial success. A quality limitation
+that does not affect the requested same-domain claim may be reported explicitly
+rather than treated as a universal stop condition.
+
+Stop using xprobe once evidence isolates unexplained time inside one kernel;
+use NCU or PC sampling for microarchitectural behavior. Use a CPU sampling
+profiler when the unresolved time is inside an uninstrumented host span.

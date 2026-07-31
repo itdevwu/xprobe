@@ -7,8 +7,10 @@ command unless their environment prevents the agent from writing a usable prefix
 
 ## Check and bootstrap xprobe
 
-Check the executable first. Continue only when it reports 0.4.0; otherwise run
-the bootstrap below:
+For live work, check the executable first. This Skill supports xprobe `0.4.x`
+with schema version `2.0`; install the current release when the CLI is absent,
+outside that range, or fails its required capability checks. Offline analysis
+of an existing schema-v2 artifact does not require an installed CLI.
 
 ```bash
 if command -v xprobe >/dev/null 2>&1; then
@@ -82,8 +84,8 @@ online injection as a fallback for an already initialized NVTX process.
 ## Repair the Skill only when needed
 
 The user normally installed this Skill before invoking the agent. When its files
-are missing or the version is not 0.4.0, install the complete version-matched
-directory through the Agent Skills CLI:
+are missing or incompatible with xprobe `0.4.x`, install the complete current
+release directory through the Agent Skills CLI:
 
 ```bash
 npx skills@1 add \
