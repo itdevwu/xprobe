@@ -1,13 +1,14 @@
 use schemars::{Schema, schema_for};
 
 use crate::{
-    AggregateInventoryResult, CapabilityReport, DiscoveryResult, ErrorResponse, Event,
-    HostCaptureResult, MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe,
-    TraceExportResult, ValidationResult,
+    AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
+    CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
+    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, TraceExportResult,
+    ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 12] {
+pub fn generated_schemas() -> [(&'static str, Schema); 15] {
     [
         ("event.schema.json", schema_for!(Event)),
         ("error.schema.json", schema_for!(ErrorResponse)),
@@ -19,6 +20,18 @@ pub fn generated_schemas() -> [(&'static str, Schema); 12] {
         (
             "aggregate-inventory-result.schema.json",
             schema_for!(AggregateInventoryResult),
+        ),
+        (
+            "cpu-sampling-spec.schema.json",
+            schema_for!(CpuSamplingSpec),
+        ),
+        (
+            "cpu-sample-inventory-result.schema.json",
+            schema_for!(CpuSampleInventoryResult),
+        ),
+        (
+            "cpu-sampling-validate.schema.json",
+            schema_for!(CpuSamplingValidationResult),
         ),
         ("capability.schema.json", schema_for!(CapabilityReport)),
         ("discover.schema.json", schema_for!(DiscoveryResult)),

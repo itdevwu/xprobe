@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CpuSamplingValidationResult",
+  "type": "object",
+  "properties": {
+    "ebpf": {
+      "$ref": "#/$defs/CheckResult"
+    },
+    "issues": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ValidationIssue"
+      }
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "perf_event": {
+      "$ref": "#/$defs/CheckResult"
+    },
+    "python_status": {
+      "$ref": "#/$defs/PythonSymbolizationStatus"
+    },
+    "requirements": {
+      "$ref": "#/$defs/CpuSamplingRequirements"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "target_threads": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "valid",
+    "target",
+    "target_threads",
+    "requirements",
+    "perf_event",
+    "ebpf",
+    "python_status"
+  ],
+  "$defs": {
+    "CheckResult": {
+      "type": "object",
+      "properties": {
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/CheckStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ]
+    },
+    "CheckStatus": {
+      "type": "string",
+      "enum": [
+        "available",
+        "restricted",
+        "unavailable",
+        "unknown"
+      ]
+    },
+    "CpuSamplingRequirements": {
+      "type": "object",
+      "properties": {
+        "needs_ebpf": {
+          "type": "boolean"
+        },
+        "needs_perf_event": {
+          "type": "boolean"
+        },
+        "target_mutation": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "needs_perf_event",
+        "needs_ebpf",
+        "target_mutation"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "PERMISSION_DENIED",
+        "TARGET_NOT_FOUND",
+        "TARGET_EXITED",
+        "TARGET_REUSED",
+        "AMBIGUOUS_TARGET",
+        "SYMBOL_NOT_FOUND",
+        "BINARY_NOT_MAPPED",
+        "INVALID_EVENT_SELECTOR",
+        "INVALID_CORRELATION_POLICY",
+        "CUPTI_NOT_AVAILABLE",
+        "CUPTI_AGENT_NOT_LOADED",
+        "CUDA_CONTEXT_NOT_FOUND",
+        "UNSUPPORTED_CUDA_VERSION",
+        "EVENT_RATE_TOO_HIGH",
+        "SESSION_LIMIT_EXCEEDED",
+        "NO_MATCHED_SAMPLES",
+        "HIGH_UNMATCHED_RATE",
+        "EVENTS_DROPPED",
+        "CLOCK_ALIGNMENT_FAILED",
+        "TRACE_EXPORT_FAILED",
+        "CLEANUP_FAILED",
+        "INTERNAL"
+      ]
+    },
+    "PythonSymbolizationStatus": {
+      "type": "string",
+      "enum": [
+        "not_detected",
+        "inactive",
+        "active",
+        "unsupported"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "2.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "ValidationIssue": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

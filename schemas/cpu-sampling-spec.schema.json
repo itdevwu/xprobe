@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CpuSamplingSpec",
+  "type": "object",
+  "properties": {
+    "duration_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "frequency_hz": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "max_groups": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "max_samples": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "max_threads": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sample_event": {
+      "$ref": "#/$defs/CpuSampleEvent"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "stack_depth": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "target",
+    "sample_event",
+    "frequency_hz",
+    "duration_ms",
+    "timeout_ms",
+    "max_samples",
+    "max_groups",
+    "stack_depth",
+    "max_threads"
+  ],
+  "$defs": {
+    "CpuSampleEvent": {
+      "type": "string",
+      "enum": [
+        "cpu_clock"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "2.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    }
+  }
+}
