@@ -76,6 +76,7 @@ def run_benchmark(
         resource_runner,
         cpu_sample_command(xprobe, seconds),
         prepare=lambda pid: validate_cpu(xprobe, pid),
+        json_result=True,
     )
     native_cases["xprobe_cpu"] = native_cpu
     native_cases["xprobe_cpu"]["quality"] = cpu_quality(native_inventory)
@@ -112,6 +113,7 @@ def run_benchmark(
         resource_runner,
         syscall_command(xprobe, seconds),
         prepare=lambda pid: validate_syscalls(xprobe, pid),
+        json_result=True,
     )
     syscall_case["quality"] = syscall_quality(syscall_inventory)
     native_cases["xprobe_syscalls"] = syscall_case
@@ -124,6 +126,7 @@ def run_benchmark(
         resource_runner,
         exact_command(xprobe, entry, returned, "stack-nested", seconds),
         prepare=lambda pid: validate_pair(xprobe, pid, entry, returned, "stack-nested"),
+        json_result=True,
     )
     exact_case["quality"] = exact_quality(exact_result)
     native_cases["xprobe_exact"] = exact_case
@@ -146,6 +149,7 @@ def run_benchmark(
         resource_runner,
         cpu_sample_command(xprobe, seconds),
         prepare=lambda pid: validate_cpu(xprobe, pid),
+        json_result=True,
     )
     python_cpu["quality"] = cpu_quality(python_inventory)
     python_cases["xprobe_cpu"] = python_cpu
@@ -182,6 +186,7 @@ def run_benchmark(
         prepare=lambda pid: validate_pair(
             xprobe, pid, "python:gc_start", "python:gc_end", "exact"
         ),
+        json_result=True,
     )
     gc_case["quality"] = exact_quality(gc_result)
     python_cases["xprobe_gc"] = gc_case
@@ -225,6 +230,7 @@ def run_case(
     profiler_template: list[str],
     prepare: Callable[[int], dict] | None = None,
     artifact: pathlib.Path | None = None,
+    json_result: bool = False,
 ) -> tuple[dict, dict | None]:
     metrics = output / f"{name}-target.json"
     target = subprocess.Popen(
@@ -257,7 +263,7 @@ def run_case(
                 f"{name} failed with {completed.returncode}:\n"
                 f"stdout={completed.stdout}\nstderr={completed.stderr}"
             )
-        result = json.loads(completed.stdout) if completed.stdout.strip() else None
+        result = json.loads(completed.stdout) if json_result else None
         count = after["count"] - before["count"]
         elapsed_ns = after["timestamp_ns"] - before["timestamp_ns"]
         if count <= 0 or elapsed_ns <= 0:
