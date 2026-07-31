@@ -12,13 +12,13 @@ just build
 just test
 ```
 
-The environment contains Clang, CMake, Ninja, pkg-config, Just, Python, and the
-autotools required to compile vendored libbpf, libelf, and zlib. A system C
-compiler and Linux UAPI/multiarch headers are also required. CUDA is not
-installed into the Mamba environment. CI compiles CUDA 12 and CUDA 13 CUPTI
-Agents without a GPU in pinned NVIDIA devel images, checks their SONAMEs, and
-rejects ABI-only output or build-time RPATHs. Live CUDA behavior remains a
-hardware test on an NVIDIA runner.
+The environment contains Clang, CMake, Ninja, pkg-config, Just, Python, `perf`,
+`py-spy`, and the autotools required to compile vendored libbpf, libelf, and
+zlib. A system C compiler and Linux UAPI/multiarch headers are also required.
+CUDA is not installed into the Mamba environment. CI compiles CUDA 12 and CUDA
+13 CUPTI Agents without a GPU in pinned NVIDIA devel images, checks their
+SONAMEs, and rejects ABI-only output or build-time RPATHs. Live CUDA behavior
+remains a hardware test on an NVIDIA runner.
 
 The self-hosted hardware runner must use Actions Runner 2.329.0 or newer and
 provide passwordless `sudo`, `perf`, `py-spy`, and `/usr/bin/python3` with

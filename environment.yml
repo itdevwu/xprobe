@@ -14,8 +14,10 @@ dependencies:
   - gawk>=5.3
   - gettext>=0.25
   - just>=1.40
+  - linux-perf>=7.1
   - make>=4.4
   - ninja>=1.12
   - pkg-config>=0.29
   - python>=3.12,<3.14
+  - py-spy>=0.4.2
   - pyyaml>=6.0
