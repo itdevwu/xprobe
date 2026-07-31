@@ -90,6 +90,7 @@ operation in an NVTX range and verifies exact range-ID matching:
 
 ```bash
 just test-pytorch-cuda-live
+just benchmark-pytorch
 ```
 
 ## GPU checks

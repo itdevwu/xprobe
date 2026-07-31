@@ -30,3 +30,4 @@ jobs:
       - run: just benchmark-gpu
       - run: just benchmark-aggregate
       - run: just benchmark-multiprocess
+      - run: just benchmark-pytorch

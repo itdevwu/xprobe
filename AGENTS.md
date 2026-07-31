@@ -85,4 +85,6 @@
 - Run `just benchmark-aggregate` for aggregate inventory hot-path or capacity
   changes.
 - Run `just benchmark-multiprocess` for concurrent worker orchestration changes.
+- Run `just benchmark-pytorch` for PyTorch workflow or framework-overhead
+  changes.
 - Use emoji conventional commits, for example `🐛 fix: restore target registers`.
