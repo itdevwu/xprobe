@@ -222,7 +222,7 @@ def check_skill(workspace: pathlib.Path) -> None:
     ):
         assert required in normalized_cli_contract
     for required in (
-        "v0.4.1/install.sh",
+        "v0.5.0/install.sh",
         "xprobe `0.4.x`",
         "npx skills@1 add",
         "xprobe --version",
