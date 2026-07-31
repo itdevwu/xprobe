@@ -1,0 +1,12 @@
+{
+  "schema_version": "2.0",
+  "name": "syscall_inventory",
+  "target": {
+    "pid": 1234,
+    "process_start_time": 987654
+  },
+  "duration_ms": 1000,
+  "timeout_ms": 30000,
+  "max_groups": 256,
+  "max_inflight": 1024
+}

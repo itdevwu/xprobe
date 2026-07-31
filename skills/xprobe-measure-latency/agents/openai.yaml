@@ -1,4 +1,4 @@
 interface:
   display_name: "Xprobe Workload Profiling"
-  short_description: "Route bounded CPU and GPU profiling tasks"
+  short_description: "Route bounded CPU, Python, and GPU profiling"
   default_prompt: "Use $xprobe-measure-latency to choose the shortest evidence-based route for this profiling task."

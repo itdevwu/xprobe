@@ -21,11 +21,13 @@ test: build
     python3 tests/agent-contract/test_contract.py target/debug/xprobe
     python3 tests/agent-contract/test_trace_analysis.py
     python3 tests/agent-contract/test_multi_process_workflow.py
+    python3 tests/agent-contract/test_workflow_routes.py
 
 test-agent-contract: build
     python3 tests/agent-contract/test_contract.py target/debug/xprobe
     python3 tests/agent-contract/test_trace_analysis.py
     python3 tests/agent-contract/test_multi_process_workflow.py
+    python3 tests/agent-contract/test_workflow_routes.py
 
 test-skill-install:
     tests/agent-contract/test_skill_install.sh
@@ -43,6 +45,9 @@ test-bpf:
 test-bpf-live: build
     python3 tests/integration/test_uprobe.py "{{cuda_smoke_image}}"
     python3 tests/integration/test_linux.py "{{cuda_smoke_image}}"
+
+test-cpu-live: build
+    cargo test -p xprobe-cli --test cpu_sampling -- --ignored --test-threads=1
 
 test-cupti:
     cmake -S . -B build -G Ninja -DXPROBE_BUILD_CUPTI=ON

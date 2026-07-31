@@ -13,7 +13,8 @@ merely because it owns a CUDA context.
 
 Treat workers as homogeneous only when application configuration and observed
 workload evidence support that claim. For a homogeneous rank set, use one
-representative worker for each broad aggregate inventory. Derive narrow
+representative worker for each required CPU sample, syscall, or GPU aggregate
+inventory. Derive narrow
 selectors from that inventory, then apply those selectors to every selected
 worker. For heterogeneous workers, inventory one representative per defensible
 class or investigate workers separately.
@@ -51,12 +52,21 @@ so their capture windows cover the same controlled request, batch, or iteration
 cycle. Do not serialize the commands unless the investigation explicitly needs
 different workload windows.
 
+The same rule applies to mixed evidence on one worker: a CPU sample inventory
+and GPU aggregate may run as two concurrent xprobe commands when they must cover
+the same controlled window. They keep independent duration, timeout, sample or
+group capacities, result schemas, stderr, and output paths. Do not merge them or
+infer exact CPU/GPU causality from overlapping command times. Avoid concurrent
+broad CUPTI captures for the same process because Agent activation and shared
+workload perturbation make them poor independent observations.
+
 Keep these outputs separate for every worker:
 
 - spec with the discovered target identity;
 - validation JSON and stderr;
 - measurement JSON and stderr;
 - exact Event JSONL artifact when requested;
+- separate CPU, syscall, and GPU inventory JSON when collected;
 - command exit status and start/end wall timestamps.
 
 Wait for every command. Do not cancel sibling commands or discard successful

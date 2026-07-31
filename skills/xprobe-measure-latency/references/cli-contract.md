@@ -28,7 +28,9 @@ readable signature. This resolves native code mapped by a Python process, not
 Python frame or `module.qualname` names.
 
 Linux selectors use `syscall:<name>:entry|exit` and
-`tracepoint:<category>:<name>`. Syscall entry/exit for one name supports
+`tracepoint:<category>:<name>`. CPython GC selectors use
+`python:gc_start|gc_end`; `validate` resolves the mapped executable or
+`libpython` ELF containing both required USDT markers. Syscall entry/exit for one name supports
 `exact` per-thread lifecycle matching. Entry evidence contains scalar ABI
 register values and exit evidence contains the scalar return value; xprobe
 does not dereference pointers. Named tracepoints contain no payload fields.
@@ -46,7 +48,8 @@ complete selector and policy before measurement.
 ## Correlation
 
 Use `exact` for CUDA events with the same CUPTI correlation ID, NVTX boundaries
-with the same range kind and ID, or entry/exit of one named syscall.
+with the same range kind and ID, entry/exit of one named syscall, or CPython GC
+start/end on one thread.
 Use `stack-nested` for entry/return of the same host function and `stream-order`
 for activity events on one CUDA stream. `first-after` and `nearest` are temporal
 heuristics and cannot establish causality. Read `policy_recommendation.policy`,
@@ -58,6 +61,40 @@ changes the requested policy.
 Direct `measure` calls require a positive `--samples` or `--duration-ms` bound.
 `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000. Use exactly
 one source mode: `--pid`, one or more `--input` files, or `--spec`.
+
+CPU sampling is live and duration-bounded:
+
+```bash
+xprobe validate --pid "$PID" --cpu-sample \
+  --json --non-interactive --no-color
+xprobe measure --pid "$PID" --cpu-sample --duration-ms 1000 \
+  --frequency-hz 99 --max-samples 10000 --max-groups 256 \
+  --stack-depth 64 --max-threads 1024 \
+  --json --non-interactive --no-color
+```
+
+It samples userspace callchains with `perf_event_open` for a bounded snapshot of
+the target's current threads. The result reports exact raw stack counts before
+bounded grouping, inclusive/exclusive hotspots, attachable native selector
+hints, native/Python/unresolved symbol coverage, Python perf-map status, lost
+samples, truncated stacks, attached threads, and every capacity. It does not
+emit Event JSONL or claim a continuous all-thread trace. Hotspot proportions
+have sampling uncertainty and are not exact CPU-time shares.
+
+Syscall inventory is also live and duration-bounded:
+
+```bash
+xprobe validate --pid "$PID" --syscall-aggregate \
+  --json --non-interactive --no-color
+xprobe measure --pid "$PID" --syscall-aggregate --duration-ms 1000 \
+  --max-groups 256 --max-inflight 1024 \
+  --json --non-interactive --no-color
+```
+
+PID-filtered raw tracepoints retain per-thread starts and per-syscall aggregate
+count/error/duration state in bounded BPF maps. The result reports map quality,
+inflight/unmatched/drop counts, known names, and entry/exit selector hints. It
+does not stream one event per syscall or dereference arguments.
 
 Use `measure --aggregate --duration-ms ... --max-groups ...` for a live, coarse
 kernel, memcpy, or memset inventory. Aggregate endpoints must be one matching
@@ -79,10 +116,14 @@ sets a live stop from ARM completion; either samples or duration may complete a
 call when both are present. Timeout bounds the complete foreground operation and
 cleanup.
 
-Linux syscall filtering runs in BPF before event reservation. A duration-bound
+Linux exact syscall filtering runs in BPF before event reservation. A duration-bound
 host capture that reaches `max-events` fails with `EVENT_RATE_TOO_HIGH`; narrow
 the selector or increase the explicit bound. Do not replace it with partial
 evidence.
+
+CPU sampling, syscall aggregation, and GPU aggregation have distinct schemas.
+Treat their hotspots/groups as selector hypotheses; they are not completed
+event captures and cannot be passed to `measure --input`.
 
 `--events-out PATH` atomically writes the bounded capture with mode `0600`, not
 only matched evidence. Collection completeness and CUPTI capacity, observed,

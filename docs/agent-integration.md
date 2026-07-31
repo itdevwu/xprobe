@@ -27,10 +27,14 @@ install its whole directory so its references, examples, and analysis script
 remain available.
 
 The Skill routes setup, completed-artifact analysis, known-boundary measurement,
-unknown CPU/GPU investigation, and multi-process work independently. It checks
-or installs the CLI only for live work, uses broad inventory only when selectors
-are unknown, and includes `scripts/analyze_trace.py` for deterministic kernel,
-copy, overlap, stream, and gap summaries. The xprobe repository tests
+unknown CPU/Python/GPU investigation, and multi-process work independently. It
+checks or installs the CLI only for live work. Unknown CPU work starts with
+sampled stacks, adds syscall aggregation or CPython GC only when supported by a
+hypothesis, and falls back visibly to native frames when Python semantics are
+unavailable. Unknown GPU work uses only relevant aggregates. Mixed CPU/GPU
+inventories may run concurrently with separate contracts, bounds, outputs, and
+failure handling. The bundled `scripts/analyze_trace.py` provides deterministic
+kernel, copy, overlap, stream, and gap summaries. The repository tests
 installation with `skills` CLI 1.5.20 in isolated
 home directories. This pinned test protects released behavior while the
 documented `skills@1` selector receives compatible path updates.
@@ -42,6 +46,12 @@ measurement per selected worker concurrently. Results, warnings, failures, and
 artifacts remain per process; xprobe does not add a multi-process command or
 claim cross-process causality.
 
+Inventory outputs are not event artifacts. CPU hotspots, syscall groups, and
+GPU groups produce selector hypotheses; every exact selector still passes
+read-only `validate`. The Agent must inspect the quality fields specific to each
+schema and cannot equate sample proportions, aggregate duration shares, or
+overlapping capture windows with exact causality.
+
 ## Contract test
 
 ```bash
@@ -52,8 +62,9 @@ just test-skill-install
 The test requires the visible command set to be exactly `doctor`, `discover`,
 `validate`, and `measure`. It invokes the first three in strict JSON mode,
 checks injection requirements, verifies schemas, exercises the bundled trace
-analyzer, and checks adaptive task routing, bounded live collection, mutation
-guards, and result quality/evidence.
+analyzer, and checks adaptive task routing for unknown CPU, Python, mixed,
+known-selector, existing-artifact, and unsupported-runtime scenarios, bounded
+live collection, mutation guards, and result quality/evidence.
 The installation test uses the real third-party CLI in isolated home directories
 and verifies byte-for-byte copies for Codex, Claude Code, and Cursor.
 

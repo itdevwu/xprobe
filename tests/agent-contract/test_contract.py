@@ -53,7 +53,7 @@ def check_skill(workspace: pathlib.Path) -> None:
     for route in (
         "Existing artifact",
         "Known live boundary",
-        "Unknown CPU workload",
+        "Unknown CPU or Python workload",
         "Unknown GPU or mixed workload",
         "Multiple processes",
         "Setup or repair",
@@ -61,18 +61,20 @@ def check_skill(workspace: pathlib.Path) -> None:
         assert route in normalized_skill
     for adaptive_rule in (
         "Choose the shortest route",
-        "Skip installation, `doctor`, `discover`, and live attachment",
+        "skip installation, `doctor`, `discover`, and live attachment",
         "Do not run a broad inventory solely to satisfy a checklist",
         "Do not run CUDA discovery",
-        "collect only the broad bounded inventories needed by the question",
-        "A completed-artifact analysis does not require a local collector",
+        "Start with bounded `--cpu-sample` evidence",
+        "Add `--syscall-aggregate` only for a kernel-facing hypothesis",
+        "inventories can run concurrently",
+        "Existing artifacts do not require a local collector",
         "Run `doctor` when capability is unknown",
     ):
         assert adaptive_rule in normalized_skill
     for invariant in (
         "schema version `2.0`",
         "PID plus procfs start time",
-        "Run read-only `validate` before every live measurement",
+        "Pass the selected exact endpoints through read-only `validate`",
         "Bound every capture",
         "leave the CUPTI shared object mapped",
         "temporal correlation is not exact causality",
@@ -81,11 +83,11 @@ def check_skill(workspace: pathlib.Path) -> None:
     for quality_field in (
         "unmatched",
         "ambiguous",
-        "dropped",
-        "collection completeness",
-        "buffer utilization",
+        "loss/drops",
+        "completeness",
+        "symbol and stack coverage",
         "clock alignment",
-        "correlation method",
+        "method",
         "confidence",
         "evidence pair",
     ):
@@ -94,6 +96,8 @@ def check_skill(workspace: pathlib.Path) -> None:
         "CPU-only",
         "GPU or mixed",
         "Scope breadth and capture duration are independent",
+        "python:gc_start",
+        "native frames",
         "scripts/analyze_trace.py",
         "selector hints",
         "busy_union_ns",
@@ -120,6 +124,18 @@ def check_skill(workspace: pathlib.Path) -> None:
     for example in examples:
         specification = json.loads(example.read_text())
         assert specification["schema_version"] == "2.0", example
+        if "sample_event" in specification:
+            modes.add("cpu_sample")
+            assert specification["frequency_hz"] > 0, example
+            assert specification["max_samples"] > 0, example
+            assert specification["stack_depth"] > 0, example
+            assert specification["max_threads"] > 0, example
+            continue
+        if "max_inflight" in specification and "start_selector" not in specification:
+            modes.add("syscall_aggregate")
+            assert specification["max_groups"] > 0, example
+            assert specification["max_inflight"] > 0, example
+            continue
         mode = specification.get("measurement_mode", "exact")
         modes.add(mode)
         if mode == "aggregate":
@@ -128,12 +144,15 @@ def check_skill(workspace: pathlib.Path) -> None:
         else:
             assert specification["max_events"] > 0, example
         policies.add(specification["match_policy"])
-    assert modes == {"exact", "aggregate"}
+    assert modes == {"exact", "aggregate", "cpu_sample", "syscall_aggregate"}
     assert {"exact", "first_after", "stack_nested", "stream_order"} <= policies
 
     openai_yaml = (skill_root / "agents/openai.yaml").read_text()
     assert 'display_name: "Xprobe Workload Profiling"' in openai_yaml
-    assert 'short_description: "Route bounded CPU and GPU profiling tasks"' in openai_yaml
+    assert (
+        'short_description: "Route bounded CPU, Python, and GPU profiling"'
+        in openai_yaml
+    )
     assert "$xprobe-measure-latency" in openai_yaml
 
     investigation = (skill_root / "references/investigation.md").read_text()
@@ -146,6 +165,9 @@ def check_skill(workspace: pathlib.Path) -> None:
     normalized_multi_process = re.sub(r"\s+", " ", multi_process)
     normalized_trace_analysis = re.sub(r"\s+", " ", trace_analysis)
     normalized_setup = re.sub(r"\s+", " ", setup)
+    normalized_cli_contract = re.sub(
+        r"\s+", " ", (skill_root / "references/cli-contract.md").read_text()
+    )
     for required in (
         "Triton",
         "procfs start time",
@@ -154,6 +176,10 @@ def check_skill(workspace: pathlib.Path) -> None:
         "NO_MATCHED_SAMPLES",
         "representative cycle",
         "concrete Runtime or Driver API name",
+        "observed_samples",
+        "python_status",
+        "python:gc_start",
+        "independent concurrent commands",
     ):
         assert required in normalized_investigation
     for required in (
@@ -161,8 +187,10 @@ def check_skill(workspace: pathlib.Path) -> None:
         "first selected event",
         "ARM completion",
         "Summed kernel",
-        "Aggregate inventory",
+        "Inventory modes are separate contracts",
         "max-groups",
+        "lost samples",
+        "stack truncation",
     ):
         assert required in normalized_quality
     for required in (
@@ -174,6 +202,7 @@ def check_skill(workspace: pathlib.Path) -> None:
         "Never reuse an artifact path",
         "Do not concatenate artifacts",
         "overall experiment incomplete",
+        "CPU sample inventory and GPU aggregate",
     ):
         assert required in normalized_multi_process
     for required in (
@@ -184,6 +213,14 @@ def check_skill(workspace: pathlib.Path) -> None:
         "distinct capture windows",
     ):
         assert required in normalized_trace_analysis
+    for required in (
+        "python:gc_start|gc_end",
+        "--cpu-sample",
+        "--syscall-aggregate",
+        "sampling uncertainty",
+        "cannot be passed to `measure --input`",
+    ):
+        assert required in normalized_cli_contract
     for required in (
         "v0.4.1/install.sh",
         "xprobe `0.4.x`",
