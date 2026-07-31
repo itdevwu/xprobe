@@ -94,6 +94,9 @@ benchmark-aggregate:
 benchmark-multiprocess:
     python3 benchmarks/cuda-multiprocess/run.py "{{cuda13_devel_image}}"
 
+benchmark-pytorch: build
+    if [[ -n "${PYTORCH_ENV:-}" ]]; then python3 benchmarks/pytorch/run.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV}"; else python3 benchmarks/pytorch/run.py --image "{{pytorch_image}}"; fi
+
 fmt:
     cargo fmt --all
 

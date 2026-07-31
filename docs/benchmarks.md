@@ -61,3 +61,18 @@ Its JSON keeps validation, command timing, quality, artifact metadata, and
 baseline-versus-collection throughput per worker. Perturbation is reported
 without a fixed pass ratio because shared GPU scheduling and first injection
 cost vary by workload and worker count.
+
+Run the framework-level PyTorch benchmark with:
+
+```bash
+just benchmark-pytorch
+```
+
+It measures the same warmed-up `torch.mm` plus stream-synchronization workload
+without an Agent, with the Agent idle, during a bounded xprobe capture, and with
+PyTorch Profiler. PyTorch Profiler runs in a separate process so the two CUPTI
+subscribers never coexist. The benchmark reports throughput ratios, validation,
+matched/unmatched/ambiguous samples, completeness, drops, retained capacity and
+buffer utilization. A broad `25x` ceiling catches broken instrumentation; the
+reported `1.05` project target remains an observation rather than a compatibility
+promise.
