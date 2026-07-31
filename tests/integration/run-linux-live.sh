@@ -7,6 +7,7 @@ mmap_capture=/tmp/xprobe-mmap.json
 munmap_capture=/tmp/xprobe-munmap.json
 tracepoint_capture=/tmp/xprobe-tracepoint.json
 capacity_capture=/tmp/xprobe-capacity.json
+syscall_inventory=/tmp/xprobe-syscall-inventory.json
 capacity_stderr=/tmp/xprobe-capacity.stderr
 
 "${target}" &
@@ -15,9 +16,18 @@ cleanup() {
   kill "${target_pid}" 2>/dev/null || true
   wait "${target_pid}" 2>/dev/null || true
   rm -f "${mmap_capture}" "${munmap_capture}" "${tracepoint_capture}" \
-    "${capacity_capture}" "${capacity_stderr}"
+    "${capacity_capture}" "${capacity_stderr}" "${syscall_inventory}"
 }
 trap cleanup EXIT
+
+"${binary}" measure \
+  --pid "${target_pid}" \
+  --syscall-aggregate \
+  --duration-ms 250 \
+  --max-groups 64 \
+  --max-inflight 64 \
+  --timeout-ms 5000 \
+  --json --non-interactive --no-color >"${syscall_inventory}"
 
 "${binary}" measure \
   --pid "${target_pid}" \
@@ -71,4 +81,6 @@ printf ',"tracepoint":'
 cat "${tracepoint_capture}"
 printf ',"capacity":'
 cat "${capacity_capture}"
+printf ',"syscall_inventory":'
+cat "${syscall_inventory}"
 printf '}\n'

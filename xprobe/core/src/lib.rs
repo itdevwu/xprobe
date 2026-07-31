@@ -8,4 +8,5 @@ pub mod doctor;
 pub mod inject;
 pub mod inspect;
 pub mod resolve;
+pub mod syscall_aggregate;
 pub mod validate;

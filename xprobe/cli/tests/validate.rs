@@ -2,7 +2,7 @@ use std::process::Command;
 
 use xprobe_protocol::{
     AgentActivation, CpuSamplingValidationResult, ErrorCode, ErrorResponse, MatchPolicy,
-    PythonSymbolizationStatus, ValidationResult,
+    PythonSymbolizationStatus, SyscallAggregateValidationResult, ValidationResult,
 };
 
 #[test]
@@ -112,4 +112,27 @@ fn validate_accepts_pid_scoped_cpu_sampling_without_ebpf() {
     assert!(!result.requirements.target_mutation);
     assert!(result.target_threads >= 1);
     assert_eq!(result.python_status, PythonSymbolizationStatus::NotDetected);
+}
+
+#[test]
+fn validate_reports_syscall_aggregate_ebpf_requirements() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "validate",
+            "--pid",
+            &std::process::id().to_string(),
+            "--syscall-aggregate",
+            "--json",
+            "--non-interactive",
+            "--no-color",
+        ])
+        .output()
+        .expect("xprobe validate must run");
+
+    assert!(output.status.success());
+    let result: SyscallAggregateValidationResult =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
+    assert!(result.requirements.needs_ebpf);
+    assert!(!result.requirements.target_mutation);
+    assert_eq!(result.valid, result.issues.is_empty());
 }

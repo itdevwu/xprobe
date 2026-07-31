@@ -3,12 +3,12 @@ use schemars::{Schema, schema_for};
 use crate::{
     AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
     CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
-    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, TraceExportResult,
-    ValidationResult,
+    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SyscallAggregateResult,
+    SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 15] {
+pub fn generated_schemas() -> [(&'static str, Schema); 18] {
     [
         ("event.schema.json", schema_for!(Event)),
         ("error.schema.json", schema_for!(ErrorResponse)),
@@ -32,6 +32,18 @@ pub fn generated_schemas() -> [(&'static str, Schema); 15] {
         (
             "cpu-sampling-validate.schema.json",
             schema_for!(CpuSamplingValidationResult),
+        ),
+        (
+            "syscall-aggregate-spec.schema.json",
+            schema_for!(SyscallAggregateSpec),
+        ),
+        (
+            "syscall-aggregate-result.schema.json",
+            schema_for!(SyscallAggregateResult),
+        ),
+        (
+            "syscall-aggregate-validate.schema.json",
+            schema_for!(SyscallAggregateValidationResult),
         ),
         ("capability.schema.json", schema_for!(CapabilityReport)),
         ("discover.schema.json", schema_for!(DiscoveryResult)),

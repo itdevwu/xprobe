@@ -22,12 +22,13 @@ use xprobe_collector::{
     cpu_sampling::{self as cpu_collector, CpuSamplingRequest},
     cupti,
     linux::{self, LinuxCaptureRequest},
+    syscall_aggregate::{self as syscall_collector, SyscallAggregateRequest},
     uprobe::{self, UprobeRequest},
 };
 use xprobe_core::{
     cpu_sampling,
     cpu_sampling_analysis::{self, CpuCaptureData, RawCpuSample},
-    cupti_compat, discover, doctor, inject, inspect, resolve, validate,
+    cupti_compat, discover, doctor, inject, inspect, resolve, syscall_aggregate, validate,
 };
 use xprobe_correlator::{MeasureError, MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
@@ -38,8 +39,9 @@ use xprobe_protocol::{
     CpuSamplingValidationResult, CuptiCollectionSummary, DiscoveryResult, ErrorCode, ErrorResponse,
     Event, EventSource, EventType, ExportFormat, HostCaptureResult, MatchPolicy, MeasurementMode,
     MeasurementResult, MeasurementSpec, MemcpyKind, ProcessReport, ResolvedCudaSelector,
-    ResolvedLinuxSelector, ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity,
-    TraceExportResult, ValidationResult, Warning, XprobeError,
+    ResolvedLinuxSelector, ResolvedProbe, SchemaVersion, SessionStatus, SyscallAggregateResult,
+    SyscallAggregateSpec, SyscallAggregateValidationResult, TargetIdentity, TraceExportResult,
+    ValidationResult, Warning, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -248,8 +250,12 @@ struct ValidateArgs {
     match_policy: Option<String>,
 
     /// Validate bounded PID-scoped CPU sampling instead of an event pair.
-    #[arg(long, conflicts_with_all = ["from", "to", "match_policy"])]
+    #[arg(long, conflicts_with_all = ["from", "to", "match_policy", "syscall_aggregate"])]
     cpu_sample: bool,
+
+    /// Validate bounded PID-scoped syscall aggregation instead of an event pair.
+    #[arg(long, conflicts_with_all = ["from", "to", "match_policy", "cpu_sample"])]
+    syscall_aggregate: bool,
 
     #[command(flatten)]
     output: CommonOutputArgs,
@@ -258,7 +264,7 @@ struct ValidateArgs {
 #[derive(Debug, Args)]
 struct MeasureArgs {
     /// Versioned measurement JSON for a live target.
-    #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "cpu_sample", "samples", "duration_ms", "timeout_ms", "max_events", "max_samples", "frequency_hz", "stack_depth", "max_threads", "aggregate", "max_groups", "name"])]
+    #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "cpu_sample", "syscall_aggregate", "samples", "duration_ms", "timeout_ms", "max_events", "max_samples", "frequency_hz", "stack_depth", "max_threads", "max_inflight", "aggregate", "max_groups", "name"])]
     spec: Option<PathBuf>,
 
     /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
@@ -337,6 +343,18 @@ struct MeasureArgs {
     )]
     max_threads: Option<u32>,
 
+    /// Aggregate all syscall lifecycles in bounded BPF maps.
+    #[arg(long, conflicts_with_all = ["input", "from", "to", "match_policy", "samples", "cpu_sample", "aggregate", "events_out", "format", "cupti_socket", "agent"])]
+    syscall_aggregate: bool,
+
+    /// Bound concurrent syscall lifecycle starts retained in BPF.
+    #[arg(
+        long,
+        requires = "syscall_aggregate",
+        default_value_if("syscall_aggregate", "true", "1024")
+    )]
+    max_inflight: Option<u64>,
+
     /// Stop after this many matched samples.
     #[arg(long)]
     samples: Option<usize>,
@@ -357,7 +375,8 @@ struct MeasureArgs {
     #[arg(
         long,
         default_value_if("aggregate", "true", "4096"),
-        default_value_if("cpu_sample", "true", "256")
+        default_value_if("cpu_sample", "true", "256"),
+        default_value_if("syscall_aggregate", "true", "256")
     )]
     max_groups: Option<usize>,
 
@@ -751,10 +770,12 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         to,
         match_policy,
         cpu_sample,
+        syscall_aggregate,
         frequency_hz,
         max_samples,
         stack_depth,
         max_threads,
+        max_inflight,
         samples,
         duration_ms,
         max_events,
@@ -809,10 +830,38 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             json,
         );
     }
+    if syscall_aggregate {
+        let Some(pid) = pid else {
+            return emit_error(
+                ErrorCode::InvalidEventSelector,
+                "--syscall-aggregate requires --pid".to_owned(),
+                true,
+                json,
+            );
+        };
+        let Some(duration_ms) = duration_ms else {
+            return emit_error(
+                ErrorCode::SessionLimitExceeded,
+                "--syscall-aggregate requires --duration-ms".to_owned(),
+                true,
+                json,
+            );
+        };
+        return run_direct_syscall_aggregate(
+            pid,
+            name,
+            duration_ms,
+            timeout_ms,
+            u64::try_from(max_groups.expect("clap supplies syscall group capacity"))
+                .unwrap_or(u64::MAX),
+            max_inflight.expect("clap supplies syscall inflight capacity"),
+            json,
+        );
+    }
     if max_groups.is_some() && !aggregate {
         return emit_error(
             ErrorCode::InvalidEventSelector,
-            "--max-groups requires --aggregate or --cpu-sample".to_owned(),
+            "--max-groups requires --aggregate, --cpu-sample, or --syscall-aggregate".to_owned(),
             true,
             json,
         );
@@ -1101,6 +1150,165 @@ fn emit_cpu_inventory(result: &CpuSampleInventoryResult, json: bool) -> ExitCode
     ExitCode::SUCCESS
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_direct_syscall_aggregate(
+    pid: u32,
+    name: Option<String>,
+    duration_ms: u64,
+    timeout_ms: u64,
+    max_groups: u64,
+    max_inflight: u64,
+    json: bool,
+) -> ExitCode {
+    let report = match inspect::run(pid) {
+        Ok(report) => report,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+    let spec = SyscallAggregateSpec {
+        schema_version: SchemaVersion::current(),
+        name,
+        target: report.target.clone(),
+        duration_ms,
+        timeout_ms,
+        max_groups,
+        max_inflight,
+    };
+    run_syscall_aggregate_spec(&spec, Some(report), json)
+}
+
+fn run_syscall_aggregate_spec(
+    spec: &SyscallAggregateSpec,
+    inspected: Option<ProcessReport>,
+    json: bool,
+) -> ExitCode {
+    let report = match inspected.map_or_else(|| inspect::run(spec.target.pid), Ok) {
+        Ok(report) => report,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+    if let Err(error) = inspect::verify_target(&spec.target) {
+        return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+    }
+    let validation = match syscall_aggregate::validate(&report) {
+        Ok(validation) => validation,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+    if !validation.valid {
+        let message = validation.issues.first().map_or_else(
+            || "syscall aggregate requirements are not satisfied".to_owned(),
+            |issue| issue.message.clone(),
+        );
+        return emit_error(ErrorCode::PermissionDenied, message, true, json);
+    }
+    let request = match syscall_collector_request(spec) {
+        Ok(request) => request,
+        Err(error) => return emit_command_failure(error, json),
+    };
+    let capture = match syscall_collector::collect(&request) {
+        Ok(capture) => capture,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+    let capture = syscall_aggregate::SyscallCaptureData {
+        groups: capture
+            .groups
+            .into_iter()
+            .map(|group| syscall_aggregate::RawSyscallGroup {
+                syscall_number: group.syscall_number,
+                count: group.count,
+                errors: group.errors,
+                total_duration_ns: group.total_duration_ns,
+                min_duration_ns: group.min_duration_ns,
+                max_duration_ns: group.max_duration_ns,
+            })
+            .collect(),
+        observed_entries: capture.observed_entries,
+        matched_exits: capture.matched_exits,
+        unmatched_exits: capture.unmatched_exits,
+        dropped_aggregates: capture.dropped_aggregates,
+        inflight_at_end: capture.inflight_at_end,
+    };
+    let result = match syscall_aggregate::analyze(
+        &report,
+        spec,
+        format!("xp_syscalls_{}", std::process::id()),
+        &capture,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        }
+    };
+    emit_syscall_inventory(&result, json)
+}
+
+fn syscall_collector_request(
+    spec: &SyscallAggregateSpec,
+) -> Result<SyscallAggregateRequest, CommandFailure> {
+    if spec.duration_ms == 0 || spec.max_groups == 0 || spec.max_inflight == 0 {
+        return Err(CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            "syscall aggregate duration, groups, and inflight capacity must be positive",
+            true,
+        ));
+    }
+    let max_groups = u32::try_from(spec.max_groups).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            format!("syscall max_groups exceed the BPF map ABI: {error}"),
+            true,
+        )
+    })?;
+    let max_inflight = u32::try_from(spec.max_inflight).map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            format!("syscall max_inflight exceeds the BPF map ABI: {error}"),
+            true,
+        )
+    })?;
+    Ok(SyscallAggregateRequest {
+        target: spec.target.clone(),
+        duration: Duration::from_millis(spec.duration_ms),
+        timeout: Duration::from_millis(spec.timeout_ms),
+        max_groups,
+        max_inflight,
+    })
+}
+
+fn emit_syscall_inventory(result: &SyscallAggregateResult, json: bool) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(result).expect("syscall inventory must serialize")
+        );
+    } else {
+        println!(
+            "Syscall inventory: {} entries, {} matched exits",
+            result.collection.observed_entries, result.collection.matched_exits
+        );
+        for group in result.inventory.groups.iter().take(10) {
+            let label = group
+                .syscall_name
+                .clone()
+                .unwrap_or_else(|| format!("syscall#{}", group.syscall_number));
+            println!(
+                "  {label}: count={} total={}ns mean={:.0}ns errors={}",
+                group.count, group.duration_ns.total, group.duration_ns.mean, group.errors
+            );
+        }
+        for warning in &result.warnings {
+            println!("Warning: {}: {}", warning.code, warning.message);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn validate_measure_source(pid: Option<u32>, input: &[PathBuf]) -> Result<(), CommandFailure> {
     if pid.is_some() && !input.is_empty() {
         return Err(CommandFailure::new(
@@ -1227,6 +1435,7 @@ fn run_completed_measurement(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_measure_spec(
     path: &Path,
     cupti_socket: Option<PathBuf>,
@@ -1259,6 +1468,15 @@ fn run_measure_spec(
     };
     if value.get("sample_event").is_some() {
         return run_cpu_sampling_file_spec(
+            value,
+            path,
+            cupti_socket.is_some() || agent_path.is_some(),
+            events_out.is_some() || format.is_some(),
+            json,
+        );
+    }
+    if value.get("max_inflight").is_some() {
+        return run_syscall_aggregate_file_spec(
             value,
             path,
             cupti_socket.is_some() || agent_path.is_some(),
@@ -1361,6 +1579,35 @@ fn run_cpu_sampling_file_spec(
         }
     };
     run_cpu_sampling_spec(&spec, None, json)
+}
+
+fn run_syscall_aggregate_file_spec(
+    value: serde_json::Value,
+    path: &Path,
+    has_device_options: bool,
+    has_artifact_options: bool,
+    json: bool,
+) -> ExitCode {
+    if has_device_options || has_artifact_options {
+        return emit_error(
+            ErrorCode::InvalidEventSelector,
+            "SyscallAggregateSpec does not accept CUPTI or event artifact options".to_owned(),
+            true,
+            json,
+        );
+    }
+    let spec: SyscallAggregateSpec = match serde_json::from_value(value) {
+        Ok(spec) => spec,
+        Err(error) => {
+            return emit_error(
+                ErrorCode::InvalidEventSelector,
+                format!("invalid SyscallAggregateSpec {}: {error}", path.display()),
+                true,
+                json,
+            );
+        }
+    };
+    run_syscall_aggregate_spec(&spec, None, json)
 }
 
 fn measurement_spec_capacity(spec: &MeasurementSpec) -> Result<usize, CommandFailure> {
@@ -3371,6 +3618,7 @@ fn run_validate(args: ValidateArgs) -> ExitCode {
         to,
         match_policy,
         cpu_sample,
+        syscall_aggregate,
         output:
             CommonOutputArgs {
                 json,
@@ -3391,10 +3639,16 @@ fn run_validate(args: ValidateArgs) -> ExitCode {
             Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
         };
     }
+    if syscall_aggregate {
+        return match syscall_aggregate::validate(&report) {
+            Ok(result) => emit_syscall_aggregate_validation(&result, json),
+            Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
+        };
+    }
     let (Some(from), Some(to), Some(match_policy)) = (from, to, match_policy) else {
         return emit_error(
             ErrorCode::InvalidEventSelector,
-            "validate requires --from, --to, and --match unless --cpu-sample is used".to_owned(),
+            "validate requires an event pair, --cpu-sample, or --syscall-aggregate".to_owned(),
             true,
             json,
         );
@@ -3438,6 +3692,30 @@ fn emit_cpu_sampling_validation(result: &CpuSamplingValidationResult, json: bool
         }
         for warning in &result.warnings {
             println!("Warning: {}: {}", warning.code, warning.message);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn emit_syscall_aggregate_validation(
+    result: &SyscallAggregateValidationResult,
+    json: bool,
+) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(result)
+                .expect("syscall aggregate validation result must serialize")
+        );
+    } else {
+        println!(
+            "Syscall aggregate validation: {}",
+            if result.valid { "valid" } else { "invalid" }
+        );
+        println!("Target: PID {}", result.target.pid);
+        print_check("eBPF", &result.ebpf);
+        for issue in &result.issues {
+            println!("Issue: {}: {}", issue.code, issue.message);
         }
     }
     ExitCode::SUCCESS

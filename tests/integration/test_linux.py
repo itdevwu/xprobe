@@ -46,7 +46,8 @@ def main() -> None:
     assert_syscall_capture(captures["munmap"], "munmap")
     assert_tracepoint_capture(captures["tracepoint"])
     assert_capacity_failure(captures["capacity"])
-    print("captured mmap, munmap, and named tracepoint latency evidence")
+    assert_syscall_inventory(captures["syscall_inventory"])
+    print("captured syscall inventory plus mmap, munmap, and named tracepoint latency evidence")
 
 
 def assert_syscall_capture(result: dict, name: str) -> None:
@@ -98,6 +99,20 @@ def assert_capacity_failure(result: dict) -> None:
     assert result["ok"] is False
     assert result["error"]["code"] == "EVENT_RATE_TOO_HIGH"
     assert result["error"]["details"]["record_capacity"] == 4
+
+
+def assert_syscall_inventory(result: dict) -> None:
+    assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["collection"]["observed_entries"] > 0
+    assert result["collection"]["matched_exits"] > 0
+    assert result["collection"]["dropped_aggregates"] == 0
+    groups = result["inventory"]["groups"]
+    assert groups
+    mmap = next(group for group in groups if group["syscall_name"] == "mmap")
+    assert mmap["count"] > 0
+    assert mmap["duration_ns"]["total"] >= mmap["duration_ns"]["max"]
+    assert mmap["entry_selector_hint"] == "syscall:mmap:entry"
 
 
 if __name__ == "__main__":

@@ -4,4 +4,5 @@ pub mod completed;
 pub mod cpu_sampling;
 pub mod cupti;
 pub mod linux;
+pub mod syscall_aggregate;
 pub mod uprobe;
