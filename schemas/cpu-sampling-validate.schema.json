@@ -3,9 +3,6 @@
   "title": "CpuSamplingValidationResult",
   "type": "object",
   "properties": {
-    "ebpf": {
-      "$ref": "#/$defs/CheckResult"
-    },
     "issues": {
       "type": "array",
       "default": [],
@@ -56,7 +53,6 @@
     "target_threads",
     "requirements",
     "perf_event",
-    "ebpf",
     "python_status"
   ],
   "$defs": {
@@ -90,9 +86,6 @@
     "CpuSamplingRequirements": {
       "type": "object",
       "properties": {
-        "needs_ebpf": {
-          "type": "boolean"
-        },
         "needs_perf_event": {
           "type": "boolean"
         },
@@ -103,7 +96,6 @@
       "additionalProperties": false,
       "required": [
         "needs_perf_event",
-        "needs_ebpf",
         "target_mutation"
       ]
     },

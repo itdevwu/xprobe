@@ -1,6 +1,9 @@
 use std::process::Command;
 
-use xprobe_protocol::{AgentActivation, ErrorCode, ErrorResponse, MatchPolicy, ValidationResult};
+use xprobe_protocol::{
+    AgentActivation, CpuSamplingValidationResult, ErrorCode, ErrorResponse, MatchPolicy,
+    PythonSymbolizationStatus, ValidationResult,
+};
 
 #[test]
 fn validate_reports_environment_requirements_without_attaching() {
@@ -79,4 +82,34 @@ fn validate_rejects_an_invalid_kernel_regex() {
     let error: ErrorResponse =
         serde_json::from_slice(&output.stdout).expect("stdout must contain error JSON");
     assert_eq!(error.error.code, ErrorCode::InvalidEventSelector);
+}
+
+#[test]
+fn validate_accepts_pid_scoped_cpu_sampling_without_ebpf() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "validate",
+            "--pid",
+            &std::process::id().to_string(),
+            "--cpu-sample",
+            "--json",
+            "--non-interactive",
+            "--no-color",
+        ])
+        .output()
+        .expect("xprobe validate must run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let result: CpuSamplingValidationResult =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
+    assert!(result.valid);
+    assert!(result.requirements.needs_perf_event);
+    assert!(!result.requirements.target_mutation);
+    assert!(result.target_threads >= 1);
+    assert_eq!(result.python_status, PythonSymbolizationStatus::NotDetected);
 }

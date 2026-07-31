@@ -137,7 +137,6 @@ pub struct CpuSampleInventoryResult {
 #[serde(deny_unknown_fields)]
 pub struct CpuSamplingRequirements {
     pub needs_perf_event: bool,
-    pub needs_ebpf: bool,
     pub target_mutation: bool,
 }
 
@@ -151,7 +150,6 @@ pub struct CpuSamplingValidationResult {
     pub target_threads: u32,
     pub requirements: CpuSamplingRequirements,
     pub perf_event: CheckResult,
-    pub ebpf: CheckResult,
     pub python_status: PythonSymbolizationStatus,
     #[serde(default)]
     pub issues: Vec<ValidationIssue>,

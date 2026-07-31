@@ -247,7 +247,7 @@ fn cpu_sampling_spec_contract_round_trips() {
 #[test]
 fn cpu_sample_inventory_contract_round_trips() {
     let frame = json!({
-        "address": 4198400,
+        "address": 4_198_400,
         "module_path": "/srv/app",
         "build_id": "abcd",
         "file_offset": 4096,
@@ -291,7 +291,7 @@ fn cpu_sample_inventory_contract_round_trips() {
             "sample_capacity": 10000,
             "group_capacity": 4096,
             "groups": 4,
-            "table_utilization": 0.0009765625,
+            "table_utilization": 0.000_976_562_5,
             "stack_depth": 64,
             "truncated_stacks": 0,
             "threads_observed": 8,
@@ -319,11 +319,9 @@ fn cpu_sampling_validation_contract_round_trips() {
         "target_threads": 8,
         "requirements": {
             "needs_perf_event": true,
-            "needs_ebpf": true,
             "target_mutation": false
         },
         "perf_event": {"status": "available", "detail": "perf_event_paranoid=1"},
-        "ebpf": {"status": "available", "detail": "CAP_BPF and CAP_PERFMON"},
         "python_status": "inactive",
         "issues": [],
         "warnings": []
