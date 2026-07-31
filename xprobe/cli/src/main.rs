@@ -22,17 +22,19 @@ use xprobe_collector::{
     linux::{self, LinuxCaptureRequest},
     uprobe::{self, UprobeRequest},
 };
-use xprobe_core::{cupti_compat, discover, doctor, inject, inspect, resolve, validate};
+use xprobe_core::{
+    cpu_sampling, cupti_compat, discover, doctor, inject, inspect, resolve, validate,
+};
 use xprobe_correlator::{MeasureError, MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
     AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
     AggregateInventory, AggregateInventoryResult, CapabilityReport, CaptureCompleteness,
-    CheckResult, ClockDomain, CuptiCollectionSummary, DiscoveryResult, ErrorCode, ErrorResponse,
-    Event, EventSource, EventType, ExportFormat, HostCaptureResult, MatchPolicy, MeasurementMode,
-    MeasurementResult, MeasurementSpec, MemcpyKind, ProcessReport, ResolvedCudaSelector,
-    ResolvedLinuxSelector, ResolvedProbe, SchemaVersion, SessionStatus, TargetIdentity,
-    TraceExportResult, ValidationResult, Warning, XprobeError,
+    CheckResult, ClockDomain, CpuSamplingValidationResult, CuptiCollectionSummary, DiscoveryResult,
+    ErrorCode, ErrorResponse, Event, EventSource, EventType, ExportFormat, HostCaptureResult,
+    MatchPolicy, MeasurementMode, MeasurementResult, MeasurementSpec, MemcpyKind, ProcessReport,
+    ResolvedCudaSelector, ResolvedLinuxSelector, ResolvedProbe, SchemaVersion, SessionStatus,
+    TargetIdentity, TraceExportResult, ValidationResult, Warning, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -230,27 +232,22 @@ struct ValidateArgs {
 
     /// Start event selector.
     #[arg(long)]
-    from: String,
+    from: Option<String>,
 
     /// End event selector.
     #[arg(long)]
-    to: String,
+    to: Option<String>,
 
     /// Correlation policy.
     #[arg(long = "match")]
-    match_policy: String,
+    match_policy: Option<String>,
 
-    /// Emit only the versioned JSON result on stdout.
-    #[arg(long)]
-    json: bool,
+    /// Validate bounded PID-scoped CPU sampling instead of an event pair.
+    #[arg(long, conflicts_with_all = ["from", "to", "match_policy"])]
+    cpu_sample: bool,
 
-    /// Disable colored output.
-    #[arg(long)]
-    no_color: bool,
-
-    /// Never wait for user input.
-    #[arg(long)]
-    non_interactive: bool,
+    #[command(flatten)]
+    output: CommonOutputArgs,
 }
 
 #[derive(Debug, Args)]
@@ -3021,15 +3018,34 @@ fn run_validate(args: ValidateArgs) -> ExitCode {
         from,
         to,
         match_policy,
-        json,
-        no_color: _,
-        non_interactive: _,
+        cpu_sample,
+        output:
+            CommonOutputArgs {
+                json,
+                no_color: _,
+                non_interactive: _,
+            },
     } = args;
     let report = match inspect::run(pid) {
         Ok(report) => report,
         Err(error) => {
             return emit_error(error.code(), error.to_string(), error.recoverable(), json);
         }
+    };
+
+    if cpu_sample {
+        return match cpu_sampling::validate(&report) {
+            Ok(result) => emit_cpu_sampling_validation(&result, json),
+            Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
+        };
+    }
+    let (Some(from), Some(to), Some(match_policy)) = (from, to, match_policy) else {
+        return emit_error(
+            ErrorCode::InvalidEventSelector,
+            "validate requires --from, --to, and --match unless --cpu-sample is used".to_owned(),
+            true,
+            json,
+        );
     };
 
     match validate::run(&report, &from, &to, &match_policy) {
@@ -3047,6 +3063,32 @@ fn run_validate(args: ValidateArgs) -> ExitCode {
         }
         Err(error) => emit_error(error.code(), error.to_string(), error.recoverable(), json),
     }
+}
+
+fn emit_cpu_sampling_validation(result: &CpuSamplingValidationResult, json: bool) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(result)
+                .expect("CPU sampling validation result must serialize")
+        );
+    } else {
+        println!(
+            "CPU sampling validation: {}",
+            if result.valid { "valid" } else { "invalid" }
+        );
+        println!("Target: PID {}", result.target.pid);
+        println!("Threads: {}", result.target_threads);
+        println!("Python symbols: {:?}", result.python_status);
+        print_check("perf event", &result.perf_event);
+        for issue in &result.issues {
+            println!("Issue: {}: {}", issue.code, issue.message);
+        }
+        for warning in &result.warnings {
+            println!("Warning: {}: {}", warning.code, warning.message);
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_resolve(args: ResolveArgs) -> ExitCode {
