@@ -420,12 +420,17 @@ fn selector_hints(frame: &CpuStackFrame) -> (Option<String>, Option<String>) {
     if frame.language != CpuFrameLanguage::Native {
         return (None, None);
     }
-    let (Some(path), Some(offset)) = (&frame.module_path, frame.file_offset) else {
+    let (Some(path), Some(offset), Some(symbol_offset)) =
+        (&frame.module_path, frame.file_offset, frame.symbol_offset)
+    else {
+        return (None, None);
+    };
+    let Some(symbol_start) = offset.checked_sub(symbol_offset) else {
         return (None, None);
     };
     (
-        Some(format!("uprobe:{path}:+0x{offset:x}:entry")),
-        Some(format!("uprobe:{path}:+0x{offset:x}:return")),
+        Some(format!("uprobe:{path}:+0x{symbol_start:x}:entry")),
+        Some(format!("uprobe:{path}:+0x{symbol_start:x}:return")),
     )
 }
 
@@ -796,6 +801,44 @@ mod tests {
             "py::worker (/srv/app.py:7)"
         );
         assert!(find_perf_symbol(&symbols, 0x7f00_0030).is_none());
+    }
+
+    #[test]
+    fn selector_hints_use_the_resolved_symbol_start() {
+        let frame = CpuStackFrame {
+            address: 0x7f00_0042,
+            module_path: Some("/tmp/native workload".to_owned()),
+            build_id: None,
+            file_offset: Some(0x1642),
+            symbol: Some("hot_loop".to_owned()),
+            symbol_offset: Some(0x42),
+            language: CpuFrameLanguage::Native,
+            source_path: None,
+            line: None,
+        };
+        assert_eq!(
+            selector_hints(&frame),
+            (
+                Some("uprobe:/tmp/native workload:+0x1600:entry".to_owned()),
+                Some("uprobe:/tmp/native workload:+0x1600:return".to_owned()),
+            )
+        );
+    }
+
+    #[test]
+    fn unresolved_native_frames_do_not_claim_function_boundaries() {
+        let frame = CpuStackFrame {
+            address: 0x7f00_0042,
+            module_path: Some("/tmp/native".to_owned()),
+            build_id: None,
+            file_offset: Some(0x1642),
+            symbol: None,
+            symbol_offset: None,
+            language: CpuFrameLanguage::Native,
+            source_path: None,
+            line: None,
+        };
+        assert_eq!(selector_hints(&frame), (None, None));
     }
 
     fn raw(addresses: &[u64]) -> RawCpuSample {
