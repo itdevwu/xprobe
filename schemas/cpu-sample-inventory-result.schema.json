@@ -47,10 +47,11 @@
     "symbolization"
   ],
   "$defs": {
-    "CaptureCompleteness": {
+    "CpuCaptureCompleteness": {
       "type": "string",
       "enum": [
-        "complete"
+        "complete",
+        "incomplete"
       ]
     },
     "CpuFrameLanguage": {
@@ -111,7 +112,7 @@
       "type": "object",
       "properties": {
         "completeness": {
-          "$ref": "#/$defs/CaptureCompleteness"
+          "$ref": "#/$defs/CpuCaptureCompleteness"
         },
         "group_capacity": {
           "type": "integer",
