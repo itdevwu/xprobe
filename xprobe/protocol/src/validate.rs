@@ -42,6 +42,10 @@ pub struct ResolvedLinuxSelector {
     pub category: String,
     pub name: String,
     pub syscall_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

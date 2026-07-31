@@ -105,6 +105,10 @@ enum Selector {
         category: String,
         name: String,
     },
+    PythonGc {
+        event_type: EventType,
+        marker: &'static str,
+    },
     Api {
         event_type: EventType,
         domain: String,
@@ -145,10 +149,13 @@ impl Selector {
         if text.starts_with("tracepoint:") {
             return Self::parse_tracepoint(text);
         }
+        if text.starts_with("python:") {
+            return Self::parse_python(text);
+        }
         let fields: Vec<&str> = text.splitn(3, ':').collect();
         if fields.first() != Some(&"cuda") || fields.len() < 2 {
             return Err(MeasureError::InvalidSelector(
-                "completed captures require a uprobe:, syscall:, tracepoint:, or cuda: selector"
+                "completed captures require a uprobe:, syscall:, tracepoint:, python:, or cuda: selector"
                     .to_owned(),
             ));
         }
@@ -284,6 +291,22 @@ impl Selector {
             category: (*category).to_owned(),
             name: (*name).to_owned(),
         })
+    }
+
+    fn parse_python(text: &str) -> Result<Self, MeasureError> {
+        match text {
+            "python:gc_start" => Ok(Self::PythonGc {
+                event_type: EventType::PythonGcStart,
+                marker: "gc__start",
+            }),
+            "python:gc_end" => Ok(Self::PythonGc {
+                event_type: EventType::PythonGcEnd,
+                marker: "gc__done",
+            }),
+            _ => Err(MeasureError::InvalidSelector(
+                "Python selector must be python:<gc_start|gc_end>".to_owned(),
+            )),
+        }
     }
 
     fn parse_kernel(fields: &[&str]) -> Result<Self, MeasureError> {
@@ -460,6 +483,18 @@ impl Selector {
                         .and_then(serde_json::Value::as_str)
                         == Some(category.as_str())
             }
+            Self::PythonGc { event_type, marker } => {
+                event.event_type == *event_type
+                    && event.host.as_ref().is_some_and(|host| {
+                        host.probe_kind == HostProbeKind::Usdt
+                            && host.symbol.as_deref() == Some(*marker)
+                    })
+                    && event
+                        .attributes
+                        .get("usdt_provider")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("python")
+            }
             Self::Memcpy { event_type, kind } => {
                 event.event_type == *event_type
                     && kind.as_ref().is_none_or(|kind| {
@@ -507,8 +542,30 @@ impl Selector {
                     ..
                 },
             ) => start_pattern == end_pattern,
-            (Self::Host { .. } | Self::Tracepoint { .. } | Self::Nvtx { .. }, _)
-            | (_, Self::Host { .. } | Self::Tracepoint { .. } | Self::Nvtx { .. }) => false,
+            (
+                Self::PythonGc {
+                    event_type: EventType::PythonGcStart,
+                    ..
+                },
+                Self::PythonGc {
+                    event_type: EventType::PythonGcEnd,
+                    ..
+                },
+            ) => true,
+            (
+                Self::Host { .. }
+                | Self::Tracepoint { .. }
+                | Self::Nvtx { .. }
+                | Self::PythonGc { .. },
+                _,
+            )
+            | (
+                _,
+                Self::Host { .. }
+                | Self::Tracepoint { .. }
+                | Self::Nvtx { .. }
+                | Self::PythonGc { .. },
+            ) => false,
             _ => true,
         }
     }
@@ -544,6 +601,22 @@ impl Selector {
                     ..
                 },
             ) if start_pattern == end_pattern
+        )
+    }
+
+    fn is_python_gc_lifecycle(&self, end: &Self) -> bool {
+        matches!(
+            (self, end),
+            (
+                Self::PythonGc {
+                    event_type: EventType::PythonGcStart,
+                    ..
+                },
+                Self::PythonGc {
+                    event_type: EventType::PythonGcEnd,
+                    ..
+                },
+            )
         )
     }
 
@@ -636,6 +709,13 @@ struct Outcome<'a> {
     ambiguous: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LifecycleKinds {
+    syscall: bool,
+    nvtx: bool,
+    python_gc: bool,
+}
+
 /// Correlate a bounded event capture and calculate latency statistics.
 ///
 /// # Errors
@@ -674,15 +754,17 @@ pub fn measure(
     let clock_domain = common_clock_domain(&starts, &ends)?;
     apply_duration_window(&mut starts, &mut ends, options.duration)?;
 
-    let syscall_lifecycle = start_selector.is_syscall_lifecycle(&end_selector);
-    let nvtx_lifecycle = start_selector.is_nvtx_lifecycle(&end_selector);
+    let lifecycles = LifecycleKinds {
+        syscall: start_selector.is_syscall_lifecycle(&end_selector),
+        nvtx: start_selector.is_nvtx_lifecycle(&end_selector),
+        python_gc: start_selector.is_python_gc_lifecycle(&end_selector),
+    };
     let outcome = correlate_selected(
         &starts,
         &ends,
         options.match_policy,
         options.samples,
-        syscall_lifecycle,
-        nvtx_lifecycle,
+        lifecycles,
     );
     if outcome.pairs.is_empty() {
         return Err(MeasureError::NoMatchedSamples);
@@ -695,8 +777,7 @@ pub fn measure(
         .map(|pair| pair.latency_ns)
         .collect::<Vec<_>>();
     let denominator = matched + outcome.unmatched_start + outcome.unmatched_end + outcome.ambiguous;
-    let (method, confidence) =
-        correlation_metadata(options.match_policy, syscall_lifecycle, nvtx_lifecycle);
+    let (method, confidence) = correlation_metadata(options.match_policy, lifecycles);
     let warnings = measurement_warnings(options, &starts, &ends);
 
     let (host_events, cuda_events) = collection_event_counts(events);
@@ -763,12 +844,13 @@ fn correlate_selected<'a>(
     ends: &[&'a Event],
     policy: MatchPolicy,
     limit: Option<usize>,
-    syscall_lifecycle: bool,
-    nvtx_lifecycle: bool,
+    lifecycles: LifecycleKinds,
 ) -> Outcome<'a> {
     match policy {
-        MatchPolicy::Exact if syscall_lifecycle => correlate_syscall_lifecycle(starts, ends, limit),
-        MatchPolicy::Exact if nvtx_lifecycle => correlate_nvtx_lifecycle(starts, ends, limit),
+        MatchPolicy::Exact if lifecycles.syscall || lifecycles.python_gc => {
+            correlate_thread_lifecycle(starts, ends, limit)
+        }
+        MatchPolicy::Exact if lifecycles.nvtx => correlate_nvtx_lifecycle(starts, ends, limit),
         MatchPolicy::Exact => correlate_exact(starts, ends, limit),
         MatchPolicy::FirstAfter => correlate_first_after(starts, ends, limit),
         MatchPolicy::Nearest => correlate_nearest(starts, ends, limit),
@@ -802,16 +884,19 @@ fn validate_policy(
 
 const fn correlation_metadata(
     policy: MatchPolicy,
-    syscall_lifecycle: bool,
-    nvtx_lifecycle: bool,
+    lifecycles: LifecycleKinds,
 ) -> (&'static str, CorrelationConfidence) {
     match policy {
-        MatchPolicy::Exact if syscall_lifecycle => {
+        MatchPolicy::Exact if lifecycles.syscall => {
             ("exact_syscall_tid_lifecycle", CorrelationConfidence::Exact)
         }
-        MatchPolicy::Exact if nvtx_lifecycle => {
+        MatchPolicy::Exact if lifecycles.nvtx => {
             ("exact_nvtx_range_id", CorrelationConfidence::Exact)
         }
+        MatchPolicy::Exact if lifecycles.python_gc => (
+            "exact_python_gc_tid_lifecycle",
+            CorrelationConfidence::Exact,
+        ),
         MatchPolicy::Exact => ("exact_cupti_correlation_id", CorrelationConfidence::Exact),
         MatchPolicy::FirstAfter => ("first_after", CorrelationConfidence::Heuristic),
         MatchPolicy::Nearest => ("nearest", CorrelationConfidence::Heuristic),
@@ -820,7 +905,7 @@ const fn correlation_metadata(
     }
 }
 
-fn correlate_syscall_lifecycle<'a>(
+fn correlate_thread_lifecycle<'a>(
     starts: &[&'a Event],
     ends: &[&'a Event],
     limit: Option<usize>,
@@ -1546,6 +1631,22 @@ mod tests {
         event
     }
 
+    fn python_gc_event(event_type: EventType, timestamp: u64, tid: u32) -> Event {
+        let marker = match event_type {
+            EventType::PythonGcStart => "gc__start",
+            EventType::PythonGcEnd => "gc__done",
+            _ => panic!("Python GC fixture requires a GC boundary"),
+        };
+        let mut event = syscall_event(event_type, timestamp, tid, marker);
+        event.host.as_mut().unwrap().probe_kind = HostProbeKind::Usdt;
+        event.host.as_mut().unwrap().binary_path = Some("/usr/bin/python3".to_owned());
+        event.attributes.insert(
+            "usdt_provider".to_owned(),
+            serde_json::Value::String("python".to_owned()),
+        );
+        event
+    }
+
     #[test]
     fn exact_matching_uses_cupti_correlation_ids() {
         let events = vec![
@@ -1604,6 +1705,34 @@ mod tests {
         assert_eq!(result.correlation.confidence, CorrelationConfidence::Exact);
         assert_eq!(result.evidence[0].start.tid, 10);
         assert_eq!(result.evidence[0].end.tid, 10);
+    }
+
+    #[test]
+    fn exact_python_gc_matching_follows_thread_lifecycle() {
+        let events = vec![
+            python_gc_event(EventType::PythonGcStart, 100, 10),
+            python_gc_event(EventType::PythonGcStart, 110, 20),
+            python_gc_event(EventType::PythonGcEnd, 160, 20),
+            python_gc_event(EventType::PythonGcEnd, 190, 10),
+        ];
+        let options = MeasureOptions {
+            session_id: "xp_python_gc".to_owned(),
+            name: Some("python_gc".to_owned()),
+            start_selector: "python:gc_start".to_owned(),
+            end_selector: "python:gc_end".to_owned(),
+            match_policy: MatchPolicy::Exact,
+            samples: Some(2),
+            duration: None,
+            max_events: 100,
+            dropped_events: 0,
+        };
+
+        let result = measure(&events, &options).unwrap();
+        assert_eq!(result.measurement.samples.matched, 2);
+        assert_eq!(result.measurement.latency_ns.min, 50);
+        assert_eq!(result.measurement.latency_ns.max, 90);
+        assert_eq!(result.correlation.method, "exact_python_gc_tid_lifecycle");
+        assert_eq!(result.correlation.confidence, CorrelationConfidence::Exact);
     }
 
     #[test]

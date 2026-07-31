@@ -12,6 +12,7 @@ use crate::{
     cupti_compat,
     inspect::{self, InspectError},
     resolve::{self, ResolveError},
+    usdt::{self, UsdtError},
 };
 
 #[derive(Debug)]
@@ -21,26 +22,29 @@ pub enum ValidateError {
         endpoint: &'static str,
         source: ResolveError,
     },
+    Usdt(UsdtError),
     InvalidSelector(String),
     InvalidCorrelationPolicy(String),
 }
 
 impl ValidateError {
     #[must_use]
-    pub const fn code(&self) -> ErrorCode {
+    pub fn code(&self) -> ErrorCode {
         match self {
             Self::Inspect(error) => error.code(),
             Self::Resolve { source, .. } => source.code(),
+            Self::Usdt(error) => error.code(),
             Self::InvalidSelector(_) => ErrorCode::InvalidEventSelector,
             Self::InvalidCorrelationPolicy(_) => ErrorCode::InvalidCorrelationPolicy,
         }
     }
 
     #[must_use]
-    pub const fn recoverable(&self) -> bool {
+    pub fn recoverable(&self) -> bool {
         match self {
             Self::Inspect(error) => error.recoverable(),
             Self::Resolve { source, .. } => source.recoverable(),
+            Self::Usdt(error) => error.recoverable(),
             Self::InvalidSelector(_) | Self::InvalidCorrelationPolicy(_) => true,
         }
     }
@@ -53,6 +57,7 @@ impl fmt::Display for ValidateError {
             Self::Resolve { endpoint, source } => {
                 write!(formatter, "failed to resolve {endpoint} selector: {source}")
             }
+            Self::Usdt(error) => error.fmt(formatter),
             Self::InvalidSelector(reason) => write!(formatter, "invalid event selector: {reason}"),
             Self::InvalidCorrelationPolicy(policy) => {
                 write!(formatter, "invalid correlation policy {policy:?}")
@@ -66,6 +71,7 @@ impl Error for ValidateError {
         match self {
             Self::Inspect(error) => Some(error),
             Self::Resolve { source, .. } => Some(source),
+            Self::Usdt(error) => Some(error),
             Self::InvalidSelector(_) | Self::InvalidCorrelationPolicy(_) => None,
         }
     }
@@ -84,6 +90,8 @@ enum EndpointKind {
     SyscallEntry { name: String },
     SyscallExit { name: String },
     Tracepoint,
+    PythonGcStart,
+    PythonGcEnd,
     CudaApi { domain: String, name: String },
     Kernel,
     Memcpy,
@@ -108,6 +116,8 @@ impl EndpointKind {
                 | Self::SyscallEntry { .. }
                 | Self::SyscallExit { .. }
                 | Self::Tracepoint
+                | Self::PythonGcStart
+                | Self::PythonGcEnd
         )
     }
 
@@ -119,6 +129,8 @@ impl EndpointKind {
                 | Self::SyscallEntry { .. }
                 | Self::SyscallExit { .. }
                 | Self::Tracepoint
+                | Self::PythonGcStart
+                | Self::PythonGcEnd
                 | Self::CudaApi { .. }
                 | Self::NvtxRange { .. }
         )
@@ -313,6 +325,21 @@ fn resolve_endpoint(
             kind,
         });
     }
+    if selector.starts_with("python:") {
+        let (linux, kind, collectable) = parse_python_selector(report, selector)?;
+        return Ok(Endpoint {
+            public: ValidatedEndpoint {
+                selector: selector.to_owned(),
+                source: EndpointSource::Host,
+                event_type: linux.event_type.clone(),
+                collectable,
+                host: None,
+                linux: Some(linux),
+                cuda: None,
+            },
+            kind,
+        });
+    }
 
     let (cuda, kind, collectable) = parse_cuda_selector(selector)?;
     Ok(Endpoint {
@@ -371,6 +398,8 @@ fn parse_linux_selector(
                     category: "syscalls".to_owned(),
                     name: (*name).to_owned(),
                     syscall_number: Some(syscall_number),
+                    binary_path: None,
+                    provider: None,
                 },
                 kind,
             ))
@@ -388,6 +417,8 @@ fn parse_linux_selector(
                     category: (*category).to_owned(),
                     name: (*name).to_owned(),
                     syscall_number: None,
+                    binary_path: None,
+                    provider: None,
                 },
                 EndpointKind::Tracepoint,
             ))
@@ -396,9 +427,48 @@ fn parse_linux_selector(
             "tracepoint selector must be tracepoint:<category>:<name>".to_owned(),
         )),
         _ => Err(ValidateError::InvalidSelector(
-            "expected uprobe:, syscall:, tracepoint:, or cuda: prefix".to_owned(),
+            "expected uprobe:, syscall:, tracepoint:, python:, or cuda: prefix".to_owned(),
         )),
     }
+}
+
+fn parse_python_selector(
+    report: &ProcessReport,
+    selector: &str,
+) -> Result<(ResolvedLinuxSelector, EndpointKind, bool), ValidateError> {
+    let (event_type, kind, name) = match selector {
+        "python:gc_start" => (
+            EventType::PythonGcStart,
+            EndpointKind::PythonGcStart,
+            "gc__start",
+        ),
+        "python:gc_end" => (
+            EventType::PythonGcEnd,
+            EndpointKind::PythonGcEnd,
+            "gc__done",
+        ),
+        _ => {
+            return Err(ValidateError::InvalidSelector(
+                "Python selector must be python:<gc_start|gc_end>".to_owned(),
+            ));
+        }
+    };
+    let probes = usdt::find_python_gc_probes(report).map_err(ValidateError::Usdt)?;
+    let binary_path = probes.map(|probes| probes.binary_path);
+    let collectable = binary_path.is_some();
+    Ok((
+        ResolvedLinuxSelector {
+            event_type,
+            probe_kind: HostProbeKind::Usdt,
+            category: "python".to_owned(),
+            name: name.to_owned(),
+            syscall_number: None,
+            binary_path,
+            provider: Some("python".to_owned()),
+        },
+        kind,
+        collectable,
+    ))
 }
 
 fn syscall_number(name: &str) -> Option<u32> {
@@ -779,13 +849,21 @@ fn parse_match_policy(policy: &str) -> Result<MatchPolicy, ValidateError> {
 
 fn check_collectability(endpoint: &Endpoint, name: &str, issues: &mut Vec<ValidationIssue>) {
     if !endpoint.public.collectable {
-        issues.push(issue(
-            ErrorCode::InvalidEventSelector,
+        let message = if matches!(
+            endpoint.kind,
+            EndpointKind::PythonGcStart | EndpointKind::PythonGcEnd
+        ) {
+            format!(
+                "{name} selector {} requires mapped CPython ELF metadata exposing python:gc__start and python:gc__done USDT probes",
+                endpoint.public.selector
+            )
+        } else {
             format!(
                 "{name} selector {} is recognized but not collected by this build",
                 endpoint.public.selector
-            ),
-        ));
+            )
+        };
+        issues.push(issue(ErrorCode::InvalidEventSelector, message));
     }
 }
 
@@ -802,6 +880,13 @@ fn check_capabilities(
             || matches!(end.kind, EndpointKind::HostEntry);
         let needs_uretprobe = matches!(start.kind, EndpointKind::HostReturn)
             || matches!(end.kind, EndpointKind::HostReturn);
+        let needs_usdt = matches!(
+            start.kind,
+            EndpointKind::PythonGcStart | EndpointKind::PythonGcEnd
+        ) || matches!(
+            end.kind,
+            EndpointKind::PythonGcStart | EndpointKind::PythonGcEnd
+        );
         let needs_tracepoint = matches!(
             start.kind,
             EndpointKind::SyscallEntry { .. }
@@ -813,7 +898,7 @@ fn check_capabilities(
                 | EndpointKind::SyscallExit { .. }
                 | EndpointKind::Tracepoint
         );
-        if (needs_uprobe && !report.capabilities.uprobe)
+        if ((needs_uprobe || needs_usdt) && !report.capabilities.uprobe)
             || (needs_uretprobe && !report.capabilities.uretprobe)
             || (needs_tracepoint && !report.capabilities.tracepoint)
         {
@@ -903,7 +988,8 @@ fn supports_exact(start: &EndpointKind, end: &EndpointKind) -> bool {
         ) => start_domain == end_domain && start_name == end_name,
         (EndpointKind::Kernel, EndpointKind::Kernel)
         | (EndpointKind::Memcpy, EndpointKind::Memcpy)
-        | (EndpointKind::Memset, EndpointKind::Memset) => true,
+        | (EndpointKind::Memset, EndpointKind::Memset)
+        | (EndpointKind::PythonGcStart, EndpointKind::PythonGcEnd) => true,
         (
             EndpointKind::NvtxRange {
                 name_regex: start_name,
@@ -1083,6 +1169,8 @@ mod tests {
                 category: "syscalls".to_owned(),
                 name: "mmap".to_owned(),
                 syscall_number: Some(9),
+                binary_path: None,
+                provider: None,
             },
         );
         let end = endpoint(
@@ -1097,6 +1185,8 @@ mod tests {
                 category: "syscalls".to_owned(),
                 name: "mmap".to_owned(),
                 syscall_number: Some(9),
+                binary_path: None,
+                provider: None,
             },
         );
 

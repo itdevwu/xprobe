@@ -107,6 +107,8 @@ const fn event_type_name(event_type: &EventType) -> &'static str {
         EventType::GpuMemsetEnd => "gpu_memset_end",
         EventType::NvtxRangeStart => "nvtx_range_start",
         EventType::NvtxRangeEnd => "nvtx_range_end",
+        EventType::PythonGcStart => "python_gc_start",
+        EventType::PythonGcEnd => "python_gc_end",
         EventType::Marker => "marker",
     }
 }

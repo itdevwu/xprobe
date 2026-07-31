@@ -9,4 +9,5 @@ pub mod inject;
 pub mod inspect;
 pub mod resolve;
 pub mod syscall_aggregate;
+mod usdt;
 pub mod validate;

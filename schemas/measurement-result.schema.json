@@ -526,6 +526,8 @@
         "gpu_memset_end",
         "nvtx_range_start",
         "nvtx_range_end",
+        "python_gc_start",
+        "python_gc_end",
         "marker"
       ]
     },
