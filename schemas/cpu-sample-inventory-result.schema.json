@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CpuSampleInventoryResult",
+  "type": "object",
+  "properties": {
+    "collection": {
+      "$ref": "#/$defs/CpuSampleCollectionSummary"
+    },
+    "inventory": {
+      "$ref": "#/$defs/CpuSampleInventory"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "symbolization": {
+      "$ref": "#/$defs/CpuSymbolizationSummary"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "session_id",
+    "status",
+    "target",
+    "inventory",
+    "collection",
+    "symbolization"
+  ],
+  "$defs": {
+    "CaptureCompleteness": {
+      "type": "string",
+      "enum": [
+        "complete"
+      ]
+    },
+    "CpuFrameLanguage": {
+      "type": "string",
+      "enum": [
+        "native",
+        "python",
+        "unknown"
+      ]
+    },
+    "CpuHotspot": {
+      "type": "object",
+      "properties": {
+        "entry_selector_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "exclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "frame": {
+          "$ref": "#/$defs/CpuStackFrame"
+        },
+        "inclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "inclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "return_selector_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frame",
+        "inclusive_samples",
+        "exclusive_samples",
+        "inclusive_proportion",
+        "exclusive_proportion"
+      ]
+    },
+    "CpuSampleCollectionSummary": {
+      "type": "object",
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/CaptureCompleteness"
+        },
+        "group_capacity": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "grouped_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "groups": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lost_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "observed_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sample_capacity": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stack_depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "table_utilization": {
+          "type": "number",
+          "format": "double"
+        },
+        "thread_capacity": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "threads_attached": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "threads_observed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "truncated_stacks": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "completeness",
+        "observed_samples",
+        "grouped_samples",
+        "lost_samples",
+        "sample_capacity",
+        "group_capacity",
+        "groups",
+        "table_utilization",
+        "stack_depth",
+        "truncated_stacks",
+        "threads_observed",
+        "threads_attached",
+        "thread_capacity"
+      ]
+    },
+    "CpuSampleEvent": {
+      "type": "string",
+      "enum": [
+        "cpu_clock"
+      ]
+    },
+    "CpuSampleInventory": {
+      "type": "object",
+      "properties": {
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "frequency_hz": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "hotspots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CpuHotspot"
+          }
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sample_event": {
+          "$ref": "#/$defs/CpuSampleEvent"
+        },
+        "stack_groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CpuStackGroup"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sample_event",
+        "frequency_hz",
+        "duration_ms",
+        "stack_groups",
+        "hotspots"
+      ]
+    },
+    "CpuStackFrame": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "build_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "language": {
+          "$ref": "#/$defs/CpuFrameLanguage"
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "module_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "language"
+      ]
+    },
+    "CpuStackGroup": {
+      "type": "object",
+      "properties": {
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CpuStackFrame"
+          }
+        },
+        "proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frames",
+        "samples",
+        "proportion"
+      ]
+    },
+    "CpuSymbolizationSummary": {
+      "type": "object",
+      "properties": {
+        "python_status": {
+          "$ref": "#/$defs/PythonSymbolizationStatus"
+        },
+        "resolved_native_frames": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "resolved_python_frames": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total_frames": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unresolved_frames": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "total_frames",
+        "resolved_native_frames",
+        "resolved_python_frames",
+        "unresolved_frames",
+        "python_status"
+      ]
+    },
+    "PythonSymbolizationStatus": {
+      "type": "string",
+      "enum": [
+        "not_detected",
+        "inactive",
+        "active",
+        "unsupported"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "2.0"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "timed_out",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

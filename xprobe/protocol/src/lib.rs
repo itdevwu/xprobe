@@ -2,6 +2,7 @@
 
 mod capability;
 mod capture;
+mod cpu_sampling;
 mod discover;
 mod error;
 mod event;
@@ -17,6 +18,12 @@ pub use capability::{
     Capabilities, CapabilityReport, CheckResult, CheckStatus, Environment, SystemChecks, Warning,
 };
 pub use capture::HostCaptureResult;
+pub use cpu_sampling::{
+    CpuFrameLanguage, CpuHotspot, CpuSampleCollectionSummary, CpuSampleEvent, CpuSampleInventory,
+    CpuSampleInventoryResult, CpuSamplingRequirements, CpuSamplingSpec,
+    CpuSamplingValidationResult, CpuStackFrame, CpuStackGroup, CpuSymbolizationSummary,
+    PythonSymbolizationStatus,
+};
 pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{

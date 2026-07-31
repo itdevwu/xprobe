@@ -3,9 +3,10 @@ use std::{fs, path::PathBuf};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use xprobe_protocol::{
-    AggregateInventoryResult, CapabilityReport, DiscoveryResult, ErrorResponse, Event,
-    HostCaptureResult, MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe,
-    TraceExportResult, ValidationResult, schema::generated_schemas,
+    AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
+    CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
+    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, TraceExportResult,
+    ValidationResult, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -222,6 +223,109 @@ fn aggregate_inventory_contract_round_trips() {
             "occupied_slots": 1,
             "table_utilization": 0.000_244_140_625
         },
+        "warnings": []
+    }));
+}
+
+#[test]
+fn cpu_sampling_spec_contract_round_trips() {
+    assert_round_trip::<CpuSamplingSpec>(&json!({
+        "schema_version": "2.0",
+        "name": "cpu_inventory",
+        "target": {"pid": 1234, "process_start_time": 42},
+        "sample_event": "cpu_clock",
+        "frequency_hz": 99,
+        "duration_ms": 1000,
+        "timeout_ms": 30000,
+        "max_samples": 10000,
+        "max_groups": 4096,
+        "stack_depth": 64,
+        "max_threads": 1024
+    }));
+}
+
+#[test]
+fn cpu_sample_inventory_contract_round_trips() {
+    let frame = json!({
+        "address": 4198400,
+        "module_path": "/srv/app",
+        "build_id": "abcd",
+        "file_offset": 4096,
+        "symbol": "handle_request",
+        "symbol_offset": 0,
+        "language": "native",
+        "source_path": null,
+        "line": null
+    });
+    assert_round_trip::<CpuSampleInventoryResult>(&json!({
+        "schema_version": "2.0",
+        "ok": true,
+        "session_id": "xp_cpu_inventory",
+        "status": "completed",
+        "target": {"pid": 1234, "process_start_time": 42},
+        "inventory": {
+            "name": "cpu_inventory",
+            "sample_event": "cpu_clock",
+            "frequency_hz": 99,
+            "duration_ms": 1000,
+            "stack_groups": [{
+                "frames": [frame.clone()],
+                "samples": 80,
+                "proportion": 0.8
+            }],
+            "hotspots": [{
+                "frame": frame,
+                "inclusive_samples": 80,
+                "exclusive_samples": 60,
+                "inclusive_proportion": 0.8,
+                "exclusive_proportion": 0.6,
+                "entry_selector_hint": "uprobe:/srv/app:handle_request:entry",
+                "return_selector_hint": "uprobe:/srv/app:handle_request:return"
+            }]
+        },
+        "collection": {
+            "completeness": "complete",
+            "observed_samples": 100,
+            "grouped_samples": 100,
+            "lost_samples": 0,
+            "sample_capacity": 10000,
+            "group_capacity": 4096,
+            "groups": 4,
+            "table_utilization": 0.0009765625,
+            "stack_depth": 64,
+            "truncated_stacks": 0,
+            "threads_observed": 8,
+            "threads_attached": 8,
+            "thread_capacity": 1024
+        },
+        "symbolization": {
+            "total_frames": 20,
+            "resolved_native_frames": 18,
+            "resolved_python_frames": 0,
+            "unresolved_frames": 2,
+            "python_status": "not_detected"
+        },
+        "warnings": []
+    }));
+}
+
+#[test]
+fn cpu_sampling_validation_contract_round_trips() {
+    assert_round_trip::<CpuSamplingValidationResult>(&json!({
+        "schema_version": "2.0",
+        "ok": true,
+        "valid": true,
+        "target": {"pid": 1234, "process_start_time": 42},
+        "target_threads": 8,
+        "requirements": {
+            "needs_perf_event": true,
+            "needs_ebpf": true,
+            "target_mutation": false
+        },
+        "perf_event": {"status": "available", "detail": "perf_event_paranoid=1"},
+        "ebpf": {"status": "available", "detail": "CAP_BPF and CAP_PERFMON"},
+        "python_status": "inactive",
+        "issues": [],
         "warnings": []
     }));
 }
