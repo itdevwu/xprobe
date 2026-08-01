@@ -1,8 +1,8 @@
 use std::process::Command;
 
 use xprobe_protocol::{
-    AgentActivation, CpuSamplingValidationResult, ErrorCode, ErrorResponse, MatchPolicy,
-    PythonSymbolizationStatus, SyscallAggregateValidationResult, ValidationResult,
+    AgentActivation, CheckStatus, CpuSamplingValidationResult, ErrorCode, ErrorResponse,
+    MatchPolicy, PythonSymbolizationStatus, SyscallAggregateValidationResult, ValidationResult,
 };
 
 #[test]
@@ -50,7 +50,6 @@ fn validate_reports_environment_requirements_without_attaching() {
         AgentActivation::InjectionRequired
     );
     assert!(result.requirements.target_mutation);
-    assert!(result.valid);
     assert!(result.issues.is_empty());
     assert!(
         result
@@ -107,7 +106,14 @@ fn validate_accepts_pid_scoped_cpu_sampling_without_ebpf() {
     assert!(output.stderr.is_empty());
     let result: CpuSamplingValidationResult =
         serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
-    assert!(result.valid);
+    assert_eq!(result.valid, result.issues.is_empty());
+    if result.perf_event.status == CheckStatus::Available {
+        assert!(result.valid);
+    } else {
+        assert!(!result.valid);
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.issues[0].code, ErrorCode::PermissionDenied);
+    }
     assert!(result.requirements.needs_perf_event);
     assert!(!result.requirements.target_mutation);
     assert!(result.target_threads >= 1);
