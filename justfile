@@ -90,6 +90,27 @@ test-nvtx-live: build
 test-nvtx-live-cuda12: build
     python3 tests/integration/test_nvtx.py --image "{{cuda12_devel_image}}"
 
+test-release-live:
+    [[ -n "${PYTORCH_ENV:-}" ]] || { echo "set PYTORCH_ENV to an existing environment with PyTorch" >&2; exit 2; }
+    just test-bpf-live
+    just test-cpu-live
+    just test-cupti-live-cuda12
+    just test-nvtx-live-cuda12
+    just test-cupti-live-cuda12-min
+    just test-injection-live-cuda12
+    just test-multisource-live-cuda12
+    just test-cupti-live
+    just test-nvtx-live
+    just test-injection-live
+    just test-multisource-live
+    just test-pytorch-live
+    just test-pytorch-cuda-live
+    just benchmark-gpu
+    just benchmark-aggregate
+    just benchmark-multiprocess
+    just benchmark-pytorch
+    just benchmark-cpu
+
 benchmark-gpu:
     python3 benchmarks/cuda-callback/run.py "{{cuda13_devel_image}}"
 

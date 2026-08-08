@@ -18,12 +18,9 @@ zlib. A system C compiler and Linux UAPI/multiarch headers are also required.
 CUDA is not installed into the Mamba environment. CI compiles CUDA 12 and CUDA
 13 CUPTI Agents without a GPU in pinned NVIDIA devel images, checks their
 SONAMEs, and rejects ABI-only output or build-time RPATHs. Live CUDA behavior
-remains a hardware test on an NVIDIA runner.
-
-The self-hosted hardware runner must use Actions Runner 2.329.0 or newer and
-provide Docker and NVIDIA Container Toolkit access. CPU comparison tools and a
-USDT-enabled CPython are installed inside the pinned benchmark container; they
-are not runner or release archive dependencies.
+is tested locally with Docker and NVIDIA Container Toolkit. CPU comparison
+tools and a USDT-enabled CPython are installed inside the pinned benchmark
+container; they are not host or release archive dependencies.
 
 ## Release packaging
 
@@ -53,10 +50,19 @@ the public archive and checksum again, repeats the installation test, and
 inspects every shipped ELF. This final gate verifies the artifact users can
 actually download rather than the workflow's local copy.
 
-Before creating a tag, manually run `Hardware Integration` for the exact commit
-to be tagged. The release workflow queries GitHub Actions for a successful run
-whose `head_sha` matches that commit and fails before building artifacts when
-the hardware result is absent.
+GitHub Actions runs only tests and builds supported by hosted runners. Before
+creating a tag, run the complete live suite on the local NVIDIA development
+machine:
+
+```bash
+PYTORCH_ENV=/path/to/pytorch-env just test-release-live
+```
+
+This local gate covers BPF and perf attachment, CUDA 12 and 13 behavior,
+injection, NVTX, mixed host/GPU collection, PyTorch, concurrent workers, and
+the release benchmarks. The tag workflow independently rebuilds both CUPTI
+Agents, packages on Ubuntu 22.04, enforces the GLIBC ceiling, and verifies the
+published archive.
 
 ## eBPF tests
 
@@ -120,8 +126,8 @@ just test-pytorch-live
 ```
 
 By default the live recipes use a pinned NVIDIA PyTorch image with Ubuntu 24.04
-and CUDA 12.9, so hardware CI does not depend on a runner-local Mamba
-environment. During local development, set `PYTORCH_ENV=/path/to/env` to mount
+and CUDA 12.9, so live checks do not depend on the host Mamba environment.
+During local development, set `PYTORCH_ENV=/path/to/env` to mount
 an existing environment into the already-pinned CUDA fixtures instead of
 pulling the PyTorch image. Run eager matrix multiplication, convolution,
 compiled Triton, bidirectional transfer, selected-kernel, and
