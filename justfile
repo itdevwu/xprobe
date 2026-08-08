@@ -103,6 +103,9 @@ benchmark-pytorch: build
     if [[ -n "${PYTORCH_ENV:-}" ]]; then python3 benchmarks/pytorch/run.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV}"; else python3 benchmarks/pytorch/run.py --image "{{pytorch_image}}"; fi
 
 benchmark-cpu: build
+    python3 benchmarks/cpu-inventory/run-container.py "{{cuda12_devel_image}}"
+
+benchmark-cpu-host: build
     python3 benchmarks/cpu-inventory/run.py
 
 fmt:

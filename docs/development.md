@@ -21,9 +21,9 @@ SONAMEs, and rejects ABI-only output or build-time RPATHs. Live CUDA behavior
 remains a hardware test on an NVIDIA runner.
 
 The self-hosted hardware runner must use Actions Runner 2.329.0 or newer and
-provide passwordless `sudo`, `perf`, `py-spy`, and `/usr/bin/python3` with
-`-X perf`. These are host profiler prerequisites, not release archive
-dependencies.
+provide Docker and NVIDIA Container Toolkit access. CPU comparison tools and a
+USDT-enabled CPython are installed inside the pinned benchmark container; they
+are not runner or release archive dependencies.
 
 ## Release packaging
 
@@ -100,9 +100,10 @@ broad-to-narrow route:
 just benchmark-cpu
 ```
 
-The benchmark requires `perf` and `py-spy` and may require root on hosts whose
-perf-event or eBPF policy denies attachment. See `docs/benchmarks.md` for its
-reported metrics and interpretation.
+The default recipe installs `perf`, `py-spy`, and a USDT-enabled CPython inside
+the pinned capability-limited container. Use `just benchmark-cpu-host` when the
+same tools and attach permissions are already available on the host. See
+`docs/benchmarks.md` for reported metrics and interpretation.
 
 Resolve real CPython, native extension, and libtorch C++ symbols with a local
 Python environment containing PyTorch:

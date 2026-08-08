@@ -1,12 +1,15 @@
 # Precision and overhead benchmarks
 
-Run the CPU and Python inventory benchmark on a Linux host with `perf`,
-`py-spy`, CPython 3.12 or newer with `-X perf`, perf-event access, and eBPF
-attach permission:
+Run the CPU and Python inventory benchmark through the pinned
+capability-limited container:
 
 ```bash
 just benchmark-cpu
 ```
+
+For an already-provisioned Linux host with `perf`, `py-spy`, CPython 3.12 or
+newer with `-X perf`, perf-event access, and eBPF attach permission, use
+`just benchmark-cpu-host`.
 
 The benchmark uses a fresh target for every case. Native and Python workloads
 are each measured without a profiler, with bounded xprobe CPU sampling, and
