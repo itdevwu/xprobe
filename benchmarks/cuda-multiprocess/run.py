@@ -6,13 +6,21 @@ import subprocess
 import sys
 import tempfile
 
+FAILURE_ARTIFACT_LIMIT = 16 * 1024
+
 
 def dump_failure_artifacts(output: pathlib.Path) -> None:
     for path in sorted(output.rglob("*")):
         if not path.is_file() or path.suffix not in {".json", ".stderr", ".stdout"}:
             continue
         sys.stderr.write(f"\n--- {path.relative_to(output)} ---\n")
-        sys.stderr.write(path.read_text(errors="replace"))
+        with path.open(errors="replace") as artifact:
+            content = artifact.read(FAILURE_ARTIFACT_LIMIT + 1)
+        sys.stderr.write(content[:FAILURE_ARTIFACT_LIMIT])
+        if len(content) > FAILURE_ARTIFACT_LIMIT:
+            sys.stderr.write(
+                f"\n... artifact truncated at {FAILURE_ARTIFACT_LIMIT} bytes ...\n"
+            )
 
 
 def main() -> None:

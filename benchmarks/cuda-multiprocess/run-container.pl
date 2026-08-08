@@ -958,6 +958,7 @@ sub run_batch {
 sub main {
     require_condition(@ARGV == 1,
         'usage: run-container.pl <output-directory>');
+    umask 0000;
     my $output_dir = $ARGV[0];
     $OUTPUT_DIRECTORY = $output_dir;
     mkdir $output_dir unless -d $output_dir;
