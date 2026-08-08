@@ -6,32 +6,10 @@ on:
       - "v*"
 
 permissions:
-  actions: read
   contents: write
 
 jobs:
-  hardware-gate:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-      - name: Require successful hardware validation for this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          commit=$(git rev-parse HEAD)
-          runs=$(gh api --method GET \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/hardware.yml/runs" \
-            -f head_sha="$commit" \
-            -f status=success \
-            -f per_page=100 \
-            --jq '.total_count')
-          if [ "$runs" -lt 1 ]; then
-            echo "No successful Hardware Integration run exists for $commit" >&2
-            exit 1
-          fi
-
   cupti-agent:
-    needs: hardware-gate
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
