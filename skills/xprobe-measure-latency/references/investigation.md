@@ -198,11 +198,17 @@ inventory cannot be re-correlated because it intentionally contains no events.
 Collect one exact artifact for the selected hypothesis, then use
 `measure --input` when only selectors or policy change.
 
+For 100 requested narrow pairs, begin with about 10x record capacity rather
+than a six-figure default. Two records per pair is the theoretical minimum;
+the remaining headroom covers unmatched boundaries and collector stop latency.
+Increase capacity only when the quality fields show it is necessary and the
+selectors cannot be narrowed without changing the hypothesis.
+
 ```bash
 xprobe measure --pid "$PID" \
   --from 'cuda:kernel_start:name~^selected_kernel$' \
   --to 'cuda:kernel_end:name~^selected_kernel$' \
-  --match exact --samples 100 --max-events 200000 \
+  --match exact --samples 100 --max-events 1000 \
   --events-out selected-kernel.jsonl --format jsonl \
   --json --non-interactive --no-color
 
