@@ -23,7 +23,7 @@ only installation action required from the user:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.0/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.5.1/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -32,7 +32,8 @@ When invoked, the Skill checks for the matching `xprobe` CLI and installs or
 repairs it under a writable prefix before profiling. It can then diagnose and
 adjust path, permission, NVIDIA, CUDA, or CUPTI problems from live evidence.
 Node.js is only needed for Skill installation, not for xprobe itself. See
-[Installation](docs/installation.md) for direct CLI use and archive verification.
+[Installation](docs/installation.md) for direct CLI use, SPDX SBOMs, and
+GitHub-hosted build attestation verification.
 
 ## Measure
 

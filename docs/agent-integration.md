@@ -17,7 +17,7 @@ repairs the matching xprobe CLI itself:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.0/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.5.1/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -51,6 +51,14 @@ GPU groups produce selector hypotheses; every exact selector still passes
 read-only `validate`. The Agent must inspect the quality fields specific to each
 schema and cannot equate sample proportions, aggregate duration shares, or
 overlapping capture windows with exact causality.
+
+For containerized live targets, the Skill keeps orchestration in the caller. It
+resolves an explicit application container, runs xprobe in the same PID and
+mount namespaces, reacquires PID plus procfs start time there, and preserves
+per-command artifacts outside the container. It never substitutes a sidecar or
+host PID, and reports capabilities that cannot be added to an already-running
+container. Narrow exact captures begin with bounded record headroom and an
+`--events-out` artifact instead of defaulting to six-figure capacity.
 
 ## Contract test
 
