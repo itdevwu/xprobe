@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   cupti-agent:
@@ -54,6 +54,11 @@ jobs:
   linux-x86_64:
     needs: cupti-agent
     runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - name: Install build tools
@@ -75,18 +80,54 @@ jobs:
           name: xprobe-cupti-cuda13-linux-x86_64
           path: build/cuda13/cupti
       - name: Build release archive
-        run: scripts/package-release.sh
+        id: package
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          test "$GITHUB_REF_NAME" = "v$version"
+          echo "name=xprobe-${version}-linux-x86_64" >> "$GITHUB_OUTPUT"
+          scripts/package-release.sh
       - name: Verify release installation
-        run: tests/install/test_install.sh dist/xprobe-*-linux-x86_64.tar.gz
+        run: >-
+          tests/install/test_install.sh
+          dist/${{ steps.package.outputs.name }}.tar.gz
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          file: dist/${{ steps.package.outputs.name }}.tar.gz
+          format: spdx-json
+          output-file: dist/${{ steps.package.outputs.name }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Verify SPDX SBOM
+        run: >-
+          scripts/check-release-sbom.py
+          dist/${{ steps.package.outputs.name }}.spdx.json
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/${{ steps.package.outputs.name }}.tar.gz
+      - name: Attest SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/${{ steps.package.outputs.name }}.tar.gz
+          sbom-path: dist/${{ steps.package.outputs.name }}.spdx.json
       - uses: actions/upload-artifact@v7
         with:
           name: xprobe-linux-x86_64
-          path: dist/*.tar.gz*
+          path: |
+            dist/${{ steps.package.outputs.name }}.tar.gz
+            dist/${{ steps.package.outputs.name }}.tar.gz.sha256
+            dist/${{ steps.package.outputs.name }}.spdx.json
       - uses: softprops/action-gh-release@v3
         with:
-          files: dist/*.tar.gz*
+          files: |
+            dist/${{ steps.package.outputs.name }}.tar.gz
+            dist/${{ steps.package.outputs.name }}.tar.gz.sha256
+            dist/${{ steps.package.outputs.name }}.spdx.json
           generate_release_notes: true
       - name: Verify public release archive
         env:
+          GH_TOKEN: ${{ github.token }}
+          XPROBE_VERIFY_ATTESTATIONS: "1"
           XPROBE_RELEASE_REPOSITORY: ${{ github.repository }}
         run: scripts/verify-public-release.sh "${GITHUB_REF_NAME#v}"
