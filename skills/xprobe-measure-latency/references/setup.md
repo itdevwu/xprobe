@@ -23,7 +23,7 @@ installing under `~/.local`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.5.0/install.sh \
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.5.1/install.sh \
   -o /tmp/xprobe-install.sh
 sh /tmp/xprobe-install.sh
 export PATH="$HOME/.local/bin:$PATH"
@@ -69,7 +69,7 @@ host glibc instead. This is a local-use fallback, not permission to weaken the
 release package's `GLIBC_2.34` ceiling.
 
 ```bash
-git clone --depth 1 --branch v0.5.0 https://github.com/itdevwu/xprobe.git
+git clone --depth 1 --branch v0.5.1 https://github.com/itdevwu/xprobe.git
 cd xprobe
 mamba env create --file environment.yml
 mamba run -n xprobe-dev just build
@@ -112,7 +112,7 @@ release directory through the Agent Skills CLI:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.0/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.5.1/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -120,7 +120,7 @@ For non-interactive automation, select the host explicitly:
 
 ```bash
 npx --yes skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.0/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.5.1/skills/xprobe-measure-latency \
   --agent codex --global --copy --yes
 ```
 
