@@ -21,6 +21,7 @@ trap 'rm -rf "${temporary}"' EXIT HUP INT TERM
 
 archive=${temporary}/${package}.tar.gz
 checksum=${archive}.sha256
+sbom=${temporary}/${package}.spdx.json
 
 curl --fail --location --proto '=https' --tlsv1.2 \
   --retry 5 --retry-delay 2 --retry-all-errors \
@@ -28,10 +29,29 @@ curl --fail --location --proto '=https' --tlsv1.2 \
 curl --fail --location --proto '=https' --tlsv1.2 \
   --retry 5 --retry-delay 2 --retry-all-errors \
   --output "${checksum}" "${release_url}/${package}.tar.gz.sha256"
+curl --fail --location --proto '=https' --tlsv1.2 \
+  --retry 5 --retry-delay 2 --retry-all-errors \
+  --output "${sbom}" "${release_url}/${package}.spdx.json"
 (
   cd "${temporary}"
   sha256sum --check "$(basename "${checksum}")"
 )
+"${root}/scripts/check-release-sbom.py" "${sbom}"
+
+if [[ ${XPROBE_VERIFY_ATTESTATIONS:-0} == 1 ]]; then
+  command -v gh >/dev/null || {
+    echo "gh is required to verify release attestations" >&2
+    exit 1
+  }
+  attestation_policy=(
+    --repo "${repository}"
+    --signer-workflow "${repository}/.github/workflows/release.yml"
+    --deny-self-hosted-runners
+  )
+  gh attestation verify "${archive}" "${attestation_policy[@]}"
+  gh attestation verify "${archive}" "${attestation_policy[@]}" \
+    --predicate-type https://spdx.dev/Document
+fi
 
 "${root}/tests/install/test_install.sh" "${archive}"
 
@@ -89,5 +109,5 @@ verify_agent "${cuda13}" 13
   exit 1
 }
 
-printf 'Verified public xprobe %s archive, installation, and 3 shipped ELFs\n' \
+printf 'Verified public xprobe %s archive, SBOM, installation, and 3 shipped ELFs\n' \
   "${version}"
