@@ -11,5 +11,5 @@
   "samples": 100,
   "duration_ms": null,
   "timeout_ms": 30000,
-  "max_events": 100000
+  "max_events": 2000
 }

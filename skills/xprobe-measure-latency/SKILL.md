@@ -34,6 +34,11 @@ not run a fixed checklist or collect every source.
   [references/multi-process.md](references/multi-process.md). Select explicit
   PID/start-time identities. Inventory one representative per defensible worker
   class, then run independent narrow commands concurrently where useful.
+- **Containerized live target**: Also read
+  [references/setup.md](references/setup.md). Run the matching CLI in the
+  target's PID and mount namespaces, then reacquire the namespace-local PID plus
+  procfs start time before validation. Resolve the container from explicit
+  workload evidence; do not guess a pod, container, or PID.
 - **Setup or repair**: Read [references/setup.md](references/setup.md) only when
   a required live command is absent, incompatible, or unhealthy. Existing
   artifacts do not require a local collector.
@@ -77,6 +82,10 @@ justify unrelated collection.
   validation and attachment. Never substitute a reused PID.
 - Bound every capture by duration or samples, timeout, and record/group/thread
   capacity. Preserve each command's stdout, stderr, status, and artifact.
+- For one narrow exact hypothesis, start with modest record headroom over the
+  requested samples and always write the bounded event artifact. Increase
+  `--max-events` only from observed unmatched records or capacity pressure, not
+  as a default substitute for narrower selectors.
 - Before CUDA injection, disclose that `measure` will ptrace the process and
   leave the CUPTI shared object mapped. `startup_required` NVTX work must restart
   with the matching Agent before the first NVTX call.

@@ -7,7 +7,7 @@ command unless their environment prevents the agent from writing a usable prefix
 
 ## Check and bootstrap xprobe
 
-For live work, check the executable first. This Skill supports xprobe `0.4.x`
+For live work, check the executable first. This Skill supports xprobe `0.5.x`
 with schema version `2.0`; install the current release when the CLI is absent,
 outside that range, or fails its required capability checks. Offline analysis
 of an existing schema-v2 artifact does not require an installed CLI.
@@ -37,6 +37,29 @@ run `xprobe doctor --json --non-interactive --no-color`. Surface bootstrap,
 PATH, permission, driver, CUDA, or CUPTI failures explicitly and adjust from the
 reported detail; do not continue to measurement on an unverified installation.
 The CLI needs no Node.js. CUDA is optional until a GPU selector is measured.
+
+## Run with a containerized live target
+
+A host-side `measure` cannot safely inject when the target has a different
+mount namespace. Do not retry with a guessed Agent path. Run the matching
+xprobe release in the application container itself, or have an explicitly
+privileged launcher enter both the target PID and mount namespaces. `docker
+exec` or `kubectl exec` is suitable only after the caller has identified the
+exact container from workload evidence. An adjacent sidecar or ephemeral
+container normally has a different mount namespace and is not equivalent.
+
+Bootstrap xprobe under a writable prefix in that namespace, then resolve the
+target again from its procfs view. Record the namespace-local PID and
+`/proc/PID/stat` start time, and rerun `doctor` and read-only `validate` there
+before measurement. Never carry a host PID or an earlier process identity into
+the container command. Keep stdout, stderr, status, and artifacts outside the
+container through an explicit writable or shared path.
+
+Entering a namespace does not add capabilities that the running container was
+not granted. Surface missing ptrace, perf, BPF, NVIDIA device, or CUPTI access
+as an environment failure; do not silently fall back to a host-side injection
+or a different container. For NVTX, the matching Agent must still be configured
+in the application container before its first NVTX API call.
 
 ## Build locally when the release is unsuitable
 
@@ -84,7 +107,7 @@ online injection as a fallback for an already initialized NVTX process.
 ## Repair the Skill only when needed
 
 The user normally installed this Skill before invoking the agent. When its files
-are missing or incompatible with xprobe `0.4.x`, install the complete current
+are missing or incompatible with xprobe `0.5.x`, install the complete current
 release directory through the Agent Skills CLI:
 
 ```bash

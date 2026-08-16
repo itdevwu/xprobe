@@ -16,6 +16,7 @@ def main() -> None:
         "investigation": normalize(
             (skill_root / "references/investigation.md").read_text()
         ),
+        "setup": normalize((skill_root / "references/setup.md").read_text()),
     }
     fixture = json.loads(
         (workspace / "tests/agent-contract/fixtures/workflow-routes.json").read_text()
@@ -33,6 +34,7 @@ def main() -> None:
         "python_semantics",
         "mixed_cpu_gpu",
         "unsupported_python_runtime",
+        "container_namespace",
     }
     print(json.dumps({"schema_version": "2.0", "ok": True, "routes": sorted(covered)}))
 

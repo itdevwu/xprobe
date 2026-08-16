@@ -29,6 +29,11 @@
       "name": "unsupported_python_runtime",
       "sources": ["skill", "investigation"],
       "required": ["`inactive` or `unsupported`", "native fallback", "do not claim xprobe identifies python semantics"]
+    },
+    {
+      "name": "container_namespace",
+      "sources": ["skill", "setup"],
+      "required": ["containerized live target", "PID and mount namespaces", "namespace-local PID", "do not guess a pod, container, or PID", "does not add capabilities"]
     }
   ]
 }

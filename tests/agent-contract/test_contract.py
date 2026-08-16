@@ -56,6 +56,7 @@ def check_skill(workspace: pathlib.Path) -> None:
         "Unknown CPU or Python workload",
         "Unknown GPU or mixed workload",
         "Multiple processes",
+        "Containerized live target",
         "Setup or repair",
     ):
         assert route in normalized_skill
@@ -67,6 +68,7 @@ def check_skill(workspace: pathlib.Path) -> None:
         "Start with bounded `--cpu-sample` evidence",
         "Add `--syscall-aggregate` only for a kernel-facing hypothesis",
         "inventories can run concurrently",
+        "modest record headroom",
         "Existing artifacts do not require a local collector",
         "Run `doctor` when capability is unknown",
     ):
@@ -223,13 +225,16 @@ def check_skill(workspace: pathlib.Path) -> None:
         assert required in normalized_cli_contract
     for required in (
         "v0.5.0/install.sh",
-        "xprobe `0.4.x`",
+        "xprobe `0.5.x`",
         "npx skills@1 add",
         "xprobe --version",
         "xprobe doctor",
         "host glibc",
         "CUDA/CUPTI majors other than 12 or 13 are not supported",
         "scripts/package-release.sh",
+        "PID and mount namespaces",
+        "namespace-local PID",
+        "does not add capabilities",
     ):
         assert required in normalized_setup
 
