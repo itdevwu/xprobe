@@ -16,6 +16,10 @@ use xprobe_protocol::{
     NvtxRangeKind, SchemaVersion,
 };
 
+mod filter;
+
+pub use filter::{CuptiFilterError, bounded_name_filter, event_filter};
+
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
 const CONTROL_VERSION: u32 = 4;
