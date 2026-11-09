@@ -44,7 +44,10 @@ fn samples_and_symbolizes_a_busy_native_process() {
     let result: CpuSampleInventoryResult =
         serde_json::from_slice(&output.stdout).expect("stdout must contain CPU inventory JSON");
     assert!(result.collection.observed_samples > 0);
-    assert!(!result.inventory.stack_groups.is_empty());
+    assert_ne!(
+        result.inventory.stack_groups,
+        Vec::<xprobe_protocol::CpuStackGroup>::new()
+    );
     assert!(
         result.inventory.hotspots.iter().any(|hotspot| {
             hotspot.frame.language == CpuFrameLanguage::Native && hotspot.frame.symbol.is_some()

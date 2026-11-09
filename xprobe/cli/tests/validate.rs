@@ -30,7 +30,7 @@ fn validate_reports_environment_requirements_without_attaching() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let result: ValidationResult =
         serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
     assert_eq!(result.match_policy, MatchPolicy::Exact);
@@ -50,7 +50,10 @@ fn validate_reports_environment_requirements_without_attaching() {
         AgentActivation::InjectionRequired
     );
     assert!(result.requirements.target_mutation);
-    assert!(result.issues.is_empty());
+    assert_eq!(
+        result.issues,
+        Vec::<xprobe_protocol::ValidationIssue>::new()
+    );
     assert!(
         result
             .warnings
@@ -103,7 +106,7 @@ fn validate_accepts_pid_scoped_cpu_sampling_without_ebpf() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let result: CpuSamplingValidationResult =
         serde_json::from_slice(&output.stdout).expect("stdout must contain validation JSON");
     assert_eq!(result.valid, result.issues.is_empty());

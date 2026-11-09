@@ -63,7 +63,7 @@ fn cupti_capture_is_emitted_as_event_jsonl() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let stdout = String::from_utf8(output.stdout).expect("JSONL must be UTF-8");
     let lines: Vec<_> = stdout.lines().collect();
     assert_eq!(lines.len(), 1);
@@ -96,7 +96,7 @@ fn malformed_cupti_capture_returns_structured_error() {
     fs::remove_file(path).expect("capture fixture must be removed");
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let response: ErrorResponse =
         serde_json::from_slice(&output.stdout).expect("error must be JSON");
     assert_eq!(response.error.code, ErrorCode::TraceExportFailed);

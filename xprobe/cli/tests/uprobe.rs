@@ -99,7 +99,7 @@ fn uprobe_jsonl_failure_is_machine_readable() {
         .expect("xprobe dev uprobe must run");
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let response: ErrorResponse =
         serde_json::from_slice(&output.stdout).expect("stdout must contain only error JSON");
     assert_eq!(response.error.code, ErrorCode::InvalidEventSelector);

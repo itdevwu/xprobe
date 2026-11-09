@@ -61,7 +61,7 @@ fn discovers_only_nvml_confirmed_cuda_workers() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let result: DiscoveryResult = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result.root.pid, pid);
     assert_eq!(result.total_candidates, 1);

@@ -14,7 +14,7 @@ fn doctor_json_is_machine_readable() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 
     let report: CapabilityReport =
         serde_json::from_slice(&output.stdout).expect("stdout must contain only capability JSON");

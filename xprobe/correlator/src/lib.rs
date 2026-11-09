@@ -1908,7 +1908,7 @@ mod tests {
         let result = measure(&events, &options(MatchPolicy::Exact)).unwrap();
         assert_eq!(result.clock.alignment, "cupti_normalized_to_host_monotonic");
         assert_eq!(result.clock.estimated_error_ns, Some(7));
-        assert!(result.warnings.is_empty());
+        assert_eq!(result.warnings, Vec::<xprobe_protocol::Warning>::new());
     }
 
     #[test]

@@ -1349,7 +1349,7 @@ mod tests {
 
         let decoded = decode_capture(&bytes, "unused").expect("aggregate capture must decode");
 
-        assert!(decoded.events.is_empty());
+        assert_eq!(decoded.events, Vec::<xprobe_protocol::Event>::new());
         assert_eq!(decoded.aggregate_groups.len(), 2);
         assert_eq!(
             decoded.aggregate_groups[0].activity,
