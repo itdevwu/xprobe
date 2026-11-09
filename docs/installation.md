@@ -13,7 +13,7 @@ user needs to run:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.5.2/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -29,7 +29,7 @@ The versioned bootstrap installs to `~/.local` without root access:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.5.1/install.sh | sh
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.5.2/install.sh | sh
 ```
 
 The bootstrap downloads the release archive and its SHA256 file, verifies the
@@ -48,7 +48,7 @@ prefix, download the script and pass `--prefix`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSLO \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.5.1/install.sh
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.5.2/install.sh
 sh install.sh --prefix /opt/xprobe
 ```
 
@@ -60,7 +60,7 @@ script with `sudo`. The installer never elevates privileges itself.
 For a fully explicit archive workflow:
 
 ```bash
-version=0.5.1
+version=0.5.2
 base=https://github.com/itdevwu/xprobe/releases/download/v$version
 archive=xprobe-$version-linux-x86_64.tar.gz
 
@@ -106,7 +106,7 @@ missing or damaged, manually install the complete version-matched directory:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.5.2/skills/xprobe-measure-latency \
   --global
 ```
 
@@ -115,7 +115,7 @@ installation names the target explicitly:
 
 ```bash
 npx --yes skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.1/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.5.2/skills/xprobe-measure-latency \
   --agent codex --global --copy --yes
 ```
 
