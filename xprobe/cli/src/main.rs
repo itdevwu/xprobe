@@ -28,20 +28,19 @@ use xprobe_collector::{
 use xprobe_core::{
     cpu_sampling,
     cpu_sampling_analysis::{self, CpuCaptureData, RawCpuSample},
-    cupti_compat, discover, doctor, inject, inspect, resolve, syscall_aggregate, validate,
+    cupti_compat, discover, doctor, gpu_aggregate, inject, inspect, resolve, syscall_aggregate,
+    validate,
 };
 use xprobe_correlator::{MeasureError, MeasureOptions, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
-    AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
-    AggregateInventory, AggregateInventoryResult, CapabilityReport, CaptureCompleteness,
-    CheckResult, ClockDomain, CpuSampleEvent, CpuSampleInventoryResult, CpuSamplingSpec,
-    CpuSamplingValidationResult, CuptiCollectionSummary, DiscoveryResult, ErrorCode, ErrorResponse,
-    Event, EventSource, EventType, ExportFormat, HostCaptureResult, MatchPolicy, MeasurementMode,
-    MeasurementResult, MeasurementSpec, MemcpyKind, ProcessReport, ResolvedCudaSelector,
-    ResolvedLinuxSelector, ResolvedProbe, SchemaVersion, SessionStatus, SyscallAggregateResult,
-    SyscallAggregateSpec, SyscallAggregateValidationResult, TargetIdentity, TraceExportResult,
-    ValidationResult, Warning, XprobeError,
+    AggregateActivity, AggregateInventoryResult, CapabilityReport, CheckResult, ClockDomain,
+    CpuSampleEvent, CpuSampleInventoryResult, CpuSamplingSpec, CpuSamplingValidationResult,
+    CuptiCollectionSummary, DiscoveryResult, ErrorCode, ErrorResponse, Event, EventSource,
+    EventType, ExportFormat, HostCaptureResult, MatchPolicy, MeasurementMode, MeasurementResult,
+    MeasurementSpec, ProcessReport, ResolvedLinuxSelector, ResolvedProbe, SchemaVersion,
+    SessionStatus, SyscallAggregateResult, SyscallAggregateSpec, SyscallAggregateValidationResult,
+    TargetIdentity, TraceExportResult, ValidationResult, Warning, XprobeError,
 };
 
 #[derive(Debug, Parser)]
@@ -55,7 +54,7 @@ struct Cli {
 enum Command {
     /// Inspect local tracing and GPU capabilities.
     Doctor(DoctorArgs),
-    /// Discover event selectors available in a target process.
+    /// List NVML-confirmed CUDA context holders under a process-tree root.
     Discover(DiscoverArgs),
     /// Inspect a target process without attaching probes.
     #[command(hide = true)]
@@ -2291,7 +2290,7 @@ fn validate_aggregate_selection(validation: &ValidationResult) -> Result<(), Com
     if let Some(pattern) = start.kernel_name_regex.as_deref()
         && pattern != ".*"
         && matches!(
-            bounded_kernel_name_filter(pattern),
+            cupti::bounded_name_filter(pattern),
             cupti::CuptiNameFilter::Any
         )
     {
@@ -2385,7 +2384,11 @@ fn cupti_arm_config(
     let filters = [&validation.start, &validation.end]
         .into_iter()
         .filter_map(|endpoint| endpoint.cuda.as_ref())
-        .map(cupti_event_filter)
+        .map(|selector| {
+            cupti::event_filter(selector).map_err(|error| {
+                CommandFailure::new(ErrorCode::InvalidEventSelector, error.to_string(), false)
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let record_capacity = u64::try_from(max_events).map_err(|error| {
         CommandFailure::new(
@@ -2402,122 +2405,6 @@ fn cupti_arm_config(
         },
         filters,
     }))
-}
-
-fn cupti_event_filter(
-    selector: &ResolvedCudaSelector,
-) -> Result<cupti::CuptiEventFilter, CommandFailure> {
-    let record_kind = match selector.event_type {
-        EventType::CudaApiEntry => cupti::CuptiRecordKind::CudaApiEntry,
-        EventType::CudaApiExit => cupti::CuptiRecordKind::CudaApiExit,
-        EventType::GpuKernelStart => cupti::CuptiRecordKind::GpuKernelStart,
-        EventType::GpuKernelEnd => cupti::CuptiRecordKind::GpuKernelEnd,
-        EventType::GpuMemcpyStart => cupti::CuptiRecordKind::GpuMemcpyStart,
-        EventType::GpuMemcpyEnd => cupti::CuptiRecordKind::GpuMemcpyEnd,
-        EventType::GpuMemsetStart => cupti::CuptiRecordKind::GpuMemsetStart,
-        EventType::GpuMemsetEnd => cupti::CuptiRecordKind::GpuMemsetEnd,
-        EventType::NvtxRangeStart => cupti::CuptiRecordKind::NvtxRangeStart,
-        EventType::NvtxRangeEnd => cupti::CuptiRecordKind::NvtxRangeEnd,
-        _ => {
-            return Err(CommandFailure::new(
-                ErrorCode::InvalidEventSelector,
-                "validated CUDA endpoint has a non-CUDA event type",
-                false,
-            ));
-        }
-    };
-    let api_domain = match selector.api_domain.as_deref() {
-        None => cupti::CuptiApiDomain::Any,
-        Some("driver_api") => cupti::CuptiApiDomain::Driver,
-        Some("runtime_api") => cupti::CuptiApiDomain::Runtime,
-        Some(domain) => {
-            return Err(CommandFailure::new(
-                ErrorCode::InvalidEventSelector,
-                format!("validated CUDA endpoint has unsupported API domain {domain:?}"),
-                false,
-            ));
-        }
-    };
-    let memcpy_kind = match selector.memcpy_kind {
-        None | Some(MemcpyKind::Unknown) => cupti::CuptiMemcpyKind::Any,
-        Some(MemcpyKind::HostToDevice) => cupti::CuptiMemcpyKind::HostToDevice,
-        Some(MemcpyKind::DeviceToHost) => cupti::CuptiMemcpyKind::DeviceToHost,
-        Some(MemcpyKind::DeviceToDevice) => cupti::CuptiMemcpyKind::DeviceToDevice,
-        Some(MemcpyKind::HostToHost) => cupti::CuptiMemcpyKind::HostToHost,
-        Some(MemcpyKind::PeerToPeer) => cupti::CuptiMemcpyKind::PeerToPeer,
-    };
-    let name = if let Some(name) = selector.api_name.as_ref() {
-        cupti::CuptiNameFilter::Exact(name.clone())
-    } else if let Some(pattern) = selector.kernel_name_regex.as_deref() {
-        bounded_kernel_name_filter(pattern)
-    } else if let Some(pattern) = selector.nvtx_name_regex.as_deref() {
-        bounded_kernel_name_filter(pattern)
-    } else {
-        cupti::CuptiNameFilter::Any
-    };
-    Ok(cupti::CuptiEventFilter {
-        record_kind,
-        api_domain,
-        memcpy_kind,
-        name,
-    })
-}
-
-fn bounded_kernel_name_filter(pattern: &str) -> cupti::CuptiNameFilter {
-    if pattern == ".*" {
-        return cupti::CuptiNameFilter::Any;
-    }
-    let candidates = [
-        ("^", "$", 1_u8),
-        ("^", ".*", 2),
-        (".*", "$", 3),
-        (".*", ".*", 4),
-        ("^", "", 2),
-        ("", "$", 3),
-        (".*", "", 4),
-        ("", "", 4),
-    ];
-    for (prefix, suffix, kind) in candidates {
-        let Some(inner) = pattern
-            .strip_prefix(prefix)
-            .and_then(|value| value.strip_suffix(suffix))
-        else {
-            continue;
-        };
-        let Some(literal) = regex_literal(inner) else {
-            continue;
-        };
-        if literal.is_empty() || literal.len() >= cupti::CUPTI_NAME_CAPACITY {
-            continue;
-        }
-        return match kind {
-            1 => cupti::CuptiNameFilter::Exact(literal),
-            2 => cupti::CuptiNameFilter::Prefix(literal),
-            3 => cupti::CuptiNameFilter::Suffix(literal),
-            4 => cupti::CuptiNameFilter::Contains(literal),
-            _ => unreachable!("fixed kernel filter kind"),
-        };
-    }
-    cupti::CuptiNameFilter::Any
-}
-
-fn regex_literal(pattern: &str) -> Option<String> {
-    let mut literal = String::with_capacity(pattern.len());
-    let mut characters = pattern.chars();
-    while let Some(character) = characters.next() {
-        if character == '\\' {
-            let escaped = characters.next()?;
-            if escaped.is_ascii_alphanumeric() {
-                return None;
-            }
-            literal.push(escaped);
-        } else if ".+*?()|[]{}^$".contains(character) {
-            return None;
-        } else {
-            literal.push(character);
-        }
-    }
-    Some(literal)
 }
 
 struct CuptiActivation {
@@ -2991,67 +2878,41 @@ fn aggregate_inventory_result(
     request: &LiveMeasureRequest,
 ) -> Result<AggregateInventoryResult, CommandFailure> {
     validate_aggregate_capture(capture)?;
-    let raw_groups = u64::try_from(capture.aggregate_groups.len()).map_err(|error| {
-        CommandFailure::new(
-            ErrorCode::TraceExportFailed,
-            format!("aggregate group count exceeds u64: {error}"),
-            false,
-        )
-    })?;
-    let groups = merge_aggregate_groups(capture.aggregate_groups.clone())?;
-    let grouped_activities = groups.iter().try_fold(0_u64, |total, group| {
-        total.checked_add(group.count).ok_or_else(|| {
-            CommandFailure::new(
-                ErrorCode::TraceExportFailed,
-                "aggregate activity count overflowed",
-                false,
-            )
-        })
-    })?;
-    if grouped_activities != capture.observed_records {
-        return Err(CommandFailure::new(
-            ErrorCode::TraceExportFailed,
-            format!(
-                "aggregate activity counters are inconsistent: grouped={grouped_activities}, observed={}",
-                capture.observed_records
-            ),
-            false,
-        ));
-    }
-    let distinct_groups = u64::try_from(groups.len()).map_err(|error| {
-        CommandFailure::new(
-            ErrorCode::TraceExportFailed,
-            format!("distinct aggregate group count exceeds u64: {error}"),
-            false,
-        )
-    })?;
-    let groups = groups
-        .into_iter()
-        .map(protocol_aggregate_group)
-        .collect::<Vec<_>>();
-    Ok(AggregateInventoryResult {
-        schema_version: SchemaVersion::current(),
-        ok: true,
-        session_id: request.options.session_id.clone(),
-        status: SessionStatus::Completed,
-        inventory: AggregateInventory {
-            name: request.options.name.clone(),
-            start_selector: request.options.start_selector.clone(),
-            end_selector: request.options.end_selector.clone(),
-            groups,
+    let capture = gpu_aggregate::GpuAggregateCapture {
+        groups: capture
+            .aggregate_groups
+            .iter()
+            .map(|group| gpu_aggregate::RawGpuAggregateGroup {
+                activity: match group.activity {
+                    cupti::CuptiAggregateActivity::Kernel => AggregateActivity::Kernel,
+                    cupti::CuptiAggregateActivity::Memcpy => AggregateActivity::Memcpy,
+                    cupti::CuptiAggregateActivity::Memset => AggregateActivity::Memset,
+                },
+                name: group.name.clone(),
+                name_complete: group.name_complete,
+                device_id: group.device_id,
+                memcpy_kind: group.memcpy_kind.clone(),
+                count: group.count,
+                total_duration_ns: group.total_duration_ns,
+                min_duration_ns: group.min_duration_ns,
+                max_duration_ns: group.max_duration_ns,
+                total_bytes: group.total_bytes,
+            })
+            .collect(),
+        observed_activities: capture.observed_records,
+        group_capacity: capture.record_capacity,
+    };
+    let options = &request.options;
+    gpu_aggregate::analyze(
+        gpu_aggregate::GpuAggregateRequest {
+            session_id: options.session_id.clone(),
+            name: options.name.clone(),
+            start_selector: options.start_selector.clone(),
+            end_selector: options.end_selector.clone(),
         },
-        collection: AggregateCollectionSummary {
-            completeness: CaptureCompleteness::Complete,
-            observed_activities: capture.observed_records,
-            grouped_activities,
-            dropped_activities: 0,
-            group_capacity: capture.record_capacity,
-            groups: distinct_groups,
-            occupied_slots: raw_groups,
-            table_utilization: utilization(raw_groups, capture.record_capacity),
-        },
-        warnings: Vec::new(),
-    })
+        capture,
+    )
+    .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()))
 }
 
 fn validate_aggregate_capture(capture: &cupti::CuptiCapture) -> Result<(), CommandFailure> {
@@ -3103,170 +2964,6 @@ fn validate_aggregate_capture(capture: &cupti::CuptiCapture) -> Result<(), Comma
         ));
     }
     Ok(())
-}
-
-fn merge_aggregate_groups(
-    mut groups: Vec<cupti::CuptiAggregateGroup>,
-) -> Result<Vec<cupti::CuptiAggregateGroup>, CommandFailure> {
-    groups.sort_by(|left, right| {
-        aggregate_activity_rank(left.activity)
-            .cmp(&aggregate_activity_rank(right.activity))
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.device_id.cmp(&right.device_id))
-            .then_with(|| {
-                memcpy_kind_rank(left.memcpy_kind.as_ref())
-                    .cmp(&memcpy_kind_rank(right.memcpy_kind.as_ref()))
-            })
-    });
-    let mut merged: Vec<cupti::CuptiAggregateGroup> = Vec::with_capacity(groups.len());
-    for group in groups {
-        let Some(previous) = merged.last_mut() else {
-            merged.push(group);
-            continue;
-        };
-        if previous.activity != group.activity
-            || previous.name != group.name
-            || previous.device_id != group.device_id
-            || previous.memcpy_kind != group.memcpy_kind
-        {
-            merged.push(group);
-            continue;
-        }
-        previous.count = previous.count.checked_add(group.count).ok_or_else(|| {
-            CommandFailure::new(
-                ErrorCode::TraceExportFailed,
-                "aggregate group count overflowed while merging",
-                false,
-            )
-        })?;
-        previous.total_duration_ns = previous
-            .total_duration_ns
-            .checked_add(group.total_duration_ns)
-            .ok_or_else(|| {
-                CommandFailure::new(
-                    ErrorCode::TraceExportFailed,
-                    "aggregate duration overflowed while merging",
-                    false,
-                )
-            })?;
-        previous.min_duration_ns = previous.min_duration_ns.min(group.min_duration_ns);
-        previous.max_duration_ns = previous.max_duration_ns.max(group.max_duration_ns);
-        previous.total_bytes = match (previous.total_bytes, group.total_bytes) {
-            (Some(left), Some(right)) => Some(left.checked_add(right).ok_or_else(|| {
-                CommandFailure::new(
-                    ErrorCode::TraceExportFailed,
-                    "aggregate byte count overflowed while merging",
-                    false,
-                )
-            })?),
-            (None, None) => None,
-            _ => {
-                return Err(CommandFailure::new(
-                    ErrorCode::TraceExportFailed,
-                    "aggregate byte counters are inconsistent",
-                    false,
-                ));
-            }
-        };
-    }
-    Ok(merged)
-}
-
-const fn aggregate_activity_rank(activity: cupti::CuptiAggregateActivity) -> u8 {
-    match activity {
-        cupti::CuptiAggregateActivity::Kernel => 0,
-        cupti::CuptiAggregateActivity::Memcpy => 1,
-        cupti::CuptiAggregateActivity::Memset => 2,
-    }
-}
-
-const fn memcpy_kind_rank(kind: Option<&MemcpyKind>) -> u8 {
-    match kind {
-        None => 0,
-        Some(&MemcpyKind::Unknown) => 1,
-        Some(&MemcpyKind::HostToDevice) => 2,
-        Some(&MemcpyKind::DeviceToHost) => 3,
-        Some(&MemcpyKind::DeviceToDevice) => 4,
-        Some(&MemcpyKind::HostToHost) => 5,
-        Some(&MemcpyKind::PeerToPeer) => 6,
-    }
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn protocol_aggregate_group(group: cupti::CuptiAggregateGroup) -> AggregateGroup {
-    let (start_selector_hint, end_selector_hint) = aggregate_selector_hints(&group);
-    AggregateGroup {
-        activity: match group.activity {
-            cupti::CuptiAggregateActivity::Kernel => AggregateActivity::Kernel,
-            cupti::CuptiAggregateActivity::Memcpy => AggregateActivity::Memcpy,
-            cupti::CuptiAggregateActivity::Memset => AggregateActivity::Memset,
-        },
-        name: group.name,
-        name_complete: group.name_complete,
-        device_id: group.device_id,
-        memcpy_kind: group.memcpy_kind,
-        start_selector_hint,
-        end_selector_hint,
-        count: group.count,
-        duration_ns: AggregateDuration {
-            min: group.min_duration_ns,
-            mean: group.total_duration_ns as f64 / group.count as f64,
-            max: group.max_duration_ns,
-            total: group.total_duration_ns,
-        },
-        total_bytes: group.total_bytes,
-    }
-}
-
-fn aggregate_selector_hints(group: &cupti::CuptiAggregateGroup) -> (String, String) {
-    match group.activity {
-        cupti::CuptiAggregateActivity::Kernel => {
-            let name = group.name.as_deref().expect("kernel aggregate has a name");
-            let escaped = escape_selector_regex(name);
-            let suffix = if group.name_complete == Some(true) {
-                "$"
-            } else {
-                ""
-            };
-            (
-                format!("cuda:kernel_start:name~^{escaped}{suffix}"),
-                format!("cuda:kernel_end:name~^{escaped}{suffix}"),
-            )
-        }
-        cupti::CuptiAggregateActivity::Memcpy => {
-            let kind = match group.memcpy_kind.as_ref() {
-                Some(MemcpyKind::HostToDevice) => Some("HtoD"),
-                Some(MemcpyKind::DeviceToHost) => Some("DtoH"),
-                Some(MemcpyKind::DeviceToDevice) => Some("DtoD"),
-                Some(MemcpyKind::HostToHost) => Some("HtoH"),
-                Some(MemcpyKind::PeerToPeer) => Some("PtoP"),
-                Some(MemcpyKind::Unknown) | None => None,
-            };
-            kind.map_or_else(
-                || ("cuda:memcpy_start".to_owned(), "cuda:memcpy_end".to_owned()),
-                |kind| {
-                    (
-                        format!("cuda:memcpy_start:kind={kind}"),
-                        format!("cuda:memcpy_end:kind={kind}"),
-                    )
-                },
-            )
-        }
-        cupti::CuptiAggregateActivity::Memset => {
-            ("cuda:memset_start".to_owned(), "cuda:memset_end".to_owned())
-        }
-    }
-}
-
-fn escape_selector_regex(name: &str) -> String {
-    let mut escaped = String::with_capacity(name.len());
-    for character in name.chars() {
-        if "\\.^$|?*+()[]{}".contains(character) {
-            escaped.push('\\');
-        }
-        escaped.push(character);
-    }
-    escaped
 }
 
 fn injection_warning(collection: &LiveCollection) -> Warning {
@@ -4261,67 +3958,5 @@ const fn yes_no(value: bool) -> &'static str {
 const fn schema_version(version: SchemaVersion) -> &'static str {
     match version {
         SchemaVersion::V2 => "2.0",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use xprobe_collector::cupti::{CuptiAggregateActivity, CuptiAggregateGroup, CuptiNameFilter};
-
-    use super::{aggregate_selector_hints, bounded_kernel_name_filter, regex_literal};
-
-    #[test]
-    fn lowers_only_equivalent_bounded_kernel_patterns() {
-        assert_eq!(
-            bounded_kernel_name_filter("^flash_.*"),
-            CuptiNameFilter::Prefix("flash_".to_owned())
-        );
-        assert_eq!(
-            bounded_kernel_name_filter(".*_kernel$"),
-            CuptiNameFilter::Suffix("_kernel".to_owned())
-        );
-        assert_eq!(
-            bounded_kernel_name_filter("cudaLaunch"),
-            CuptiNameFilter::Contains("cudaLaunch".to_owned())
-        );
-        assert_eq!(
-            bounded_kernel_name_filter(".*xprobe_multisource_kernel.*"),
-            CuptiNameFilter::Contains("xprobe_multisource_kernel".to_owned())
-        );
-        assert_eq!(
-            bounded_kernel_name_filter("^(flash|attention)$"),
-            CuptiNameFilter::Any
-        );
-    }
-
-    #[test]
-    fn decodes_escaped_regex_literals_conservatively() {
-        assert_eq!(regex_literal("kernel\\.v1"), Some("kernel.v1".to_owned()));
-        assert_eq!(regex_literal("kernel\\d"), None);
-        assert_eq!(regex_literal("kernel+"), None);
-    }
-
-    #[test]
-    fn aggregate_hints_use_prefixes_for_incomplete_kernel_names() {
-        let group = CuptiAggregateGroup {
-            activity: CuptiAggregateActivity::Kernel,
-            name: Some("long_kernel_prefix".to_owned()),
-            name_complete: Some(false),
-            device_id: Some(0),
-            memcpy_kind: None,
-            count: 1,
-            total_duration_ns: 10,
-            min_duration_ns: 10,
-            max_duration_ns: 10,
-            total_bytes: None,
-        };
-
-        assert_eq!(
-            aggregate_selector_hints(&group),
-            (
-                "cuda:kernel_start:name~^long_kernel_prefix".to_owned(),
-                "cuda:kernel_end:name~^long_kernel_prefix".to_owned(),
-            )
-        );
     }
 }

@@ -28,9 +28,9 @@ attachment, collection, correlation, logical CUPTI shutdown, and cleanup.
 | Path | Responsibility |
 | --- | --- |
 | `xprobe/cli` | Four public commands, rendering, exit codes, orchestration |
-| `xprobe/core` | doctor, process identity, discovery, ELF resolution, validation, ptrace injection |
+| `xprobe/core` | doctor, process identity, discovery, ELF resolution, validation, ptrace injection, inventory normalization |
 | `xprobe/protocol` | Strict serde contracts and generated JSON Schema |
-| `xprobe/collector` | eBPF collection, CUPTI control protocol and ABI decoding |
+| `xprobe/collector` | eBPF collection, CUPTI selector filters, control protocol and ABI decoding |
 | `xprobe/correlator` | Selector matching, pair evidence, statistics and quality |
 | `xprobe/exporter` | Event JSONL and Chrome Trace Event Format |
 | `bpf/` | PID-scoped uprobe, USDT, syscall, tracepoint, and aggregate programs |
