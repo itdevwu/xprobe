@@ -120,7 +120,7 @@ fn resolve(pid: u32, selector: &str) -> ResolvedProbe {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     serde_json::from_slice(&output.stdout).expect("stdout must contain resolved probe JSON")
 }
 

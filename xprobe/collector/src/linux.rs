@@ -740,7 +740,7 @@ mod tests {
         assert_eq!(host.probe_kind, HostProbeKind::Usdt);
         assert_eq!(host.binary_path.as_deref(), Some("/usr/bin/python3"));
         assert_eq!(host.symbol.as_deref(), Some("gc__start"));
-        assert!(host.arguments.is_empty());
+        assert_eq!(host.arguments, Vec::<xprobe_protocol::ArgumentValue>::new());
         assert_eq!(event.attributes["usdt_provider"], "python");
         assert!(validate_request(&request).is_ok());
     }

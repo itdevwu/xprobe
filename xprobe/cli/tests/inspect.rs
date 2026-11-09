@@ -22,14 +22,14 @@ fn inspect_json_describes_the_target_process() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 
     let report: ProcessReport =
         serde_json::from_slice(&output.stdout).expect("stdout must contain only process JSON");
     assert_eq!(report.schema_version, SchemaVersion::current());
     assert_eq!(report.target.pid, pid);
-    assert!(!report.executable.is_empty());
-    assert!(!report.namespace_pids.is_empty());
+    assert_ne!(report.executable, "");
+    assert_ne!(report.namespace_pids, Vec::<u32>::new());
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn inspect_missing_target_returns_a_structured_error() {
         .expect("xprobe inspect must run");
 
     assert_eq!(output.status.code(), Some(3));
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 
     let response: ErrorResponse =
         serde_json::from_slice(&output.stdout).expect("stdout must contain only error JSON");

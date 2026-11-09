@@ -406,7 +406,7 @@ mod tests {
     fn parses_cgroup_v2_entry() {
         let entries = parse_cgroups("0::/user.slice\n", 1).unwrap();
         assert_eq!(entries[0].hierarchy_id, 0);
-        assert!(entries[0].controllers.is_empty());
+        assert_eq!(entries[0].controllers, Vec::<String>::new());
         assert_eq!(entries[0].path, "/user.slice");
     }
 }

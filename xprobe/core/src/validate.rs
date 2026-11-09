@@ -1219,7 +1219,10 @@ mod tests {
             AgentActivation::InjectionRequired
         );
         assert!(result.requirements.target_mutation);
-        assert!(result.issues.is_empty());
+        assert_eq!(
+            result.issues,
+            Vec::<xprobe_protocol::ValidationIssue>::new()
+        );
         assert!(
             result
                 .warnings
@@ -1248,7 +1251,10 @@ mod tests {
         );
         assert!(!result.requirements.target_mutation);
         assert!(!result.requirements.needs_clock_alignment);
-        assert!(result.issues.is_empty());
+        assert_eq!(
+            result.issues,
+            Vec::<xprobe_protocol::ValidationIssue>::new()
+        );
     }
 
     #[test]
@@ -1355,6 +1361,9 @@ mod tests {
         .unwrap();
         assert!(result.valid);
         assert!(result.requirements.needs_clock_alignment);
-        assert!(result.issues.is_empty());
+        assert_eq!(
+            result.issues,
+            Vec::<xprobe_protocol::ValidationIssue>::new()
+        );
     }
 }

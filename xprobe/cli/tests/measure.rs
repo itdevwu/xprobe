@@ -166,7 +166,7 @@ fn measures_exact_kernel_durations_from_a_completed_capture() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let result: MeasurementResult =
         serde_json::from_slice(&output.stdout).expect("stdout must contain measurement JSON");
     assert_eq!(result.status, SessionStatus::Completed);
@@ -245,7 +245,7 @@ fn rejects_a_capture_that_reached_the_agent_record_limit() {
     );
     assert_eq!(response.error.details["record_capacity"], 2);
     assert_eq!(response.error.details["observed_records"], 3);
-    assert!(!response.error.hints.is_empty());
+    assert_ne!(response.error.hints, Vec::<String>::new());
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn rejects_an_active_capture_as_incomplete() {
     let response: ErrorResponse = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response.error.code, ErrorCode::CuptiNotAvailable);
     assert_eq!(response.error.details["capture_state"], "active");
-    assert!(!response.error.hints.is_empty());
+    assert_ne!(response.error.hints, Vec::<String>::new());
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn rejects_unaligned_api_to_kernel_latency() {
         evidence_path.to_string_lossy().as_ref()
     );
     assert_eq!(error.error.details["artifact_event_count"], 2);
-    assert!(!error.error.hints.is_empty());
+    assert_ne!(error.error.hints, Vec::<String>::new());
     let evidence = fs::read_to_string(&evidence_path).expect("failure evidence must be written");
     fs::remove_file(evidence_path).expect("failure evidence must be removed");
     assert_eq!(evidence.lines().count(), 2);
@@ -426,7 +426,7 @@ fn reports_artifact_failure_without_hiding_measurement_failure() {
         error.error.details["original_error_code"],
         "NO_MATCHED_SAMPLES"
     );
-    assert!(!error.error.hints.is_empty());
+    assert_ne!(error.error.hints, Vec::<String>::new());
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn measures_host_to_kernel_latency_from_merged_captures() {
     assert_eq!(result.error.code, ErrorCode::EventsDropped);
     assert!(result.error.message.contains("dropped 2 events"));
     assert_eq!(result.error.details["dropped_events"], 2);
-    assert!(!result.error.hints.is_empty());
+    assert_ne!(result.error.hints, Vec::<String>::new());
 }
 
 #[test]
