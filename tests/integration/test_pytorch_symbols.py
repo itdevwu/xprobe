@@ -67,8 +67,8 @@ def main() -> None:
     assert torch_probe["object_kind"] == "shared_library"
     if measurement is not None:
         assert measurement["measurement"]["samples"]["matched"] == 8
-        assert len(measurement["evidence"]) == 8
-        for evidence in measurement["evidence"]:
+        assert len(measurement["evidence"]["pairs"]) == 8
+        for evidence in measurement["evidence"]["pairs"]:
             assert evidence["start"]["host"]["symbol_demangled"] == MM_SYMBOL
             assert evidence["end"]["host"]["symbol_demangled"] == MM_SYMBOL
     print(
@@ -160,6 +160,8 @@ def measure(
         [
             binary,
             "measure",
+            "--evidence",
+            "full",
             "--pid",
             str(pid),
             "--from",

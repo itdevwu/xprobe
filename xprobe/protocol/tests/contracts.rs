@@ -406,7 +406,7 @@ fn trace_export_contract_round_trips() {
 #[test]
 fn measurement_result_contract_round_trips() {
     assert_round_trip::<MeasurementResult>(&json!({
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "ok": true,
         "session_id": "xp_test",
         "status": "completed",
@@ -429,6 +429,21 @@ fn measurement_result_contract_round_trips() {
                 "max": 13_000
             }
         },
+        "quality": {
+            "verdict": "caution",
+            "issues": [
+                {
+                    "code": "HEURISTIC_CORRELATION",
+                    "severity": "caution",
+                    "message": "pairs are matched by time order"
+                },
+                {
+                    "code": "FEW_SAMPLES",
+                    "severity": "info",
+                    "message": "tail ranks are estimated from 1 matched samples"
+                }
+            ]
+        },
         "correlation": {
             "method": "first_after",
             "confidence": "heuristic",
@@ -445,9 +460,45 @@ fn measurement_result_contract_round_trips() {
             "dropped_events": 0,
             "cupti": null
         },
-        "evidence": [],
+        "evidence": {
+            "mode": "summary",
+            "exemplars": [],
+            "pairs": null,
+            "artifact": {
+                "path": "/tmp/xprobe-1-2/events.jsonl",
+                "format": "jsonl",
+                "events": 2
+            }
+        },
         "warnings": []
     }));
+}
+
+#[test]
+fn measurement_results_require_schema_three() {
+    let mut value = serde_json::to_value(
+        serde_json::from_value::<MeasurementResult>(json!({
+            "schema_version": "3.0",
+            "ok": true,
+            "session_id": "xp_test",
+            "status": "completed",
+            "measurement": {
+                "name": null,
+                "samples": {"matched": 1, "unmatched_start": 0, "unmatched_end": 0, "ambiguous": 0, "dropped": 0},
+                "latency_ns": {"min": 1, "mean": 1.0, "p50": 1, "p90": 1, "p95": 1, "p99": 1, "max": 1}
+            },
+            "quality": {"verdict": "good", "issues": []},
+            "correlation": {"method": "exact", "confidence": "exact", "score": 1.0},
+            "clock": {"alignment": "host_monotonic", "estimated_error_ns": 0},
+            "collection": {"completeness": "complete", "host_events": 2, "cuda_events": 0, "dropped_events": 0, "cupti": null},
+            "evidence": {"mode": "full", "exemplars": [], "pairs": [], "artifact": null},
+            "warnings": []
+        }))
+        .expect("3.0 measurement result must parse"),
+    )
+    .expect("measurement result must serialize");
+    value["schema_version"] = json!("2.0");
+    assert!(serde_json::from_value::<MeasurementResult>(value).is_err());
 }
 
 #[test]

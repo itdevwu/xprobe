@@ -35,9 +35,11 @@ pub use export::{ExportFormat, TraceExportResult};
 pub use measurement::{
     AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
     AggregateInventory, AggregateInventoryResult, CaptureCompleteness, ClockQuality,
-    CollectionSummary, CorrelationConfidence, CorrelationSummary, CuptiCollectionSummary,
-    LatencyStatistics, MatchPolicy, MatchedEventPair, Measurement, MeasurementMode,
-    MeasurementResult, MeasurementSpec, SampleSummary, SessionStatus, TargetIdentity,
+    CollectionSummary, CorrelationConfidence, CorrelationSummary, CuptiCollectionSummary, Evidence,
+    EvidenceArtifact, EvidenceExemplar, EvidenceMode, LatencyRank, LatencyStatistics, MatchPolicy,
+    MatchedEventPair, Measurement, MeasurementMode, MeasurementResult, MeasurementSpec,
+    QualityIssue, QualitySeverity, QualityVerdict, ResultQuality, SampleSummary, SessionStatus,
+    TargetIdentity,
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};
@@ -51,6 +53,6 @@ pub use validate::{
     ResolvedCudaSelector, ResolvedLinuxSelector, ValidatedEndpoint, ValidationIssue,
     ValidationRequirements, ValidationResult,
 };
-pub use version::SchemaVersion;
+pub use version::{SchemaVersion, SchemaVersion3};
 
 pub const SCHEMA_VERSION: &str = "2.0";

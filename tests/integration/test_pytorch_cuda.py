@@ -154,7 +154,7 @@ def run_inner(xprobe: pathlib.Path) -> None:
     assert all(
         pair["start"]["nvtx"]["range_kind"] == "thread"
         and pair["start"]["nvtx"]["range_id"] == pair["end"]["nvtx"]["range_id"]
-        for pair in nvtx["evidence"]
+        for pair in nvtx["evidence"]["pairs"]
     )
 
     print(
@@ -329,6 +329,8 @@ def exact_measure(
             "exact",
             "--samples",
             "8",
+            "--evidence",
+            "full",
             "--max-events",
             "4096",
             "--timeout-ms",

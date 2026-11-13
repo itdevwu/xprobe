@@ -8,8 +8,11 @@ function. Use `stream-order` only for GPU activity endpoints on the same device,
 context, and stream. Treat `first-after` and `nearest` as temporal heuristics,
 never request causality.
 
-Inspect every evidence pair for selector scope, process identity, correlation
-IDs, device/context/stream, timestamps, and clock domains. A result is not
+Start from `quality.verdict` and its issues, then inspect the rank exemplar
+pairs for selector scope, process identity, correlation IDs,
+device/context/stream, timestamps, and clock domains. When a claim depends on
+individual pairs, use `--evidence full` or re-correlate the evidence artifact
+with `measure --input`. A result is not
 sufficient when records were dropped, no samples matched, target identity
 changed, collection was incomplete, or clock alignment failed. Report unmatched
 and ambiguous counts with matched samples. `estimated_error_ns: null` means no

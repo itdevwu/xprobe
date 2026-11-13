@@ -200,13 +200,14 @@ sub warning_present {
 }
 
 sub load_json {
-    my ($path, $description) = @_;
+    my ($path, $description, $schema_version) = @_;
+    $schema_version //= '2.0';
     my $value = eval { $JSON->decode(read_text($path)) };
     fail("malformed $description JSON at $path: $@") if $@;
     require_condition(ref($value) eq 'HASH',
         "malformed $description JSON at $path: expected object");
     require_condition(defined($value->{schema_version})
-        && $value->{schema_version} eq '2.0',
+        && $value->{schema_version} eq $schema_version,
         "unexpected schema in $description");
     return $value;
 }
@@ -802,7 +803,7 @@ sub run_batch_body {
             "worker $worker->{ordinal} exact measurement command failed");
         verify_identity($worker, 'after exact measurement');
         my $exact = load_json($worker->{files}{measure_stdout},
-            'exact measurement');
+            'exact measurement', '3.0');
         my $quality = validate_exact_result($exact, $worker);
         my $injection_warning =
             warning_present($exact, 'CUPTI_AGENT_INJECTED');

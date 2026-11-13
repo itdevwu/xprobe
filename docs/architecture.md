@@ -199,9 +199,14 @@ All sources normalize into the versioned `Event` type. `measure` supports:
 | `stack-nested` | Per-thread LIFO host entry/return | high |
 | `stream-order` | Ordered activity within device/context/stream | high |
 
-Every result includes full matched start/end events and `latency_ns` in
-`evidence`. Statistics are derived from those pairs. Drops, unmatched events,
-ambiguity, policy, confidence, and clock quality remain visible. A normalized
+Statistics are derived from every matched start/end pair. Measurement results
+use schema `3.0`: by default `evidence` inlines one exemplar pair per latency
+rank (min, p50, p90, p99, max) and references the bounded event artifact that
+live captures always write; `--evidence full` also inlines every pair. The
+artifact re-correlates deterministically with `measure --input`. A
+deterministic `quality` verdict summarizes timeout, correlation confidence,
+ambiguity, unmatched events, clock error, and sample count. Drops, unmatched
+events, ambiguity, policy, confidence, and clock quality remain visible. A normalized
 CUPTI event without a reported interpolation bound makes
 `estimated_error_ns: null` and emits `CLOCK_ERROR_UNAVAILABLE`.
 

@@ -32,6 +32,7 @@ cleanup_python_gc() {
 trap 'cleanup_python_gc; cleanup' EXIT
 
 "${binary}" measure \
+  --evidence full \
   --pid "${python_gc_pid}" \
   --from python:gc_start \
   --to python:gc_end \
@@ -51,6 +52,7 @@ trap 'cleanup_python_gc; cleanup' EXIT
   --json --non-interactive --no-color >"${syscall_inventory}"
 
 "${binary}" measure \
+  --evidence full \
   --pid "${target_pid}" \
   --from syscall:mmap:entry \
   --to syscall:mmap:exit \
@@ -61,6 +63,7 @@ trap 'cleanup_python_gc; cleanup' EXIT
   --json --non-interactive --no-color >"${mmap_capture}"
 
 "${binary}" measure \
+  --evidence full \
   --pid "${target_pid}" \
   --from syscall:munmap:entry \
   --to syscall:munmap:exit \
@@ -71,6 +74,7 @@ trap 'cleanup_python_gc; cleanup' EXIT
   --json --non-interactive --no-color >"${munmap_capture}"
 
 "${binary}" measure \
+  --evidence full \
   --pid "${target_pid}" \
   --from tracepoint:raw_syscalls:sys_enter \
   --to tracepoint:raw_syscalls:sys_exit \
@@ -81,6 +85,7 @@ trap 'cleanup_python_gc; cleanup' EXIT
   --json --non-interactive --no-color >"${tracepoint_capture}"
 
 if "${binary}" measure \
+  --evidence full \
   --pid "${target_pid}" \
   --from syscall:mmap:entry \
   --to syscall:mmap:exit \

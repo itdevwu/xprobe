@@ -1,9 +1,10 @@
 use std::{
-    fs::{self},
+    fs::{self, DirBuilder},
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     process::ExitCode,
     sync::atomic::AtomicU64,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 static EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -11,12 +12,12 @@ static EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 use clap::Parser;
 use xprobe_collector::completed;
 use xprobe_core::{cpu_sampling, discover, doctor, inspect, syscall_aggregate, validate};
-use xprobe_correlator::{MeasureOptions, measure};
+use xprobe_correlator::{MeasureOptions, finalize, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
     AggregateInventoryResult, ClockDomain, CpuSamplingValidationResult, ErrorCode, Event,
-    MatchPolicy, MeasurementMode, MeasurementResult, MeasurementSpec,
-    SyscallAggregateValidationResult,
+    EvidenceArtifact, EvidenceMode, ExportFormat, MatchPolicy, MeasurementMode, MeasurementResult,
+    MeasurementSpec, SyscallAggregateValidationResult,
 };
 
 mod args;
@@ -69,6 +70,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         cupti_socket,
         agent,
         events_out,
+        evidence,
         format,
         timeout_ms,
         from,
@@ -94,15 +96,13 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
                 non_interactive: _,
             },
     } = args;
+    let output = EvidenceOutput {
+        events_out: events_out.as_deref(),
+        format,
+        mode: evidence.mode(),
+    };
     if let Some(spec) = spec {
-        return run_measure_spec(
-            &spec,
-            cupti_socket,
-            agent,
-            events_out.as_deref(),
-            format,
-            json,
-        );
+        return run_measure_spec(&spec, cupti_socket, agent, output, json);
     }
     if cpu_sample {
         let Some(pid) = pid else {
@@ -223,8 +223,8 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             options,
         };
         return match collect_live_measurement(&request) {
-            Ok(execution) => finish_measurement(&execution, events_out.as_deref(), format, json),
-            Err(error) => finish_measurement_failure(error, events_out.as_deref(), format, json),
+            Ok(execution) => finish_measurement(&execution, output, true, json),
+            Err(error) => finish_measurement_failure(error, output, true, json),
         };
     }
     run_completed_measurement(
@@ -232,8 +232,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         &options,
         cupti_socket.is_some(),
         agent.is_some(),
-        events_out.as_deref(),
-        format,
+        output,
         json,
     )
 }
@@ -336,8 +335,7 @@ fn run_completed_measurement(
     options: &MeasureOptions,
     has_cupti_socket: bool,
     has_agent: bool,
-    events_out: Option<&Path>,
-    format: Option<ExportFormatArg>,
+    output: EvidenceOutput<'_>,
     json: bool,
 ) -> ExitCode {
     let invalid = if input.is_empty() {
@@ -359,8 +357,8 @@ fn run_completed_measurement(
         return emit_error(code, message.to_owned(), true, json);
     }
     match measure_completed_inputs(input, options) {
-        Ok(execution) => finish_measurement(&execution, events_out, format, json),
-        Err(error) => finish_measurement_failure(error, events_out, format, json),
+        Ok(execution) => finish_measurement(&execution, output, false, json),
+        Err(error) => finish_measurement_failure(error, output, false, json),
     }
 }
 
@@ -369,8 +367,7 @@ fn run_measure_spec(
     path: &Path,
     cupti_socket: Option<PathBuf>,
     agent_path: Option<PathBuf>,
-    events_out: Option<&Path>,
-    format: Option<ExportFormatArg>,
+    output: EvidenceOutput<'_>,
     json: bool,
 ) -> ExitCode {
     let bytes = match fs::read(path) {
@@ -400,7 +397,7 @@ fn run_measure_spec(
             value,
             path,
             cupti_socket.is_some() || agent_path.is_some(),
-            events_out.is_some() || format.is_some(),
+            output.requests_artifact(),
             json,
         );
     }
@@ -409,7 +406,7 @@ fn run_measure_spec(
             value,
             path,
             cupti_socket.is_some() || agent_path.is_some(),
-            events_out.is_some() || format.is_some(),
+            output.requests_artifact(),
             json,
         );
     }
@@ -461,11 +458,11 @@ fn run_measure_spec(
     };
     match request.mode {
         MeasurementMode::Exact => match collect_live_measurement(&request) {
-            Ok(execution) => finish_measurement(&execution, events_out, format, json),
-            Err(error) => finish_measurement_failure(error, events_out, format, json),
+            Ok(execution) => finish_measurement(&execution, output, true, json),
+            Err(error) => finish_measurement_failure(error, output, true, json),
         },
         MeasurementMode::Aggregate => {
-            if events_out.is_some() || format.is_some() {
+            if output.requests_artifact() {
                 return emit_error(
                     ErrorCode::TraceExportFailed,
                     "aggregate measurement does not produce event evidence artifacts".to_owned(),
@@ -514,59 +511,121 @@ fn measurement_spec_capacity(spec: &MeasurementSpec) -> Result<usize, CommandFai
     })
 }
 
-fn finish_measurement(
-    execution: &MeasurementExecution,
-    events_out: Option<&Path>,
+#[derive(Debug, Clone, Copy)]
+struct EvidenceOutput<'a> {
+    events_out: Option<&'a Path>,
     format: Option<ExportFormatArg>,
-    json: bool,
-) -> ExitCode {
-    if format.is_some() && events_out.is_none() {
-        return emit_error(
-            ErrorCode::TraceExportFailed,
-            "--format requires --events-out".to_owned(),
-            true,
-            json,
-        );
+    mode: EvidenceMode,
+}
+
+impl EvidenceOutput<'_> {
+    const fn requests_artifact(&self) -> bool {
+        self.events_out.is_some() || self.format.is_some()
     }
-    if let Some(path) = events_out {
-        let format = format.unwrap_or(ExportFormatArg::Jsonl);
-        if let Err(error) = export_measurement_capture(&execution.events, path, format) {
-            return emit_command_failure(error, json);
+
+    /// Resolve where the bounded capture goes. Live captures default to a
+    /// private temporary file so summary output never loses evidence.
+    fn artifact_path(&self, live: bool) -> Result<Option<PathBuf>, CommandFailure> {
+        if self.format.is_some() && self.events_out.is_none() {
+            return Err(CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                "--format requires --events-out",
+                true,
+            ));
+        }
+        match self.events_out {
+            Some(path) => Ok(Some(path.to_path_buf())),
+            None if live => default_artifact_path().map(Some),
+            None => Ok(None),
         }
     }
-    emit_measurement(&execution.result, json)
+}
+
+fn default_artifact_path() -> Result<PathBuf, CommandFailure> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let directory = std::env::temp_dir().join(format!("xprobe-{}-{nanos}", std::process::id()));
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .map_err(|error| {
+            CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!(
+                    "failed to create evidence directory {}: {error}",
+                    directory.display()
+                ),
+                true,
+            )
+            .with_hint("pass --events-out PATH to choose a writable artifact location")
+        })?;
+    Ok(directory.join("events.jsonl"))
+}
+
+fn finish_measurement(
+    execution: &MeasurementExecution,
+    output: EvidenceOutput<'_>,
+    live: bool,
+    json: bool,
+) -> ExitCode {
+    let mut result = execution.result.clone();
+    let path = match output.artifact_path(live) {
+        Ok(path) => path,
+        Err(error) => return emit_command_failure(error, json),
+    };
+    if let Some(path) = path {
+        let format = output.format.unwrap_or(ExportFormatArg::Jsonl);
+        if let Err(error) = export_measurement_capture(&execution.events, &path, format) {
+            return emit_command_failure(error, json);
+        }
+        result.evidence.artifact = Some(EvidenceArtifact {
+            path: path.display().to_string(),
+            format: protocol_export_format(format),
+            events: execution.events.len() as u64,
+        });
+    }
+    emit_measurement(result, output.mode, json)
 }
 
 fn finish_measurement_failure(
     mut error: CommandFailure,
-    events_out: Option<&Path>,
-    format: Option<ExportFormatArg>,
+    output: EvidenceOutput<'_>,
+    live: bool,
     json: bool,
 ) -> ExitCode {
-    if format.is_some() && events_out.is_none() {
-        return emit_error(
-            ErrorCode::TraceExportFailed,
-            "--format requires --events-out".to_owned(),
-            true,
+    let Some(events) = error.artifact_events.take() else {
+        if let Err(invalid) = output.artifact_path(false) {
+            return emit_command_failure(invalid, json);
+        }
+        return emit_command_failure(error, json);
+    };
+    let path = match output.artifact_path(live) {
+        Ok(Some(path)) => path,
+        Ok(None) => return emit_command_failure(error, json),
+        Err(invalid) => return emit_command_failure(invalid, json),
+    };
+    let format = output.format.unwrap_or(ExportFormatArg::Jsonl);
+    if let Err(export) = export_measurement_capture(&events, &path, format) {
+        return emit_command_failure(
+            export
+                .with_detail("original_error_code", error.code.to_string())
+                .with_hint("the measurement also failed; rerun after fixing artifact output"),
             json,
         );
     }
-    if let (Some(path), Some(events)) = (events_out, error.artifact_events.take()) {
-        let format = format.unwrap_or(ExportFormatArg::Jsonl);
-        if let Err(export) = export_measurement_capture(&events, path, format) {
-            return emit_command_failure(
-                export
-                    .with_detail("original_error_code", error.code.to_string())
-                    .with_hint("the measurement also failed; rerun after fixing artifact output"),
-                json,
-            );
-        }
-        error = error
-            .with_detail("artifact_path", path.display().to_string())
-            .with_detail("artifact_format", export_format_name(format))
-            .with_detail("artifact_event_count", events.len() as u64);
-    }
+    error = error
+        .with_detail("artifact_path", path.display().to_string())
+        .with_detail("artifact_format", export_format_name(format))
+        .with_detail("artifact_event_count", events.len() as u64);
     emit_command_failure(error, json)
+}
+
+const fn protocol_export_format(format: ExportFormatArg) -> ExportFormat {
+    match format {
+        ExportFormatArg::Jsonl => ExportFormat::Jsonl,
+        ExportFormatArg::Chrome => ExportFormat::Chrome,
+    }
 }
 
 fn export_measurement_capture(
@@ -662,14 +721,15 @@ const fn clock_domain_name(domain: &ClockDomain) -> &'static str {
     }
 }
 
-fn emit_measurement(result: &MeasurementResult, json: bool) -> ExitCode {
+fn emit_measurement(mut result: MeasurementResult, mode: EvidenceMode, json: bool) -> ExitCode {
+    finalize(&mut result, mode);
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&result).expect("measurement result must serialize")
         );
     } else {
-        print_measurement_result(result);
+        print_measurement_result(&result);
     }
     ExitCode::SUCCESS
 }

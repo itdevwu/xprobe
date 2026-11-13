@@ -301,19 +301,26 @@ Completed inputs may be CUPTI ABI binary, bounded host-capture JSON, or Event
 JSONL. Repeated inputs are merged after target-PID checks. Unknown records,
 mixed targets, malformed captures, and excessive event counts fail explicitly.
 
-Results conform to `schemas/measurement-result.schema.json` and contain:
+Results conform to `schemas/measurement-result.schema.json` (schema `3.0`) and
+contain:
 
 - status and latency statistics;
+- a `quality` verdict (`good` or `caution`) with coded issues;
 - matched, unmatched, ambiguous, and dropped counts;
 - method, confidence, and score;
 - clock alignment and optional estimated error;
 - collection completeness, host/CUDA totals, and CUPTI capacity, observed,
   retained, dropped, and utilization values when an ABI envelope provides them;
-- full start/end events plus latency for each evidence pair;
+- `evidence`: one exemplar start/end pair per latency rank (min, p50, p90,
+  p99, max), the artifact path, format, and event count, and with
+  `--evidence full` every matched pair;
 - structured warnings.
 
-`--events-out PATH` atomically writes the complete bounded capture with mode
-`0600`. The default format is JSONL; `--format chrome` writes Chrome Trace Event
+Live captures always write the complete bounded capture with mode `0600`:
+`--events-out PATH` chooses the file; otherwise it goes to a new mode `0700`
+directory under the temporary directory. `measure --input` with the same
+selectors re-correlates it deterministically. Completed `--input` measurements
+write an artifact only with `--events-out`. The default format is JSONL; `--format chrome` writes Chrome Trace Event
 Format. Once collection has produced a capture, correlation, clock, drop, or
 capacity failures still write it and identify its path, format, and event count
 in the JSON error. Artifact failure returns `TRACE_EXPORT_FAILED` and preserves

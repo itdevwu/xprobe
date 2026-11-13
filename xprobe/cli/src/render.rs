@@ -195,7 +195,16 @@ pub(crate) fn print_measurement_result(result: &MeasurementResult) {
         result.measurement.name.as_deref().unwrap_or("unnamed")
     );
     println!("Matched samples: {}", result.measurement.samples.matched);
-    println!("Evidence pairs: {}", result.evidence.len());
+    println!("Quality: {:?}", result.quality.verdict);
+    for issue in &result.quality.issues {
+        println!("  {:?} {}: {}", issue.severity, issue.code, issue.message);
+    }
+    if let Some(artifact) = &result.evidence.artifact {
+        println!(
+            "Evidence artifact: {} ({} events)",
+            artifact.path, artifact.events
+        );
+    }
     println!("Correlation: {}", result.correlation.method);
     println!("Clock: {}", result.clock.alignment);
     println!("Latency (ns):");
