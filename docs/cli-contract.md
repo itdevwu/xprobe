@@ -50,6 +50,12 @@ GPU UUIDs. `limit` must be positive. `total_candidates` and `truncated`
 describe bounded output. The caller chooses one candidate and passes its PID to
 `validate` and `measure`; xprobe does not guess among workers.
 
+NVML lists compute processes from every container sharing the GPU. A listed PID
+that is not visible in the caller's PID namespace, or that exits before
+inspection, cannot be a candidate; it is reported in a
+`NVML_PROCESS_UNAVAILABLE` warning with its `nvml_pids` instead of failing the
+command. Root exit and other inspection failures remain errors.
+
 This process-candidate response is discovery schema `2.0`. xprobe does not emit
 or maintain the pre-0.3 event-discovery shape.
 

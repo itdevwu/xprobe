@@ -761,6 +761,7 @@ dependencies = [
  "nix",
  "object",
  "regex",
+ "serde_json",
  "xprobe-protocol",
 ]
 
