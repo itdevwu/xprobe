@@ -51,6 +51,7 @@ measure()
   mv "${mode}.next" "${mode}"
   sleep 0.05
   "${xprobe}" measure \
+    --evidence full \
     --pid "${pid}" \
     --agent "${agent}" \
     --from "cuda:nvtx_range_start:name~${pattern}" \
@@ -72,6 +73,7 @@ mv "${mode}.next" "${mode}"
 sleep 0.05
 set +e
 "${xprobe}" measure \
+  --evidence full \
   --pid "${pid}" \
   --agent "${agent}" \
   --from 'cuda:nvtx_range_start:name~^xprobe_outer$' \

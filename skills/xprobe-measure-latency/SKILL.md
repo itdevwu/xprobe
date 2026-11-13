@@ -76,8 +76,9 @@ justify unrelated collection.
 
 ## Preserve these invariants
 
-- Use JSON mode and require schema version `2.0`. Treat malformed output and
-  unknown versions as errors.
+- Use JSON mode. Measurement results use schema version `3.0`; other records
+  and Event JSONL use `2.0`. Treat malformed output and unknown versions as
+  errors.
 - Identify a live process by PID plus procfs start time and verify it around
   validation and attachment. Never substitute a reused PID.
 - Bound every capture by duration or samples, timeout, and record/group/thread

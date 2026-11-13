@@ -67,12 +67,12 @@ def main() -> None:
         pair["start"]["tid"] != pair["end"]["tid"]
         and pair["start"]["nvtx"]["start_tid"] == pair["start"]["tid"]
         and pair["end"]["nvtx"]["start_tid"] == pair["start"]["tid"]
-        for pair in cross["evidence"]
+        for pair in cross["evidence"]["pairs"]
     )
     assert all(
         pair["start"]["nvtx"]["name_complete"] is False
         and pair["end"]["nvtx"]["name_complete"] is False
-        for pair in long_name["evidence"]
+        for pair in long_name["evidence"]["pairs"]
     )
     print(
         json.dumps(
@@ -96,7 +96,7 @@ def assert_measurement(result: dict, range_kind: str) -> None:
         pair["start"]["nvtx"]["range_kind"] == range_kind
         and pair["end"]["nvtx"]["range_kind"] == range_kind
         and pair["start"]["nvtx"]["range_id"] == pair["end"]["nvtx"]["range_id"]
-        for pair in result["evidence"]
+        for pair in result["evidence"]["pairs"]
     )
 
 

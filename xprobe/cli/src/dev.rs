@@ -40,6 +40,7 @@ use xprobe_correlator::MeasureOptions;
 use xprobe_exporter::events_to_chrome_trace;
 use xprobe_exporter::events_to_jsonl;
 use xprobe_protocol::ErrorCode;
+use xprobe_protocol::EvidenceMode;
 use xprobe_protocol::ExportFormat;
 use xprobe_protocol::MeasurementMode;
 use xprobe_protocol::MeasurementSpec;
@@ -143,7 +144,7 @@ pub(crate) fn run_trace(args: TraceArgs) -> ExitCode {
         },
     };
     match collect_live_measurement(&request) {
-        Ok(execution) => emit_measurement(&execution.result, json),
+        Ok(execution) => emit_measurement(execution.result, EvidenceMode::Full, json),
         Err(error) => emit_command_failure(error, json),
     }
 }

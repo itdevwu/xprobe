@@ -72,11 +72,12 @@ GPU operation durations, transfers, NVTX ranges, and CPU/GPU paths after
 selecting the correct process.
 
 `measure` also accepts completed `--input` captures and versioned live
-`--spec` files. Evidence can be exported as `jsonl` or `chrome`. JSON results
-contain every matched start/end event, latency statistics, unmatched and
-ambiguous counts, collection completeness, CUPTI buffer usage, clock quality,
-correlation confidence, and warnings. With `--events-out`, the bounded capture
-is also preserved when correlation or clock validation fails.
+`--spec` files. JSON results contain latency statistics, a quality verdict,
+rank exemplar pairs, unmatched and ambiguous counts, collection completeness,
+CUPTI buffer usage, clock quality, correlation confidence, and warnings. Live
+captures always write the bounded event capture (`jsonl` or `chrome`, private
+temporary file unless `--events-out` is set), including when correlation or
+clock validation fails; `--evidence full` inlines every matched pair.
 
 ## Public CLI
 

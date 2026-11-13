@@ -76,6 +76,21 @@ pub(crate) enum ExportFormatArg {
     Chrome,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum EvidenceArg {
+    Summary,
+    Full,
+}
+
+impl EvidenceArg {
+    pub(crate) const fn mode(self) -> xprobe_protocol::EvidenceMode {
+        match self {
+            Self::Summary => xprobe_protocol::EvidenceMode::Summary,
+            Self::Full => xprobe_protocol::EvidenceMode::Full,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct ExportArgs {
     /// Completed CUPTI binary, host capture JSON, or Event JSONL; repeat to merge.
@@ -243,9 +258,20 @@ pub(crate) struct MeasureArgs {
     #[arg(long)]
     pub(crate) agent: Option<PathBuf>,
 
-    /// Write the complete bounded event capture to this file.
+    /// Write the complete bounded event capture to this file. Live captures
+    /// default to a private file under the temporary directory.
     #[arg(long)]
     pub(crate) events_out: Option<PathBuf>,
+
+    /// Inline matched pairs: `summary` keeps rank exemplars and the artifact
+    /// path; `full` also inlines every pair.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = EvidenceArg::Summary,
+        conflicts_with_all = ["cpu_sample", "syscall_aggregate", "aggregate"]
+    )]
+    pub(crate) evidence: EvidenceArg,
 
     /// Evidence event format; defaults to jsonl when --events-out is set.
     #[arg(long, value_enum)]

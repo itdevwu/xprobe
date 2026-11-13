@@ -4,8 +4,8 @@ use std::{
 
 use xprobe_protocol::{
     CaptureCompleteness, ClockDomain, CorrelationConfidence, ErrorCode, ErrorResponse, Event,
-    EventSource, EventType, HostCaptureResult, HostEvent, HostProbeKind, MeasurementResult,
-    SchemaVersion, SessionStatus, TargetIdentity,
+    EventSource, EventType, EvidenceMode, HostCaptureResult, HostEvent, HostProbeKind, LatencyRank,
+    MeasurementResult, QualityVerdict, SchemaVersion, SessionStatus, TargetIdentity,
 };
 
 const HEADER_SIZE: usize = 88;
@@ -190,13 +190,80 @@ fn measures_exact_kernel_durations_from_a_completed_capture() {
     assert_eq!(cupti.retained_records, 4);
     assert_eq!(cupti.dropped_records, 0);
     assert!((cupti.buffer_utilization - 1.0).abs() < f64::EPSILON);
-    assert_eq!(result.evidence.len(), 2);
-    assert_eq!(result.evidence[0].latency_ns, 50);
+    assert_eq!(result.quality.verdict, QualityVerdict::Good);
+    assert_eq!(result.evidence.mode, EvidenceMode::Summary);
+    assert_eq!(result.evidence.pairs, None);
+    let exemplars = &result.evidence.exemplars;
+    assert_eq!(exemplars.len(), 2);
+    assert_eq!(exemplars[0].ranks, [LatencyRank::Min, LatencyRank::P50]);
+    assert_eq!(exemplars[0].pair.latency_ns, 50);
+    assert_eq!(
+        exemplars[1].ranks,
+        [LatencyRank::P90, LatencyRank::P99, LatencyRank::Max]
+    );
+    assert_eq!(exemplars[1].pair.latency_ns, 80);
+    let artifact = result
+        .evidence
+        .artifact
+        .as_ref()
+        .expect("explicit events-out must be referenced");
+    assert_eq!(artifact.path, evidence_path.to_string_lossy());
+    assert_eq!(artifact.events, 4);
     let evidence = fs::read_to_string(&evidence_path).expect("evidence must be written");
     let mode = fs::metadata(&evidence_path).unwrap().permissions().mode() & 0o777;
     fs::remove_file(evidence_path).expect("evidence fixture must be removed");
     assert_eq!(evidence.lines().count(), 4);
     assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn inlines_every_pair_with_full_evidence() {
+    let path = capture_path("full-evidence");
+    write_capture(
+        &path,
+        &[
+            record(3, 100, 11, "test_kernel"),
+            record(4, 150, 11, "test_kernel"),
+            record(3, 200, 12, "test_kernel"),
+            record(4, 280, 12, "test_kernel"),
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            path.to_str().expect("temporary path must be UTF-8"),
+            "--from",
+            "cuda:kernel_start:name~test.*",
+            "--to",
+            "cuda:kernel_end:name~test.*",
+            "--match",
+            "exact",
+            "--samples",
+            "2",
+            "--evidence",
+            "full",
+            "--json",
+            "--non-interactive",
+            "--no-color",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    fs::remove_file(path).expect("capture fixture must be removed");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: MeasurementResult =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain measurement JSON");
+    assert_eq!(result.evidence.mode, EvidenceMode::Full);
+    assert_eq!(result.evidence.artifact, None);
+    let pairs = result.evidence.pairs.expect("full evidence inlines pairs");
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(pairs[0].latency_ns, 50);
+    assert_eq!(pairs[1].latency_ns, 80);
 }
 
 #[test]

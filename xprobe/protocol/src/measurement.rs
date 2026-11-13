@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Event, SchemaVersion, Warning};
+use crate::{Event, ExportFormat, SchemaVersion, SchemaVersion3, Warning};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -60,17 +60,100 @@ pub enum SessionStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementResult {
-    pub schema_version: SchemaVersion,
+    pub schema_version: SchemaVersion3,
     pub ok: bool,
     pub session_id: String,
     pub status: SessionStatus,
     pub measurement: Measurement,
+    pub quality: ResultQuality,
     pub correlation: CorrelationSummary,
     pub clock: ClockQuality,
     pub collection: CollectionSummary,
-    pub evidence: Vec<MatchedEventPair>,
+    pub evidence: Evidence,
     #[serde(default)]
     pub warnings: Vec<Warning>,
+}
+
+/// Matched pair evidence. `summary` keeps representative exemplars inline and
+/// references the bounded capture artifact; `full` also inlines every pair.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Evidence {
+    pub mode: EvidenceMode,
+    pub exemplars: Vec<EvidenceExemplar>,
+    pub pairs: Option<Vec<MatchedEventPair>>,
+    pub artifact: Option<EvidenceArtifact>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceMode {
+    #[default]
+    Summary,
+    Full,
+}
+
+/// One matched pair selected for a latency rank. Ranks use the same
+/// nearest-rank indices as `measurement.latency_ns`, so an exemplar's latency
+/// equals the reported statistic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceExemplar {
+    pub ranks: Vec<LatencyRank>,
+    pub pair: MatchedEventPair,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LatencyRank {
+    Min,
+    P50,
+    P90,
+    P99,
+    Max,
+}
+
+/// Bounded capture written by `measure`; re-correlate it with `measure --input`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceArtifact {
+    pub path: String,
+    pub format: ExportFormat,
+    pub events: u64,
+}
+
+/// Deterministic interpretation of the result's quality fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResultQuality {
+    pub verdict: QualityVerdict,
+    pub issues: Vec<QualityIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityVerdict {
+    /// No caution-level issue; info issues may still be listed.
+    Good,
+    /// At least one issue limits how the latency may be interpreted.
+    Caution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QualityIssue {
+    pub code: String,
+    pub severity: QualitySeverity,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QualitySeverity {
+    Info,
+    Caution,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

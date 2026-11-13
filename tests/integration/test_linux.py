@@ -62,8 +62,8 @@ def assert_syscall_capture(result: dict, name: str) -> None:
     assert result["collection"]["host_events"] == 8
     assert result["collection"]["cuda_events"] == 0
     assert result["collection"]["dropped_events"] == 0
-    assert len(result["evidence"]) == 3
-    for pair in result["evidence"]:
+    assert len(result["evidence"]["pairs"]) == 3
+    for pair in result["evidence"]["pairs"]:
         start = pair["start"]
         end = pair["end"]
         assert start["event_type"] == "syscall_entry"
@@ -88,7 +88,7 @@ def assert_tracepoint_capture(result: dict) -> None:
     assert result["correlation"]["method"] == "first_after"
     assert result["correlation"]["confidence"] == "heuristic"
     assert result["collection"]["dropped_events"] == 0
-    for pair in result["evidence"]:
+    for pair in result["evidence"]["pairs"]:
         assert pair["start"]["host"]["probe_kind"] == "tracepoint"
         assert pair["start"]["host"]["symbol"] == "sys_enter"
         assert pair["end"]["host"]["symbol"] == "sys_exit"
@@ -122,7 +122,7 @@ def assert_python_gc_capture(result: dict) -> None:
     assert result["correlation"]["method"] == "exact_python_gc_tid_lifecycle"
     assert result["correlation"]["confidence"] == "exact"
     assert result["collection"]["dropped_events"] == 0
-    for pair in result["evidence"]:
+    for pair in result["evidence"]["pairs"]:
         start = pair["start"]
         end = pair["end"]
         assert start["event_type"] == "python_gc_start"

@@ -7,8 +7,12 @@ use xprobe_protocol::{
     CaptureCompleteness, ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence,
     CorrelationSummary, ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics,
     MatchPolicy, MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, NvtxRangeKind,
-    SampleSummary, SchemaVersion, SessionStatus, Warning,
+    QualityVerdict, ResultQuality, SampleSummary, SchemaVersion3, SessionStatus, Warning,
 };
+
+mod quality;
+
+pub use quality::{assess as assess_quality, finalize};
 
 #[derive(Debug, Clone)]
 pub struct MeasureOptions {
@@ -781,8 +785,10 @@ pub fn measure(
     let warnings = measurement_warnings(options, &starts, &ends);
 
     let (host_events, cuda_events) = collection_event_counts(events);
-    Ok(MeasurementResult {
-        schema_version: SchemaVersion::current(),
+    let estimated_error_ns = maximum_timestamp_error(&outcome.pairs);
+    let pairs = matched_pairs(outcome.pairs);
+    let mut result = MeasurementResult {
+        schema_version: SchemaVersion3::current(),
         ok: true,
         session_id: options.session_id.clone(),
         status: SessionStatus::Completed,
@@ -797,19 +803,18 @@ pub fn measure(
             },
             latency_ns: statistics(&latencies),
         },
+        quality: ResultQuality {
+            verdict: QualityVerdict::Good,
+            issues: Vec::new(),
+        },
         correlation: CorrelationSummary {
             method: method.to_owned(),
             confidence,
             score: ratio(matched, denominator),
         },
         clock: ClockQuality {
-            alignment: match clock_domain {
-                ClockDomain::HostMonotonic => "host_monotonic",
-                ClockDomain::Cupti => "cupti_same_domain",
-                ClockDomain::CuptiNormalizedToHostMonotonic => "cupti_normalized_to_host_monotonic",
-            }
-            .to_owned(),
-            estimated_error_ns: maximum_timestamp_error(&outcome.pairs),
+            alignment: clock_alignment(&clock_domain).to_owned(),
+            estimated_error_ns,
         },
         collection: CollectionSummary {
             completeness: CaptureCompleteness::Complete,
@@ -818,17 +823,30 @@ pub fn measure(
             dropped_events: options.dropped_events,
             cupti: None,
         },
-        evidence: outcome
-            .pairs
-            .into_iter()
-            .map(|pair| MatchedEventPair {
-                start: pair.start.clone(),
-                end: pair.end.clone(),
-                latency_ns: pair.latency_ns,
-            })
-            .collect(),
+        evidence: quality::full_evidence(pairs),
         warnings,
-    })
+    };
+    result.quality = assess_quality(&result);
+    Ok(result)
+}
+
+fn matched_pairs(pairs: Vec<Pair<'_>>) -> Vec<MatchedEventPair> {
+    pairs
+        .into_iter()
+        .map(|pair| MatchedEventPair {
+            start: pair.start.clone(),
+            end: pair.end.clone(),
+            latency_ns: pair.latency_ns,
+        })
+        .collect()
+}
+
+const fn clock_alignment(domain: &ClockDomain) -> &'static str {
+    match domain {
+        ClockDomain::HostMonotonic => "host_monotonic",
+        ClockDomain::Cupti => "cupti_same_domain",
+        ClockDomain::CuptiNormalizedToHostMonotonic => "cupti_normalized_to_host_monotonic",
+    }
 }
 
 fn collection_event_counts(events: &[Event]) -> (u64, u64) {
@@ -1464,8 +1482,7 @@ fn mean(sum: u128, count: usize) -> f64 {
 }
 
 fn percentile(sorted: &[u64], percentile: usize) -> u64 {
-    let rank = (percentile * sorted.len()).div_ceil(100);
-    sorted[rank.saturating_sub(1)]
+    sorted[quality::rank_index(sorted.len(), percentile)]
 }
 
 fn maximum_timestamp_error(pairs: &[Pair<'_>]) -> Option<u64> {
@@ -1703,8 +1720,8 @@ mod tests {
         assert_eq!(result.measurement.latency_ns.max, 80);
         assert_eq!(result.correlation.method, "exact_syscall_tid_lifecycle");
         assert_eq!(result.correlation.confidence, CorrelationConfidence::Exact);
-        assert_eq!(result.evidence[0].start.tid, 10);
-        assert_eq!(result.evidence[0].end.tid, 10);
+        assert_eq!(result.evidence.pairs.as_ref().unwrap()[0].start.tid, 10);
+        assert_eq!(result.evidence.pairs.as_ref().unwrap()[0].end.tid, 10);
     }
 
     #[test]
@@ -1797,8 +1814,8 @@ mod tests {
         assert_eq!(result.measurement.latency_ns.min, 50);
         assert_eq!(result.measurement.latency_ns.max, 80);
         assert_eq!(result.correlation.method, "exact_nvtx_range_id");
-        assert_eq!(result.evidence[0].end.tid, 10);
-        assert_eq!(result.evidence[1].end.tid, 30);
+        assert_eq!(result.evidence.pairs.as_ref().unwrap()[0].end.tid, 10);
+        assert_eq!(result.evidence.pairs.as_ref().unwrap()[1].end.tid, 30);
     }
 
     #[test]
