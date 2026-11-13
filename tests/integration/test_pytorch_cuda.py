@@ -73,10 +73,10 @@ def run_inner(xprobe: pathlib.Path) -> None:
         temp = pathlib.Path(temp_dir)
         agent = temp / "libxprobe-cupti.so"
         mode = temp / "mode"
+        require_compile_support()
         build_agent(workspace, agent)
         set_mode(mode, "mm")
-        environment = os.environ.copy()
-        environment["NVTX_INJECTION64_PATH"] = str(agent)
+        environment = workload_environment(agent)
         workload = subprocess.Popen(
             [
                 sys.executable,
@@ -186,6 +186,49 @@ def run_inner(xprobe: pathlib.Path) -> None:
             sort_keys=True,
         )
     )
+
+
+def require_compile_support() -> None:
+    check = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import numpy, triton, torch._dynamo as dynamo; "
+            "raise SystemExit(0 if dynamo.is_dynamo_supported() else 3)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0:
+        raise SystemExit(
+            "PyTorch environment cannot run torch.compile; it needs numpy, triton, "
+            "and a Python version supported by Dynamo (see environment-pytorch.yml)\n"
+            + check.stderr
+        )
+
+
+def workload_environment(agent: pathlib.Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["NVTX_INJECTION64_PATH"] = str(agent)
+    # Triton links its launcher against an unversioned libcuda.so. Some container
+    # runtimes (for example WSL) register only libcuda.so.1, so fall back to the
+    # toolkit link stub; the real driver is still loaded through its SONAME.
+    stub = pathlib.Path("/usr/local/cuda/lib64/stubs/libcuda.so")
+    if (
+        "TRITON_LIBCUDA_PATH" not in environment
+        and not unversioned_libcuda_registered()
+        and stub.is_file()
+    ):
+        environment["TRITON_LIBCUDA_PATH"] = str(stub.parent)
+    return environment
+
+
+def unversioned_libcuda_registered() -> bool:
+    cache = subprocess.run(
+        ["/sbin/ldconfig", "-p"], check=True, capture_output=True, text=True
+    ).stdout
+    return any(line.split()[:1] == ["libcuda.so"] for line in cache.splitlines())
 
 
 def build_agent(workspace: pathlib.Path, output: pathlib.Path) -> None:
