@@ -2,7 +2,9 @@
 
 ## Native toolchain
 
-Rust is managed with `rustup`. Native build tools are isolated in the checked-in
+Rust is managed with `rustup` and pinned by `rust-toolchain.toml`; local
+builds, CI, and release packaging use the same compiler and Clippy. Update the
+pin in a dedicated change. Native build tools are isolated in the checked-in
 Mamba environment:
 
 ```bash
