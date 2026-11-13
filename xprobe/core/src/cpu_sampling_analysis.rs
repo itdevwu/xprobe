@@ -137,17 +137,26 @@ struct MapRegion {
     path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
-struct ModuleSymbol {
+/// One text symbol borrowed from a parsed ELF image.
+#[derive(Debug, Clone, Copy)]
+struct RawSymbol<'a> {
     file_offset: u64,
     size: u64,
+    name: &'a str,
+}
+
+/// The symbol containing one sampled file offset, demangled once.
+#[derive(Debug, Clone)]
+struct ResolvedSymbol {
+    file_offset: u64,
     name: String,
 }
 
+/// A mapped module, resolved only at the file offsets that were sampled.
 #[derive(Debug, Clone)]
 struct Module {
     build_id: Option<String>,
-    symbols: Vec<ModuleSymbol>,
+    symbols: BTreeMap<u64, ResolvedSymbol>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,9 +187,13 @@ pub fn analyze(
     capture: &CpuCaptureData,
 ) -> Result<CpuSampleInventoryResult, CpuAnalysisError> {
     inspect::verify_target(&report.target)?;
-    let mut symbolizer = Symbolizer::load(report, capture.python_status)?;
     let (raw_groups, group_capacity_reached) =
         aggregate_raw_stacks(&capture.samples, spec.max_groups);
+    let sampled = raw_groups
+        .iter()
+        .flat_map(|(addresses, _)| addresses.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let mut symbolizer = Symbolizer::load(report, capture.python_status, &sampled)?;
     let grouped_samples = raw_groups.iter().map(|(_, count)| count).sum::<u64>();
     let sample_denominator = capture.observed_samples.max(1);
     let stack_groups = raw_groups
@@ -274,9 +287,13 @@ pub fn analyze(
 }
 
 impl Symbolizer {
+    /// Load symbols only for modules and offsets that appear in `sampled`.
+    /// Large runtimes map gigabytes of libraries; reading and demangling every
+    /// symbol of every mapping dominated analysis time.
     fn load(
         report: &ProcessReport,
         python_status: PythonSymbolizationStatus,
+        sampled: &BTreeSet<u64>,
     ) -> Result<Self, CpuAnalysisError> {
         let maps_path = PathBuf::from(format!("/proc/{}/maps", report.target.pid));
         let maps_text = fs::read_to_string(&maps_path).map_err(|source| CpuAnalysisError::Io {
@@ -286,12 +303,20 @@ impl Symbolizer {
         let maps = parse_executable_maps(&maps_text, &maps_path)?;
         let mut modules = BTreeMap::new();
         let mut warnings = Vec::new();
-        for path in maps
-            .iter()
-            .map(|region| &region.path)
-            .collect::<BTreeSet<_>>()
-        {
-            match load_module(path) {
+        let mut offsets = BTreeMap::<&PathBuf, BTreeSet<u64>>::new();
+        for address in sampled {
+            if let Some(mapping) = maps
+                .iter()
+                .find(|mapping| *address >= mapping.start && *address < mapping.end)
+            {
+                offsets
+                    .entry(&mapping.path)
+                    .or_default()
+                    .insert(mapping.file_offset + (address - mapping.start));
+            }
+        }
+        for (path, offsets) in offsets {
+            match load_module(path, &offsets) {
                 Ok(module) => {
                     modules.insert(path.clone(), module);
                 }
@@ -334,7 +359,7 @@ impl Symbolizer {
         };
         let file_offset = mapping.file_offset + (address - mapping.start);
         let module = self.modules.get(&mapping.path);
-        let symbol = module.and_then(|module| find_module_symbol(&module.symbols, file_offset));
+        let symbol = module.and_then(|module| module.symbols.get(&file_offset));
         CpuStackFrame {
             address,
             module_path: Some(mapping.path.to_string_lossy().into_owned()),
@@ -569,14 +594,14 @@ fn parse_hex(value: &str, path: &Path, reason: &str) -> Result<u64, CpuAnalysisE
     u64::from_str_radix(value, 16).map_err(|_| invalid_maps(path, reason))
 }
 
-fn load_module(path: &Path) -> Result<Module, String> {
+fn load_module(path: &Path, offsets: &BTreeSet<u64>) -> Result<Module, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     let file = object::File::parse(bytes.as_slice()).map_err(|error| error.to_string())?;
     let build_id = file
         .build_id()
         .map_err(|error| error.to_string())?
         .map(hex_encode);
-    let mut symbols = BTreeMap::<u64, ModuleSymbol>::new();
+    let mut table = BTreeMap::<u64, RawSymbol<'_>>::new();
     for symbol in file.dynamic_symbols().chain(file.symbols()) {
         if !symbol.is_definition() || symbol.kind() != SymbolKind::Text {
             continue;
@@ -587,20 +612,35 @@ fn load_module(path: &Path) -> Result<Module, String> {
         let Some(file_offset) = virtual_address_to_file_offset(&file, symbol.address()) else {
             continue;
         };
-        let name = demangle_cpp(name).unwrap_or_else(|| name.to_owned());
-        symbols
+        table
             .entry(file_offset)
             .and_modify(|current| current.size = current.size.max(symbol.size()))
-            .or_insert(ModuleSymbol {
+            .or_insert(RawSymbol {
                 file_offset,
                 size: symbol.size(),
                 name,
             });
     }
-    Ok(Module {
-        build_id,
-        symbols: symbols.into_values().collect(),
-    })
+    let table = table.into_values().collect::<Vec<_>>();
+    let mut demangled = BTreeMap::<u64, String>::new();
+    let mut symbols = BTreeMap::new();
+    for &offset in offsets {
+        let Some(symbol) = find_module_symbol(&table, offset) else {
+            continue;
+        };
+        let name = demangled
+            .entry(symbol.file_offset)
+            .or_insert_with(|| demangle_cpp(symbol.name).unwrap_or_else(|| symbol.name.to_owned()))
+            .clone();
+        symbols.insert(
+            offset,
+            ResolvedSymbol {
+                file_offset: symbol.file_offset,
+                name,
+            },
+        );
+    }
+    Ok(Module { build_id, symbols })
 }
 
 fn virtual_address_to_file_offset(file: &object::File<'_>, address: u64) -> Option<u64> {
@@ -611,7 +651,10 @@ fn virtual_address_to_file_offset(file: &object::File<'_>, address: u64) -> Opti
     })
 }
 
-fn find_module_symbol(symbols: &[ModuleSymbol], offset: u64) -> Option<&ModuleSymbol> {
+fn find_module_symbol<'s, 'a>(
+    symbols: &'s [RawSymbol<'a>],
+    offset: u64,
+) -> Option<&'s RawSymbol<'a>> {
     let index = symbols.partition_point(|symbol| symbol.file_offset <= offset);
     let symbol = symbols.get(index.checked_sub(1)?)?;
     let next_start = symbols.get(index).map(|next| next.file_offset);
@@ -759,6 +802,36 @@ fn ratio(numerator: u64, denominator: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[inline(never)]
+    fn xprobe_lazy_symbol_marker() -> u64 {
+        std::hint::black_box(7)
+    }
+
+    #[test]
+    fn resolves_only_sampled_offsets_against_the_full_symbol_table() {
+        let marker: fn() -> u64 = xprobe_lazy_symbol_marker;
+        let address = marker as usize as u64;
+        let maps_path = PathBuf::from("/proc/self/maps");
+        let maps = parse_executable_maps(&fs::read_to_string(&maps_path).unwrap(), &maps_path)
+            .expect("own maps parse");
+        let mapping = maps
+            .iter()
+            .find(|mapping| address >= mapping.start && address < mapping.end)
+            .expect("marker is mapped executable code");
+        let offset = mapping.file_offset + (address - mapping.start);
+        let module = load_module(&mapping.path, &BTreeSet::from([offset, offset + 1]))
+            .expect("test binary loads");
+        assert_eq!(module.symbols.len(), 2);
+        let symbol = &module.symbols[&offset];
+        assert!(
+            symbol.name.contains("xprobe_lazy_symbol_marker"),
+            "{}",
+            symbol.name
+        );
+        assert_eq!(symbol.file_offset, offset);
+        assert_eq!(module.symbols[&(offset + 1)].file_offset, offset);
+    }
 
     #[test]
     fn keeps_the_heaviest_stack_groups_deterministically() {
