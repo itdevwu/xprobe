@@ -1,0 +1,963 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TriageResult",
+  "description": "One bounded triage window over a live process: where time went, and the\nnext exact measurement to run.",
+  "type": "object",
+  "properties": {
+    "cgroup": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CgroupCpuThrottling"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cpu_hotspots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CpuHotspot"
+      }
+    },
+    "findings": {
+      "description": "Ranked by estimated window share; findings without an estimate last.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TriageFinding"
+      }
+    },
+    "gpu_activity": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AggregateGroup"
+      }
+    },
+    "gpu_devices": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GpuDeviceHealth"
+      }
+    },
+    "not_covered": {
+      "description": "Questions this triage cannot answer; do not infer them from silence.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion3"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TriageSource"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "syscalls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SyscallAggregateGroup"
+      }
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "threads": {
+      "$ref": "#/$defs/ThreadTimeBreakdown"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    },
+    "window_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "session_id",
+    "status",
+    "target",
+    "window_ms",
+    "findings",
+    "threads",
+    "cpu_hotspots",
+    "syscalls",
+    "gpu_devices",
+    "gpu_activity",
+    "sources",
+    "not_covered"
+  ],
+  "$defs": {
+    "AggregateActivity": {
+      "type": "string",
+      "enum": [
+        "kernel",
+        "memcpy",
+        "memset"
+      ]
+    },
+    "AggregateDuration": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mean": {
+          "type": "number",
+          "format": "double"
+        },
+        "min": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "mean",
+        "max",
+        "total"
+      ]
+    },
+    "AggregateGroup": {
+      "type": "object",
+      "properties": {
+        "activity": {
+          "$ref": "#/$defs/AggregateActivity"
+        },
+        "count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "device_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "duration_ns": {
+          "$ref": "#/$defs/AggregateDuration"
+        },
+        "end_selector_hint": {
+          "type": "string"
+        },
+        "memcpy_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemcpyKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name_complete": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "start_selector_hint": {
+          "type": "string"
+        },
+        "total_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "activity",
+        "start_selector_hint",
+        "end_selector_hint",
+        "count",
+        "duration_ns"
+      ]
+    },
+    "CgroupCpuThrottling": {
+      "description": "CFS bandwidth throttling of the target's cgroup over the triage window.",
+      "type": "object",
+      "properties": {
+        "cgroup_path": {
+          "type": "string"
+        },
+        "periods": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "quota_cpus": {
+          "description": "CPU quota divided by period; `null` means no CPU limit.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "throttled_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "throttled_periods": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "version": {
+          "$ref": "#/$defs/CgroupVersion"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "cgroup_path",
+        "periods",
+        "throttled_periods",
+        "throttled_ns"
+      ]
+    },
+    "CgroupVersion": {
+      "type": "string",
+      "enum": [
+        "v1",
+        "v2"
+      ]
+    },
+    "CpuFrameLanguage": {
+      "type": "string",
+      "enum": [
+        "native",
+        "python",
+        "unknown"
+      ]
+    },
+    "CpuHotspot": {
+      "type": "object",
+      "properties": {
+        "entry_selector_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "exclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "frame": {
+          "$ref": "#/$defs/CpuStackFrame"
+        },
+        "inclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "inclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "return_selector_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frame",
+        "inclusive_samples",
+        "exclusive_samples",
+        "inclusive_proportion",
+        "exclusive_proportion"
+      ]
+    },
+    "CpuStackFrame": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "build_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "language": {
+          "$ref": "#/$defs/CpuFrameLanguage"
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "module_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "language"
+      ]
+    },
+    "GpuDeviceHealth": {
+      "description": "NVML device health sampled through the triage window.\n\nUtilization is the driver's sampled share of time with at least one kernel\nrunning; it is an estimate, not an exact busy-interval union.",
+      "type": "object",
+      "properties": {
+        "clock_event_reasons": {
+          "description": "Union of active NVML clock event reasons across samples.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "memory_utilization_mean_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "pcie": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PcieLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "power_max_w": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "temperature_max_c": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "utilization_max_pct": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "utilization_mean_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "uuid": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "uuid",
+        "samples",
+        "clock_event_reasons"
+      ]
+    },
+    "MatchPolicy": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "first_after",
+        "nearest",
+        "stack_nested",
+        "stream_order"
+      ]
+    },
+    "MeasurementMode": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "aggregate"
+      ]
+    },
+    "MeasurementSpec": {
+      "type": "object",
+      "properties": {
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "end_selector": {
+          "type": "string"
+        },
+        "match_policy": {
+          "$ref": "#/$defs/MatchPolicy"
+        },
+        "max_events": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "max_groups": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "measurement_mode": {
+          "$ref": "#/$defs/MeasurementMode",
+          "default": "exact"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "samples": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "start_selector": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/TargetIdentity"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "target",
+        "start_selector",
+        "end_selector",
+        "match_policy",
+        "timeout_ms"
+      ]
+    },
+    "MemcpyKind": {
+      "type": "string",
+      "enum": [
+        "HtoD",
+        "DtoH",
+        "DtoD",
+        "HtoH",
+        "PtoP",
+        "unknown"
+      ]
+    },
+    "PcieLink": {
+      "description": "Narrowest `PCIe` link observed against the link maximum.",
+      "type": "object",
+      "properties": {
+        "generation_max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "generation_min": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width_max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width_min": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "generation_min",
+        "generation_max",
+        "width_min",
+        "width_max"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "2.0"
+      ]
+    },
+    "SchemaVersion3": {
+      "description": "Version of records whose shape changed in xprobe 0.6.\n\nRecords keep their own version so unchanged contracts, such as Event JSONL\nartifacts, remain readable at `2.0`.",
+      "type": "string",
+      "enum": [
+        "3.0"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "timed_out",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "SyscallAggregateGroup": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "duration_ns": {
+          "$ref": "#/$defs/AggregateDuration"
+        },
+        "entry_selector_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errors": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "exit_selector_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "syscall_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "syscall_number": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "syscall_number",
+        "count",
+        "errors",
+        "duration_ns"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "ThreadTime": {
+      "type": "object",
+      "properties": {
+        "blocked_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "blocked_share": {
+          "type": "number",
+          "format": "double"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on_cpu_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "on_cpu_share": {
+          "type": "number",
+          "format": "double"
+        },
+        "runqueue_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "runqueue_share": {
+          "type": "number",
+          "format": "double"
+        },
+        "tid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tid",
+        "name",
+        "on_cpu_ns",
+        "runqueue_ns",
+        "blocked_ns",
+        "on_cpu_share",
+        "runqueue_share",
+        "blocked_share"
+      ]
+    },
+    "ThreadTimeBreakdown": {
+      "description": "Per-thread time split over the triage window from procfs `schedstat`.\n\n`blocked_ns` is window time neither running nor runnable. It includes\nvoluntary sleep and idle waiting, so read it per thread rather than as a\nprocess total.",
+      "type": "object",
+      "properties": {
+        "blocked_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "on_cpu_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "runqueue_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threads_exited": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threads_observed": {
+          "description": "Threads alive for the whole window; totals cover only these threads.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threads_started": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "top_threads": {
+          "description": "Busiest whole-window threads by on-CPU plus runqueue time.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ThreadTime"
+          }
+        },
+        "window_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "window_ns",
+        "threads_observed",
+        "threads_started",
+        "threads_exited",
+        "on_cpu_ns",
+        "runqueue_ns",
+        "blocked_ns",
+        "top_threads"
+      ]
+    },
+    "TriageFinding": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "impact_share": {
+          "description": "Estimated share of the window this finding accounts for, in [0, 1];\n`null` when the evidence cannot bound the impact.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TriageNextStep"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rank": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rank",
+        "code",
+        "summary"
+      ]
+    },
+    "TriageNextKind": {
+      "type": "string",
+      "enum": [
+        "measure",
+        "environment"
+      ]
+    },
+    "TriageNextStep": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TriageNextKind"
+        },
+        "spec": {
+          "description": "Ready to write to a file and run with `measure --spec`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MeasurementSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "description"
+      ]
+    },
+    "TriageSource": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "description": "Full inventory result for this source, when one was written.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/TriageSourceKind"
+        },
+        "status": {
+          "$ref": "#/$defs/TriageSourceStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "status"
+      ]
+    },
+    "TriageSourceKind": {
+      "type": "string",
+      "enum": [
+        "thread_time",
+        "cgroup",
+        "cpu_sample",
+        "syscall_aggregate",
+        "gpu_health",
+        "gpu_activity"
+      ]
+    },
+    "TriageSourceStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "collected"
+          ]
+        },
+        {
+          "description": "The capability is absent or not permitted on this host or target.",
+          "type": "string",
+          "const": "unavailable"
+        },
+        {
+          "description": "Not applicable to this target, such as GPU activity without CUDA.",
+          "type": "string",
+          "const": "skipped"
+        }
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

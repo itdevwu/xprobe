@@ -6,6 +6,7 @@ use xprobe_protocol::MeasurementResult;
 use xprobe_protocol::ProcessReport;
 use xprobe_protocol::ResolvedProbe;
 use xprobe_protocol::SchemaVersion;
+use xprobe_protocol::TriageResult;
 use xprobe_protocol::ValidationResult;
 
 pub(crate) fn print_human_report(report: &CapabilityReport) {
@@ -232,5 +233,60 @@ pub(crate) const fn yes_no(value: bool) -> &'static str {
 pub(crate) const fn schema_version(version: SchemaVersion) -> &'static str {
     match version {
         SchemaVersion::V2 => "2.0",
+    }
+}
+
+pub(crate) fn print_triage_result(result: &TriageResult) {
+    println!(
+        "Triage of PID {} over {} ms",
+        result.target.pid, result.window_ms
+    );
+    if result.findings.is_empty() {
+        println!("No finding crossed its threshold.");
+    }
+    for finding in &result.findings {
+        let impact = finding.impact_share.map_or_else(
+            || "  ?".to_owned(),
+            |share| format!("{:>3.0}%", share * 100.0),
+        );
+        println!(
+            "{}. [{}] {impact} {}",
+            finding.rank, finding.code, finding.summary
+        );
+        if let Some(next) = &finding.next {
+            println!("   next: {}", next.description);
+        }
+    }
+    let threads = &result.threads;
+    println!(
+        "Threads: {} observed, {} started, {} exited",
+        threads.threads_observed, threads.threads_started, threads.threads_exited
+    );
+    for thread in &threads.top_threads {
+        println!(
+            "  {} {:<16} on-CPU {:>5.1}%  runqueue {:>5.1}%  blocked {:>5.1}%",
+            thread.tid,
+            thread.name,
+            thread.on_cpu_share * 100.0,
+            thread.runqueue_share * 100.0,
+            thread.blocked_share * 100.0
+        );
+    }
+    for source in &result.sources {
+        println!(
+            "Source {:?}: {:?}{}",
+            source.source,
+            source.status,
+            source
+                .reason
+                .as_deref()
+                .map_or_else(String::new, |reason| format!(" ({reason})"))
+        );
+    }
+    for item in &result.not_covered {
+        println!("Not covered: {item}");
+    }
+    for warning in &result.warnings {
+        println!("Warning: {}: {}", warning.code, warning.message);
     }
 }

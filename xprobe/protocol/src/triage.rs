@@ -95,7 +95,7 @@ pub struct TriageResult {
     pub status: crate::SessionStatus,
     pub target: crate::TargetIdentity,
     pub window_ms: u64,
-    /// Ranked by estimated share of the window each finding accounts for.
+    /// Ranked by estimated window share; findings without an estimate last.
     pub findings: Vec<TriageFinding>,
     pub threads: ThreadTimeBreakdown,
     pub cgroup: Option<CgroupCpuThrottling>,
@@ -115,8 +115,9 @@ pub struct TriageResult {
 pub struct TriageFinding {
     pub rank: u32,
     pub code: String,
-    /// Estimated share of the window this finding accounts for, in [0, 1].
-    pub impact_share: f64,
+    /// Estimated share of the window this finding accounts for, in [0, 1];
+    /// `null` when the evidence cannot bound the impact.
+    pub impact_share: Option<f64>,
     pub summary: String,
     pub next: Option<TriageNextStep>,
 }

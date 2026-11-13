@@ -6,8 +6,9 @@
 
 use xprobe_protocol::{
     AggregateActivity, AggregateGroup, CgroupCpuThrottling, CpuHotspot, GpuDeviceHealth,
-    MatchPolicy, MeasurementMode, MeasurementSpec, SchemaVersion, SyscallAggregateGroup,
-    TargetIdentity, ThreadTimeBreakdown, TriageFinding, TriageNextKind, TriageNextStep,
+    MatchPolicy, MeasurementMode, MeasurementSpec, PythonSymbolizationStatus, SchemaVersion,
+    SyscallAggregateGroup, TargetIdentity, ThreadTimeBreakdown, TriageFinding, TriageNextKind,
+    TriageNextStep,
 };
 
 /// Throttled time at or above this share of the window is reported.
@@ -26,6 +27,8 @@ pub const SYSCALL_SHARE: f64 = 0.10;
 pub const GPU_BUSY_PCT: f64 = 50.0;
 /// Samples requested by proposed exact measurements.
 pub const NEXT_SAMPLES: u64 = 100;
+/// Upper bound for proposed record capacity; the CLI default `--max-events`.
+pub const MAX_NEXT_EVENTS: u64 = 100_000;
 
 const SLOWDOWN_REASONS: [&str; 5] = [
     "sw_power_cap",
@@ -40,8 +43,14 @@ const SLOWDOWN_REASONS: [&str; 5] = [
 pub struct TriageEvidence<'a> {
     pub target: &'a TargetIdentity,
     pub threads: &'a ThreadTimeBreakdown,
+    /// Configured duration of the syscall and GPU activity captures. Their
+    /// counts and summed durations are relative to this window, not to the
+    /// longer triage wall time that includes attach and teardown.
+    pub collection_window_ns: u64,
     pub cgroup: Option<&'a CgroupCpuThrottling>,
     pub cpu_hotspots: &'a [CpuHotspot],
+    /// Python perf-map status of the CPU sample, when one was collected.
+    pub python_status: Option<PythonSymbolizationStatus>,
     pub syscalls: &'a [SyscallAggregateGroup],
     pub gpu_devices: &'a [GpuDeviceHealth],
     /// Present when CUDA activity was collected for the target.
@@ -57,10 +66,13 @@ pub fn findings(evidence: &TriageEvidence<'_>) -> Vec<TriageFinding> {
     syscall_time(evidence, &mut found);
     gpu_rules(evidence, &mut found);
     found.sort_by(|left, right| {
-        right
-            .impact_share
-            .total_cmp(&left.impact_share)
-            .then_with(|| left.code.cmp(&right.code))
+        match (left.impact_share, right.impact_share) {
+            (Some(left), Some(right)) => right.total_cmp(&left),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| left.code.cmp(&right.code))
     });
     for (rank, finding) in found.iter_mut().enumerate() {
         finding.rank = u32::try_from(rank + 1).unwrap_or(u32::MAX);
@@ -90,7 +102,18 @@ fn finding(
     TriageFinding {
         rank: 0,
         code: code.to_owned(),
-        impact_share: impact_share.clamp(0.0, 1.0),
+        impact_share: Some(impact_share.clamp(0.0, 1.0)),
+        summary,
+        next,
+    }
+}
+
+/// A finding whose share of the window the evidence cannot bound.
+fn unestimated(code: &str, summary: String, next: Option<TriageNextStep>) -> TriageFinding {
+    TriageFinding {
+        rank: 0,
+        code: code.to_owned(),
+        impact_share: None,
         summary,
         next,
     }
@@ -110,6 +133,7 @@ fn measure(
     from: &str,
     to: &str,
     policy: MatchPolicy,
+    max_events: u64,
     description: String,
 ) -> TriageNextStep {
     TriageNextStep {
@@ -125,10 +149,40 @@ fn measure(
             samples: Some(NEXT_SAMPLES),
             duration_ms: None,
             timeout_ms: 30_000,
-            max_events: Some(NEXT_SAMPLES * 4),
+            max_events: Some(max_events),
             measurement_mode: MeasurementMode::Exact,
             max_groups: None,
         }),
+    }
+}
+
+/// Record capacity for an exact capture of an operation observed `count`
+/// times in the triage window: two records per occurrence, with one second of
+/// headroom because live completion is checked from periodic snapshots.
+fn sized_capacity(count: u64, window_ns: u64) -> u64 {
+    let floor = NEXT_SAMPLES * 4;
+    if window_ns == 0 {
+        return floor;
+    }
+    let per_second = u128::from(count) * 2 * 1_000_000_000 / u128::from(window_ns);
+    u64::try_from(per_second)
+        .unwrap_or(u64::MAX)
+        .clamp(floor, MAX_NEXT_EVENTS)
+}
+
+/// A readable frame name: symbol, else module and file offset.
+fn frame_label(frame: &xprobe_protocol::CpuStackFrame) -> String {
+    if let Some(symbol) = &frame.symbol {
+        return symbol.clone();
+    }
+    let module = frame
+        .module_path
+        .as_deref()
+        .map(|path| path.rsplit('/').next().unwrap_or(path));
+    match (module, frame.file_offset) {
+        (Some(module), Some(offset)) => format!("unresolved {module}+{offset:#x}"),
+        (Some(module), None) => format!("unresolved frame in {module}"),
+        _ => format!("unresolved address {:#x}", frame.address),
     }
 }
 
@@ -189,11 +243,7 @@ fn thread_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
                     .total_cmp(&right.exclusive_proportion)
             });
         if let Some(hotspot) = hotspot {
-            let symbol = hotspot
-                .frame
-                .symbol
-                .as_deref()
-                .unwrap_or("an unresolved frame");
+            let symbol = frame_label(&hotspot.frame);
             let impact = busiest.on_cpu_share * hotspot.exclusive_proportion;
             let next = match (&hotspot.entry_selector_hint, &hotspot.return_selector_hint) {
                 (Some(entry), Some(exit)) => Some(measure(
@@ -202,6 +252,7 @@ fn thread_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
                     entry,
                     exit,
                     MatchPolicy::StackNested,
+                    NEXT_SAMPLES * 4,
                     format!("measure each call of {symbol}"),
                 )),
                 _ => None,
@@ -217,6 +268,8 @@ fn thread_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
                 ),
                 next,
             ));
+        } else {
+            found.push(cpu_bound(evidence, busiest.tid, busiest.on_cpu_share));
         }
     }
     if busiest.blocked_share >= BLOCKED_SHARE {
@@ -239,6 +292,47 @@ fn thread_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
     }
 }
 
+/// The busiest thread is on CPU but no single frame crosses the hotspot share.
+fn cpu_bound(evidence: &TriageEvidence<'_>, tid: u32, on_cpu_share: f64) -> TriageFinding {
+    let frames = evidence
+        .cpu_hotspots
+        .iter()
+        .take(3)
+        .map(|hotspot| {
+            format!(
+                "{} {}",
+                frame_label(&hotspot.frame),
+                percent(hotspot.exclusive_proportion)
+            )
+        })
+        .collect::<Vec<_>>();
+    let python_inactive = matches!(
+        evidence.python_status,
+        Some(PythonSymbolizationStatus::Inactive)
+    );
+    let next = python_inactive.then(|| {
+        environment(
+            "restart the interpreter with -X perf (CPython 3.12+) so samples resolve to Python functions"
+                .to_owned(),
+        )
+    });
+    finding(
+        "CPU_BOUND",
+        on_cpu_share,
+        format!(
+            "busiest thread {tid} was on CPU {} of the window, spread across frames ({}); no single frame holds {} of samples",
+            percent(on_cpu_share),
+            if frames.is_empty() {
+                "none sampled".to_owned()
+            } else {
+                frames.join(", ")
+            },
+            percent(HOTSPOT_SHARE)
+        ),
+        next,
+    )
+}
+
 fn top_syscall<'a>(evidence: &TriageEvidence<'a>) -> Option<(&'a SyscallAggregateGroup, f64)> {
     evidence
         .syscalls
@@ -247,7 +341,7 @@ fn top_syscall<'a>(evidence: &TriageEvidence<'a>) -> Option<(&'a SyscallAggregat
         .map(|group| {
             (
                 group,
-                window_share(group.duration_ns.total, evidence.threads.window_ns),
+                window_share(group.duration_ns.total, evidence.collection_window_ns),
             )
         })
 }
@@ -269,6 +363,7 @@ fn syscall_next(
         entry,
         exit,
         MatchPolicy::Exact,
+        sized_capacity(group.count, evidence.collection_window_ns),
         format!("measure each {name} call"),
     ))
 }
@@ -306,6 +401,12 @@ fn gpu_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
         };
         let loaded = device.utilization_max_pct.is_some_and(|max| max > 0);
         let uses_gpu = activity.is_some_and(|groups| !groups.is_empty());
+        let launches = activity
+            .unwrap_or_default()
+            .iter()
+            .filter(|group| group.activity == AggregateActivity::Kernel)
+            .map(|group| group.count)
+            .sum::<u64>();
         if uses_gpu && mean < GPU_BUSY_PCT {
             found.push(finding(
                 "GPU_UNDERUTILIZED",
@@ -320,6 +421,7 @@ fn gpu_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
                     "cuda:runtime_api:cudaLaunchKernel:exit",
                     "cuda:kernel_start",
                     MatchPolicy::Exact,
+                    sized_capacity(launches, evidence.collection_window_ns),
                     "measure launch-to-kernel latency for each launch".to_owned(),
                 )),
             ));
@@ -334,9 +436,8 @@ fn gpu_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
             .cloned()
             .collect::<Vec<_>>();
         if loaded && !slowdowns.is_empty() {
-            found.push(finding(
+            found.push(unestimated(
                 "GPU_CLOCK_LIMITED",
-                mean / 100.0,
                 format!(
                     "GPU {} reported clock slowdowns under load: {}",
                     device.index,
@@ -350,9 +451,8 @@ fn gpu_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
         if let Some(link) = device.pcie.as_ref().filter(|link| {
             loaded && (link.width_min < link.width_max || link.generation_min < link.generation_max)
         }) {
-            found.push(finding(
+            found.push(unestimated(
                 "PCIE_LINK_REDUCED",
-                0.0,
                 format!(
                     "GPU {} PCIe link ran as low as gen {} x{} of gen {} x{}; idle power saving also lowers it, so compare against transfer measurements",
                     device.index,
@@ -406,6 +506,7 @@ fn kernel_dominant(
             &top.start_selector_hint,
             &top.end_selector_hint,
             MatchPolicy::Exact,
+            sized_capacity(top.count, evidence.collection_window_ns),
             format!("measure each {name} execution"),
         )),
     ));
@@ -416,7 +517,8 @@ mod tests {
     use xprobe_protocol::{
         AggregateActivity, AggregateDuration, AggregateGroup, CgroupCpuThrottling, CgroupVersion,
         CpuFrameLanguage, CpuHotspot, CpuStackFrame, GpuDeviceHealth, MatchPolicy, PcieLink,
-        SyscallAggregateGroup, TargetIdentity, ThreadTime, ThreadTimeBreakdown, TriageNextKind,
+        PythonSymbolizationStatus, SyscallAggregateGroup, TargetIdentity, ThreadTime,
+        ThreadTimeBreakdown, TriageNextKind,
     };
 
     use super::{TriageEvidence, findings};
@@ -528,8 +630,10 @@ mod tests {
         let evidence = TriageEvidence {
             target: &target,
             threads: &threads,
+            collection_window_ns: WINDOW,
             cgroup: None,
             cpu_hotspots: &hotspots,
+            python_status: None,
             syscalls: &[],
             gpu_devices: &[],
             gpu_activity: None,
@@ -538,11 +642,90 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].code, "CPU_HOTSPOT");
         assert_eq!(found[0].rank, 1);
-        assert!((found[0].impact_share - 0.36).abs() < 1e-9);
+        assert!((found[0].impact_share.unwrap() - 0.36).abs() < 1e-9);
         let spec = found[0].next.as_ref().unwrap().spec.as_ref().unwrap();
         assert_eq!(spec.start_selector, "uprobe:/srv/app:parse:entry");
         assert_eq!(spec.match_policy, MatchPolicy::StackNested);
         assert_eq!(spec.target, target);
+    }
+
+    #[test]
+    fn sizes_capacity_from_observed_rate() {
+        assert_eq!(super::sized_capacity(10, WINDOW), 400);
+        assert_eq!(super::sized_capacity(3_548, 2 * WINDOW), 3_548);
+        assert_eq!(
+            super::sized_capacity(u64::MAX, WINDOW),
+            super::MAX_NEXT_EVENTS
+        );
+        assert_eq!(super::sized_capacity(10, 0), 400);
+    }
+
+    #[test]
+    fn labels_unresolved_frames_by_module_offset() {
+        let mut frame = hotspot("x", 0.5).frame;
+        frame.symbol = None;
+        frame.module_path = Some("/usr/lib/x86_64-linux-gnu/libcuda.so.1".to_owned());
+        frame.file_offset = Some(0x1a2b);
+        assert_eq!(super::frame_label(&frame), "unresolved libcuda.so.1+0x1a2b");
+        frame.module_path = None;
+        assert_eq!(super::frame_label(&frame), "unresolved address 0x1000");
+    }
+
+    #[test]
+    fn unestimated_findings_rank_after_estimated_ones() {
+        let target = target();
+        let threads = threads(thread(0.1, 0.0));
+        let kernels = [kernel("gemm", 900)];
+        let busy_gpu = [gpu(60.0, &["sw_power_cap"])];
+        let evidence = TriageEvidence {
+            target: &target,
+            threads: &threads,
+            collection_window_ns: WINDOW,
+            cgroup: None,
+            cpu_hotspots: &[],
+            python_status: None,
+            syscalls: &[],
+            gpu_devices: &busy_gpu,
+            gpu_activity: Some(&kernels),
+        };
+        let found = findings(&evidence)
+            .into_iter()
+            .map(|finding| (finding.code, finding.impact_share.is_some()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            [
+                ("THREAD_BLOCKED".to_owned(), true),
+                ("GPU_KERNEL_DOMINANT".to_owned(), true),
+                ("GPU_CLOCK_LIMITED".to_owned(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn spread_cpu_time_is_cpu_bound_with_python_hint() {
+        let target = target();
+        let threads = threads(thread(0.95, 0.0));
+        let hotspots = [hotspot("eval", 0.04), hotspot("add", 0.03)];
+        let evidence = TriageEvidence {
+            target: &target,
+            threads: &threads,
+            collection_window_ns: WINDOW,
+            cgroup: None,
+            cpu_hotspots: &hotspots,
+            python_status: Some(PythonSymbolizationStatus::Inactive),
+            syscalls: &[],
+            gpu_devices: &[],
+            gpu_activity: None,
+        };
+        let found = findings(&evidence);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].code, "CPU_BOUND");
+        assert!(found[0].summary.contains("eval 4%"));
+        assert_eq!(
+            found[0].next.as_ref().map(|next| next.kind),
+            Some(TriageNextKind::Environment)
+        );
     }
 
     #[test]
@@ -574,8 +757,10 @@ mod tests {
         let evidence = TriageEvidence {
             target: &target,
             threads: &threads,
+            collection_window_ns: WINDOW,
             cgroup: Some(&cgroup),
             cpu_hotspots: &[],
+            python_status: None,
             syscalls: &syscalls,
             gpu_devices: &[],
             gpu_activity: None,
@@ -610,8 +795,10 @@ mod tests {
         let base = TriageEvidence {
             target: &target,
             threads: &threads,
+            collection_window_ns: WINDOW,
             cgroup: None,
             cpu_hotspots: &[],
+            python_status: None,
             syscalls: &[],
             gpu_devices: &idle_gpu,
             gpu_activity: None,
@@ -644,7 +831,18 @@ mod tests {
             .iter()
             .find(|finding| finding.code == "GPU_KERNEL_DOMINANT")
             .unwrap();
-        assert!((dominant.impact_share - 0.81).abs() < 1e-9);
+        assert!((dominant.impact_share.unwrap() - 0.81).abs() < 1e-9);
+        assert_eq!(
+            dominant
+                .next
+                .as_ref()
+                .unwrap()
+                .spec
+                .as_ref()
+                .unwrap()
+                .max_events,
+            Some(400)
+        );
         assert_eq!(
             dominant
                 .next

@@ -85,6 +85,9 @@ test-pytorch-live: build
 test-pytorch-cuda-live: build
     if [[ -n "${PYTORCH_ENV:-}" ]]; then python3 tests/integration/test_pytorch_cuda.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV}"; else python3 tests/integration/test_pytorch_cuda.py --image "{{pytorch_image}}"; fi
 
+test-triage-live: build
+    if [[ -n "${PYTORCH_ENV:-}" ]]; then python3 tests/integration/test_triage.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV}"; else python3 tests/integration/test_triage.py --image "{{pytorch_image}}"; fi
+
 test-nvtx-live: build
     python3 tests/integration/test_nvtx.py --image "{{cuda13_devel_image}}"
 
@@ -106,6 +109,7 @@ test-release-live:
     just test-multisource-live
     just test-pytorch-live
     just test-pytorch-cuda-live
+    just test-triage-live
     just benchmark-gpu
     just benchmark-aggregate
     just benchmark-multiprocess

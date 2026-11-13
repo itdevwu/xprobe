@@ -63,19 +63,41 @@ pub(crate) fn run_cpu_sampling_spec(
     inspected: Option<ProcessReport>,
     json: bool,
 ) -> ExitCode {
+    match cpu_inventory(spec, inspected) {
+        Ok(result) => emit_cpu_inventory(&result, json),
+        Err(error) => emit_command_failure(error, json),
+    }
+}
+
+pub(crate) fn cpu_inventory(
+    spec: &CpuSamplingSpec,
+    inspected: Option<ProcessReport>,
+) -> Result<CpuSampleInventoryResult, CommandFailure> {
     let report = match inspected.map_or_else(|| inspect::run(spec.target.pid), Ok) {
         Ok(report) => report,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return Err(CommandFailure::new(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+            ));
         }
     };
     if let Err(error) = inspect::verify_target(&spec.target) {
-        return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        return Err(CommandFailure::new(
+            error.code(),
+            error.to_string(),
+            error.recoverable(),
+        ));
     }
     let validation = match cpu_sampling::validate(&report) {
         Ok(validation) => validation,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return Err(CommandFailure::new(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+            ));
         }
     };
     if !validation.valid {
@@ -83,23 +105,23 @@ pub(crate) fn run_cpu_sampling_spec(
             || "CPU sampling requirements are not satisfied".to_owned(),
             |issue| issue.message.clone(),
         );
-        return emit_error(ErrorCode::PermissionDenied, message, true, json);
+        return Err(CommandFailure::new(
+            ErrorCode::PermissionDenied,
+            message,
+            true,
+        ));
     }
-    let request = match cpu_collector_request(spec) {
-        Ok(request) => request,
-        Err(error) => return emit_command_failure(error, json),
-    };
+    let request = cpu_collector_request(spec)?;
     let capture = match cpu_collector::collect(&request) {
         Ok(capture) => capture,
-        Err(error) => return emit_command_failure(cpu_collector_failure(&error), json),
+        Err(error) => return Err(cpu_collector_failure(&error)),
     };
     if capture.observed_samples == 0 {
-        return emit_error(
+        return Err(CommandFailure::new(
             ErrorCode::NoMatchedSamples,
             "CPU sampling completed without observing an on-CPU sample".to_owned(),
             true,
-            json,
-        );
+        ));
     }
     let capture = CpuCaptureData {
         samples: capture
@@ -128,10 +150,14 @@ pub(crate) fn run_cpu_sampling_spec(
     ) {
         Ok(result) => result,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return Err(CommandFailure::new(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+            ));
         }
     };
-    emit_cpu_inventory(&result, json)
+    Ok(result)
 }
 
 pub(crate) fn cpu_collector_request(
@@ -275,19 +301,41 @@ pub(crate) fn run_syscall_aggregate_spec(
     inspected: Option<ProcessReport>,
     json: bool,
 ) -> ExitCode {
+    match syscall_inventory(spec, inspected) {
+        Ok(result) => emit_syscall_inventory(&result, json),
+        Err(error) => emit_command_failure(error, json),
+    }
+}
+
+pub(crate) fn syscall_inventory(
+    spec: &SyscallAggregateSpec,
+    inspected: Option<ProcessReport>,
+) -> Result<SyscallAggregateResult, CommandFailure> {
     let report = match inspected.map_or_else(|| inspect::run(spec.target.pid), Ok) {
         Ok(report) => report,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return Err(CommandFailure::new(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+            ));
         }
     };
     if let Err(error) = inspect::verify_target(&spec.target) {
-        return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+        return Err(CommandFailure::new(
+            error.code(),
+            error.to_string(),
+            error.recoverable(),
+        ));
     }
     let validation = match syscall_aggregate::validate(&report) {
         Ok(validation) => validation,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return Err(CommandFailure::new(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+            ));
         }
     };
     if !validation.valid {
@@ -295,16 +343,21 @@ pub(crate) fn run_syscall_aggregate_spec(
             || "syscall aggregate requirements are not satisfied".to_owned(),
             |issue| issue.message.clone(),
         );
-        return emit_error(ErrorCode::PermissionDenied, message, true, json);
+        return Err(CommandFailure::new(
+            ErrorCode::PermissionDenied,
+            message,
+            true,
+        ));
     }
-    let request = match syscall_collector_request(spec) {
-        Ok(request) => request,
-        Err(error) => return emit_command_failure(error, json),
-    };
+    let request = syscall_collector_request(spec)?;
     let capture = match syscall_collector::collect(&request) {
         Ok(capture) => capture,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return Err(CommandFailure::new(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+            ));
         }
     };
     let capture = syscall_aggregate::SyscallCaptureData {
@@ -334,10 +387,14 @@ pub(crate) fn run_syscall_aggregate_spec(
     ) {
         Ok(result) => result,
         Err(error) => {
-            return emit_error(error.code(), error.to_string(), error.recoverable(), json);
+            return Err(CommandFailure::new(
+                error.code(),
+                error.to_string(),
+                error.recoverable(),
+            ));
         }
     };
-    emit_syscall_inventory(&result, json)
+    Ok(result)
 }
 
 pub(crate) fn syscall_collector_request(

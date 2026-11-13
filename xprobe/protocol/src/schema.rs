@@ -4,11 +4,12 @@ use crate::{
     AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
     CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
     MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SyscallAggregateResult,
-    SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, ValidationResult,
+    SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, TriageResult,
+    ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 18] {
+pub fn generated_schemas() -> [(&'static str, Schema); 19] {
     [
         ("event.schema.json", schema_for!(Event)),
         ("error.schema.json", schema_for!(ErrorResponse)),
@@ -52,5 +53,6 @@ pub fn generated_schemas() -> [(&'static str, Schema); 18] {
         ("resolve.schema.json", schema_for!(ResolvedProbe)),
         ("validate.schema.json", schema_for!(ValidationResult)),
         ("trace-export.schema.json", schema_for!(TraceExportResult)),
+        ("triage-result.schema.json", schema_for!(TriageResult)),
     ]
 }
