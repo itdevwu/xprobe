@@ -227,6 +227,12 @@ xprobe measure --spec measurement.json \
   --json --non-interactive --no-color
 ```
 
+Same-window triage of an unknown live workload:
+
+```bash
+xprobe measure --pid 4242 --triage --duration-ms 2000
+```
+
 Broad GPU activity inventory:
 
 ```bash
@@ -251,6 +257,26 @@ ELF and `/tmp/perf-<pid>.map` Python symbols are resolved independently.
 `python_status` and resolved/unresolved frame counts prevent native fallback
 from being mislabeled as Python semantic coverage. Lost samples, truncated
 stacks, thread coverage, and capacity pressure remain visible.
+
+`--triage` is live-only, requires `--duration-ms`, and emits
+`schemas/triage-result.schema.json` (schema `3.0`). Within one window it
+concurrently collects procfs per-thread on-CPU, runqueue, and blocked time;
+cgroup CPU throttling; a CPU sample inventory; a syscall aggregate; NVML device
+health (utilization, clock event reasons, temperature, power, PCIe link); and,
+when the target has loaded libcuda, a CUDA kernel aggregate, which may inject
+the CUPTI Agent under the same rules as `measure`. The result keeps the top
+five hotspots, syscall groups, and kernel groups inline and writes each full
+inventory to a private artifact referenced from `sources`. `findings` are
+deterministic and ranked by an estimated share of the window; a finding whose
+impact cannot be bounded has `impact_share: null` and ranks last. Each finding
+carries an environment action or a ready `MeasurementSpec` for `measure
+--spec`, with record capacity sized from the observed rate. A source that is not
+permitted, absent, or exceeds its bounded capacity is `unavailable` with a
+reason and a `TRIAGE_SOURCE_UNAVAILABLE` warning; target exit or reuse, cleanup,
+and internal failures fail the command. `not_covered` lists what triage cannot
+answer, including where blocked threads wait. Blocked time includes idle
+waiting, so read it per thread. NVML utilization is a device-wide sampled
+estimate.
 
 `--syscall-aggregate` is live-only and requires `--duration-ms`. PID-filtered
 raw syscall entry/exit programs retain at most `--max-inflight` thread starts

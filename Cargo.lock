@@ -735,6 +735,7 @@ name = "xprobe-cli"
 version = "0.5.2"
 dependencies = [
  "clap",
+ "serde",
  "serde_json",
  "xprobe-collector",
  "xprobe-core",

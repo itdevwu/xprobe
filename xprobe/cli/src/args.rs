@@ -288,6 +288,10 @@ pub(crate) struct ValidateArgs {
 }
 
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mutually exclusive clap mode flags with declared conflicts"
+)]
 pub(crate) struct MeasureArgs {
     /// Versioned measurement JSON for a live target.
     #[arg(long, conflicts_with_all = ["input", "pid", "from", "to", "match_policy", "cpu_sample", "syscall_aggregate", "samples", "duration_ms", "timeout_ms", "max_events", "max_samples", "frequency_hz", "stack_depth", "max_threads", "max_inflight", "aggregate", "max_groups", "name"])]
@@ -314,13 +318,27 @@ pub(crate) struct MeasureArgs {
     #[arg(long)]
     pub(crate) events_out: Option<PathBuf>,
 
+    /// Triage one bounded window: thread time, cgroup throttling, CPU samples,
+    /// syscall totals, GPU health, and CUDA kernel activity, with ranked
+    /// findings and the next exact measurement. Requires --pid and
+    /// --duration-ms.
+    #[arg(
+        long,
+        requires_all = ["pid", "duration_ms"],
+        conflicts_with_all = [
+            "spec", "input", "from", "to", "match_policy", "samples", "cpu_sample",
+            "syscall_aggregate", "aggregate", "events_out", "format"
+        ]
+    )]
+    pub(crate) triage: bool,
+
     /// Inline matched pairs: `summary` keeps rank exemplars and the artifact
     /// path; `full` also inlines every pair.
     #[arg(
         long,
         value_enum,
         default_value_t = EvidenceArg::Summary,
-        conflicts_with_all = ["cpu_sample", "syscall_aggregate", "aggregate"]
+        conflicts_with_all = ["cpu_sample", "syscall_aggregate", "aggregate", "triage"]
     )]
     pub(crate) evidence: EvidenceArg,
 

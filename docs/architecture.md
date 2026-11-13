@@ -59,7 +59,10 @@ the resolver checks exported dynamic symbols first, falls back to the complete
 table, and returns both the attachable mangled name and readable signature.
 
 CPU stack analysis resolves sampled instruction pointers through the target's
-mapped ELF load segments and symbol tables. CPython frames are resolved
+mapped ELF load segments and symbol tables. Only modules containing retained
+sampled addresses are read, and only the symbols containing those offsets are
+demangled; lookup still uses each module's complete text-symbol table, so
+zero-size symbols keep their next-symbol bound. CPython frames are resolved
 independently from `/tmp/perf-<pid>.map` when the interpreter exposes an active
 perf trampoline. Native coverage remains usable when Python semantic symbols
 are inactive or unsupported. CPython GC resolution parses `.note.stapsdt` from
@@ -148,6 +151,13 @@ Broad inventory remains in the foreground `measure` primitive. CPU sampling,
 syscall aggregation, and GPU aggregation have separate result schemas because
 their quality and capacity meanings differ. Their groups are hypotheses for a
 later validated exact capture, not event timelines that can be re-correlated.
+
+Triage runs these inventories concurrently in one foreground `measure`, between
+two procfs `schedstat` and cgroup `cpu.stat` snapshots, while sampling NVML
+through `nvidia-smi`. Deterministic rules in core turn the summaries into ranked
+findings with a proposed exact `MeasurementSpec`. Each full inventory stays in
+its own artifact with its own contract; the triage result references them
+instead of merging them into one timeline.
 
 Broad GPU inventory uses aggregate mode. The
 Agent updates a `--max-groups`-bounded table for matching kernel, memcpy, or

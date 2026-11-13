@@ -7,7 +7,7 @@ use xprobe_protocol::{
     CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
     MeasurementResult, MeasurementSpec, ProcessReport, ResolvedLinuxSelector, ResolvedProbe,
     SyscallAggregateResult, SyscallAggregateSpec, SyscallAggregateValidationResult,
-    TraceExportResult, ValidationResult, schema::generated_schemas,
+    TraceExportResult, TriageResult, ValidationResult, schema::generated_schemas,
 };
 
 fn assert_round_trip<T>(fixture: &Value)
@@ -721,4 +721,97 @@ fn unsupported_schema_versions_are_rejected() {
     }));
 
     assert!(result.is_err());
+}
+
+#[test]
+fn triage_result_contract_round_trips() {
+    assert_round_trip::<TriageResult>(&json!({
+        "schema_version": "3.0",
+        "ok": true,
+        "session_id": "xp_triage_1",
+        "status": "completed",
+        "target": {"pid": 42, "process_start_time": 9},
+        "window_ms": 2100,
+        "findings": [
+            {
+                "rank": 1,
+                "code": "CPU_HOTSPOT",
+                "impact_share": 0.36,
+                "summary": "busiest thread 7 was on CPU 90% of the window",
+                "next": {
+                    "kind": "measure",
+                    "description": "measure each call of parse",
+                    "spec": {
+                        "schema_version": "2.0",
+                        "name": "hotspot_duration",
+                        "target": {"pid": 42, "process_start_time": 9},
+                        "start_selector": "uprobe:/srv/app:parse:entry",
+                        "end_selector": "uprobe:/srv/app:parse:return",
+                        "match_policy": "stack_nested",
+                        "samples": 100,
+                        "duration_ms": null,
+                        "timeout_ms": 30000,
+                        "max_events": 400,
+                        "measurement_mode": "exact",
+                        "max_groups": null
+                    }
+                }
+            },
+            {
+                "rank": 2,
+                "code": "GPU_CLOCK_LIMITED",
+                "impact_share": null,
+                "summary": "GPU 0 reported clock slowdowns under load: sw_power_cap",
+                "next": {"kind": "environment", "description": "check cooling", "spec": null}
+            }
+        ],
+        "threads": {
+            "window_ns": 2_100_000_000_u64,
+            "threads_observed": 1,
+            "threads_started": 0,
+            "threads_exited": 0,
+            "on_cpu_ns": 1_890_000_000_u64,
+            "runqueue_ns": 0,
+            "blocked_ns": 210_000_000,
+            "top_threads": [{
+                "tid": 7,
+                "name": "worker",
+                "on_cpu_ns": 1_890_000_000_u64,
+                "runqueue_ns": 0,
+                "blocked_ns": 210_000_000,
+                "on_cpu_share": 0.9,
+                "runqueue_share": 0.0,
+                "blocked_share": 0.1
+            }]
+        },
+        "cgroup": {
+            "version": "v2",
+            "cgroup_path": "/",
+            "quota_cpus": 0.5,
+            "periods": 21,
+            "throttled_periods": 0,
+            "throttled_ns": 0
+        },
+        "cpu_hotspots": [],
+        "syscalls": [],
+        "gpu_devices": [{
+            "index": 0,
+            "uuid": "GPU-a",
+            "samples": 9,
+            "utilization_mean_pct": 54.0,
+            "utilization_max_pct": 61,
+            "memory_utilization_mean_pct": 12.5,
+            "clock_event_reasons": ["sw_power_cap"],
+            "temperature_max_c": 71,
+            "power_max_w": 80.5,
+            "pcie": {"generation_min": 4, "generation_max": 4, "width_min": 8, "width_max": 16}
+        }],
+        "gpu_activity": [],
+        "sources": [
+            {"source": "thread_time", "status": "collected", "reason": null, "artifact": null},
+            {"source": "gpu_activity", "status": "skipped", "reason": "the target has not loaded libcuda", "artifact": null}
+        ],
+        "not_covered": ["where blocked threads wait"],
+        "warnings": []
+    }));
 }

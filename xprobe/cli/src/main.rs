@@ -27,6 +27,7 @@ mod failure;
 mod inventory;
 mod live;
 mod render;
+mod triage;
 
 use args::{
     Cli, Command, CommonOutputArgs, DiscoverArgs, DoctorArgs, ExportFormatArg, MeasureArgs,
@@ -76,6 +77,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         cupti_socket,
         agent,
         events_out,
+        triage,
         evidence,
         format,
         timeout_ms,
@@ -107,6 +109,21 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         format,
         mode: evidence.mode(),
     };
+    if triage {
+        let (Some(pid), Some(duration_ms)) = (pid, duration_ms) else {
+            unreachable!("clap requires --pid and --duration-ms with --triage");
+        };
+        return triage::run_triage(
+            &triage::TriageRequest {
+                pid,
+                duration_ms,
+                timeout_ms,
+                cupti_socket,
+                agent_path: agent,
+            },
+            json,
+        );
+    }
     if let Some(spec) = spec {
         return run_measure_spec(&spec, cupti_socket, agent, output, json);
     }
@@ -548,6 +565,11 @@ impl EvidenceOutput<'_> {
 }
 
 fn default_artifact_path() -> Result<PathBuf, CommandFailure> {
+    Ok(private_artifact_dir()?.join("events.jsonl"))
+}
+
+/// Create a new mode `0700` directory for one command's artifacts.
+fn private_artifact_dir() -> Result<PathBuf, CommandFailure> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
@@ -566,7 +588,7 @@ fn default_artifact_path() -> Result<PathBuf, CommandFailure> {
             )
             .with_hint("pass --events-out PATH to choose a writable artifact location")
         })?;
-    Ok(directory.join("events.jsonl"))
+    Ok(directory)
 }
 
 fn finish_measurement(
