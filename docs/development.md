@@ -57,8 +57,13 @@ creating a tag, run the complete live suite on the local NVIDIA development
 machine:
 
 ```bash
-PYTORCH_ENV=/path/to/pytorch-env just test-release-live
+mamba env create --file environment-pytorch.yml
+PYTORCH_ENV="$(mamba run -n xprobe-pytorch python -c 'import sys; print(sys.prefix)')" \
+  just test-release-live
 ```
+
+`environment-pytorch.yml` pins the PyTorch fixture: Python 3.11, because
+torch 2.3 Dynamo does not support 3.12, plus Triton and NumPy 1.x.
 
 This local gate covers BPF and perf attachment, CUDA 12 and 13 behavior,
 injection, NVTX, mixed host/GPU collection, PyTorch, concurrent workers, and
@@ -129,9 +134,10 @@ just test-pytorch-live
 
 By default the live recipes use a pinned NVIDIA PyTorch image with Ubuntu 24.04
 and CUDA 12.9, so live checks do not depend on the host Mamba environment.
-During local development, set `PYTORCH_ENV=/path/to/env` to mount
-an existing environment into the already-pinned CUDA fixtures instead of
-pulling the PyTorch image. Run eager matrix multiplication, convolution,
+During local development, set `PYTORCH_ENV` to the `xprobe-pytorch`
+environment to mount it into the already-pinned CUDA fixtures instead of
+pulling the PyTorch image. The compiled-Triton case checks Dynamo, Triton, and
+NumPy support before starting and fails with an explicit message otherwise. Run eager matrix multiplication, convolution,
 compiled Triton, bidirectional transfer, selected-kernel, and
 stream-synchronization profiling on the local GPU. The test also wraps an eager
 operation in an NVTX range and verifies exact range-ID matching:

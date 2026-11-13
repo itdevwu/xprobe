@@ -1,0 +1,17 @@
+name: xprobe-pytorch
+
+# Local PyTorch fixture for PYTORCH_ENV live tests and benchmarks. Dynamo
+# (torch.compile) in torch 2.3 supports Python 3.11 but not 3.12.
+channels:
+  - https://conda.anaconda.org/conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --index-url https://download.pytorch.org/whl/cu121
+      - --extra-index-url https://pypi.org/simple
+      - torch==2.3.0
+      - triton==2.3.0
+      - numpy<2
