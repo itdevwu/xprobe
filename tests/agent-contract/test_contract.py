@@ -74,7 +74,7 @@ def check_skill(workspace: pathlib.Path) -> None:
     ):
         assert adaptive_rule in normalized_skill
     for invariant in (
-        "schema version `2.0`",
+        "Measurement results use schema version `3.0`",
         "PID plus procfs start time",
         "Pass the selected exact endpoints through read-only `validate`",
         "Bound every capture",
