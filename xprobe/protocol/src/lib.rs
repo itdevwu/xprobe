@@ -12,6 +12,7 @@ mod process;
 mod resolve;
 pub mod schema;
 mod syscall_aggregate;
+mod triage;
 mod validate;
 mod version;
 
@@ -47,6 +48,9 @@ pub use syscall_aggregate::{
     SyscallAggregateCollectionSummary, SyscallAggregateCompleteness, SyscallAggregateGroup,
     SyscallAggregateInventory, SyscallAggregateRequirements, SyscallAggregateResult,
     SyscallAggregateSpec, SyscallAggregateValidationResult,
+};
+pub use triage::{
+    CgroupCpuThrottling, CgroupVersion, GpuDeviceHealth, PcieLink, ThreadTime, ThreadTimeBreakdown,
 };
 pub use validate::{
     AgentActivation, EndpointSource, PolicyRecommendation, PolicyRecommendationReason,
