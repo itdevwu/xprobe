@@ -75,9 +75,16 @@
   digest, testing installation, and inspecting all shipped ELF compatibility.
 - Retry CI only when logs identify a transient infrastructure failure. Preserve
   real compiler, test, packaging, and compatibility failures for diagnosis.
+- Pin Rust in `rust-toolchain.toml`. Change the pin only in a dedicated change
+  and rerun lint and tests under the new compiler.
 
 ## Verification
 
+- Run `just` recipes inside the `xprobe-dev` Mamba environment from
+  `environment.yml`, for example `mamba run -n xprobe-dev just test`. A bare
+  host shell may lack Clang, Ninja, and autotools.
+- Set `PYTORCH_ENV` to an environment created from `environment-pytorch.yml`
+  for PyTorch live gates and `just test-release-live`.
 - Run `just fmt-check`, `just lint`, and `just test` for Rust changes.
 - Run `just test-bpf-live` for BPF attachment changes.
 - Run `just test-cupti-live` for CUPTI ABI or callback changes.
