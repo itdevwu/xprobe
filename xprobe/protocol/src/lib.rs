@@ -51,6 +51,8 @@ pub use syscall_aggregate::{
 };
 pub use triage::{
     CgroupCpuThrottling, CgroupVersion, GpuDeviceHealth, PcieLink, ThreadTime, ThreadTimeBreakdown,
+    TriageFinding, TriageNextKind, TriageNextStep, TriageResult, TriageSource, TriageSourceKind,
+    TriageSourceStatus,
 };
 pub use validate::{
     AgentActivation, EndpointSource, PolicyRecommendation, PolicyRecommendationReason,

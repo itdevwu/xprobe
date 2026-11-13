@@ -13,5 +13,6 @@ pub mod inspect;
 pub mod resolve;
 pub mod syscall_aggregate;
 pub mod thread_time;
+pub mod triage;
 mod usdt;
 pub mod validate;
