@@ -7,8 +7,54 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "xprobe", version, about = "Runtime host-to-GPU latency probe")]
 pub(crate) struct Cli {
+    /// Print human-readable output even when stdout is not a terminal.
+    #[arg(long, global = true)]
+    pub(crate) human: bool,
+
     #[command(subcommand)]
     pub(crate) command: Command,
+}
+
+impl Cli {
+    /// Choose the output form. JSON is the default whenever stdout is not a
+    /// terminal, so agents and pipelines need no flags; `--human` keeps text.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when `--human` and `--json` are both set.
+    pub(crate) fn resolve_output(&mut self, stdout_is_terminal: bool) -> Result<(), &'static str> {
+        let human = self.human;
+        let Some(json) = self.command.json_flag() else {
+            return Ok(());
+        };
+        if human && *json {
+            return Err("--human cannot be used with --json");
+        }
+        if !human && !stdout_is_terminal {
+            *json = true;
+        }
+        Ok(())
+    }
+}
+
+impl Command {
+    fn json_flag(&mut self) -> Option<&mut bool> {
+        match self {
+            Self::Doctor(args) => Some(&mut args.json),
+            Self::Discover(args) => Some(&mut args.json),
+            Self::Inspect(args) => Some(&mut args.json),
+            Self::Resolve(args) => Some(&mut args.json),
+            Self::Validate(args) => Some(&mut args.output.json),
+            Self::Measure(args) => Some(&mut args.output.json),
+            Self::Trace(args) => Some(&mut args.json),
+            Self::Export(args) => Some(&mut args.json),
+            Self::Capture(args) | Self::Dev(args) => match &mut args.command {
+                DevCommand::Uprobe(args) if args.output.jsonl => None,
+                DevCommand::Uprobe(args) => Some(&mut args.output.json),
+                DevCommand::Cupti(args) => Some(&mut args.json),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -57,7 +103,8 @@ pub(crate) struct TraceArgs {
     #[arg(long, hide = true)]
     pub(crate) cupti_socket: Option<PathBuf>,
 
-    /// Emit only the versioned JSON result on stdout.
+    /// Emit only the versioned JSON result on stdout (default when stdout is
+    /// not a terminal).
     #[arg(long)]
     pub(crate) json: bool,
 
@@ -128,7 +175,8 @@ pub(crate) enum DevCommand {
 
 #[derive(Debug, Clone, Copy, Args)]
 pub(crate) struct DoctorArgs {
-    /// Emit only the versioned JSON result on stdout.
+    /// Emit only the versioned JSON result on stdout (default when stdout is
+    /// not a terminal).
     #[arg(long)]
     pub(crate) json: bool,
 
@@ -151,7 +199,8 @@ pub(crate) struct DiscoverArgs {
     #[arg(long, default_value_t = 200)]
     pub(crate) limit: usize,
 
-    /// Emit only the versioned JSON result on stdout.
+    /// Emit only the versioned JSON result on stdout (default when stdout is
+    /// not a terminal).
     #[arg(long)]
     pub(crate) json: bool,
 
@@ -170,7 +219,8 @@ pub(crate) struct InspectArgs {
     #[arg(long)]
     pub(crate) pid: u32,
 
-    /// Emit only the versioned JSON result on stdout.
+    /// Emit only the versioned JSON result on stdout (default when stdout is
+    /// not a terminal).
     #[arg(long)]
     pub(crate) json: bool,
 
@@ -193,7 +243,8 @@ pub(crate) struct ResolveArgs {
     #[arg(long, alias = "event")]
     pub(crate) selector: String,
 
-    /// Emit only the versioned JSON result on stdout.
+    /// Emit only the versioned JSON result on stdout (default when stdout is
+    /// not a terminal).
     #[arg(long)]
     pub(crate) json: bool,
 
@@ -376,7 +427,8 @@ pub(crate) struct MeasureArgs {
 
 #[derive(Debug, Clone, Copy, Args)]
 pub(crate) struct CommonOutputArgs {
-    /// Emit only the versioned JSON result on stdout.
+    /// Emit only the versioned JSON result on stdout (default when stdout is
+    /// not a terminal).
     #[arg(long)]
     pub(crate) json: bool,
 
@@ -433,7 +485,8 @@ pub(crate) struct UprobeArgs {
 
 #[derive(Debug, Clone, Copy, Args)]
 pub(crate) struct EventOutputArgs {
-    /// Emit only the versioned JSON result on stdout.
+    /// Emit only the versioned JSON result on stdout (default when stdout is
+    /// not a terminal).
     #[arg(long)]
     pub(crate) json: bool,
 
@@ -471,4 +524,65 @@ pub(crate) struct CuptiArgs {
     /// Never wait for user input.
     #[arg(long)]
     pub(crate) non_interactive: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Command};
+
+    fn json(arguments: &[&str], terminal: bool) -> Result<bool, &'static str> {
+        let mut cli = Cli::try_parse_from(arguments).expect("arguments must parse");
+        cli.resolve_output(terminal)?;
+        Ok(match cli.command {
+            Command::Doctor(args) => args.json,
+            Command::Measure(args) => args.output.json,
+            _ => unreachable!("test covers doctor and measure"),
+        })
+    }
+
+    #[test]
+    fn defaults_to_json_only_when_stdout_is_not_a_terminal() {
+        assert_eq!(json(&["xprobe", "doctor"], false), Ok(true));
+        assert_eq!(json(&["xprobe", "doctor"], true), Ok(false));
+        assert_eq!(json(&["xprobe", "doctor", "--json"], true), Ok(true));
+        assert_eq!(
+            json(&["xprobe", "measure", "--input", "a.jsonl"], false),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn human_keeps_text_output_and_conflicts_with_json() {
+        assert_eq!(json(&["xprobe", "doctor", "--human"], false), Ok(false));
+        assert_eq!(json(&["xprobe", "--human", "doctor"], false), Ok(false));
+        assert!(json(&["xprobe", "doctor", "--human", "--json"], true).is_err());
+    }
+
+    #[test]
+    fn leaves_jsonl_event_streams_alone() {
+        let mut cli = Cli::try_parse_from([
+            "xprobe",
+            "dev",
+            "uprobe",
+            "--pid",
+            "1",
+            "--binary",
+            "/bin/true",
+            "--symbol",
+            "main",
+            "--jsonl",
+        ])
+        .expect("uprobe arguments must parse");
+        cli.resolve_output(false).expect("jsonl output is valid");
+        let Command::Dev(args) = cli.command else {
+            unreachable!("dev command parsed")
+        };
+        let super::DevCommand::Uprobe(args) = args.command else {
+            unreachable!("uprobe parsed")
+        };
+        assert!(args.output.jsonl);
+        assert!(!args.output.json);
+    }
 }

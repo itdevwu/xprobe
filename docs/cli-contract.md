@@ -5,12 +5,16 @@ and `measure`.
 
 ## Common behavior
 
-All commands support `--json --non-interactive --no-color`. JSON mode writes one
-versioned document to stdout. Diagnostics, including the online-injection
-warning, go to stderr. Commands never prompt.
+When stdout is not a terminal, every command writes one versioned JSON document
+to stdout; on a terminal it prints a human-readable report. `--json` forces
+JSON and `--human` forces the report; they cannot be combined.
+`--non-interactive` and `--no-color` are accepted for compatibility: commands
+never prompt and never color. Diagnostics, including the online-injection
+warning, go to stderr.
 
-All success and error records carry `schema_version: "2.0"`. Unknown JSON
-fields and unsupported schema versions are rejected. xprobe maintains only the
+Measurement results carry `schema_version: "3.0"`; every other success record,
+error record, and Event JSONL line carries `"2.0"`. Unknown JSON fields and
+unsupported schema versions are rejected. xprobe maintains only the
 current schema during the pre-1.0 protocol transition.
 
 | Exit | Meaning |
