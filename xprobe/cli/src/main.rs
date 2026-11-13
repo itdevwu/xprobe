@@ -1,5 +1,6 @@
 use std::{
     fs::{self, DirBuilder},
+    io::{self, IsTerminal},
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -9,7 +10,7 @@ use std::{
 
 static EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use xprobe_collector::completed;
 use xprobe_core::{cpu_sampling, discover, doctor, inspect, syscall_aggregate, validate};
 use xprobe_correlator::{MeasureOptions, finalize, measure};
@@ -47,7 +48,12 @@ use render::{
 };
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if let Err(message) = cli.resolve_output(io::stdout().is_terminal()) {
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
     match cli.command {
         Command::Doctor(args) => run_doctor(args),
         Command::Discover(args) => run_discover(args),
