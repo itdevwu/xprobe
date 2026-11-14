@@ -8,6 +8,7 @@ pub mod discover;
 pub mod doctor;
 pub mod gpu_aggregate;
 pub mod gpu_health;
+pub mod graph;
 pub mod inject;
 pub mod inspect;
 pub mod resolve;

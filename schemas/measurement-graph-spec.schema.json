@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MeasurementGraphSpec",
+  "description": "Several start/end edges measured from one bounded capture of one process.\n\nEndpoints are named once and shared by edges. Each edge is correlated\nindependently; a graph never joins edges into per-request paths.",
+  "type": "object",
+  "properties": {
+    "duration_ms": {
+      "description": "Stop collection after this window; required unless every edge sets\n`samples`.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphEdgeSpec"
+      }
+    },
+    "endpoints": {
+      "description": "Endpoint name to event selector.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "max_events": {
+      "description": "Record capacity of the whole shared capture.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion3"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "target",
+    "endpoints",
+    "edges",
+    "timeout_ms"
+  ],
+  "$defs": {
+    "GraphEdgeSpec": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "match_policy": {
+          "$ref": "#/$defs/MatchPolicy"
+        },
+        "name": {
+          "type": "string"
+        },
+        "samples": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "from",
+        "to",
+        "match_policy"
+      ]
+    },
+    "MatchPolicy": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "first_after",
+        "nearest",
+        "stack_nested",
+        "stream_order"
+      ]
+    },
+    "SchemaVersion3": {
+      "description": "Version of records whose shape changed in xprobe 0.6.\n\nRecords keep their own version so unchanged contracts, such as Event JSONL\nartifacts, remain readable at `2.0`.",
+      "type": "string",
+      "enum": [
+        "3.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    }
+  }
+}

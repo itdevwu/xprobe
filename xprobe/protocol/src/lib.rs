@@ -7,6 +7,7 @@ mod discover;
 mod error;
 mod event;
 mod export;
+mod graph;
 mod measurement;
 mod process;
 mod resolve;
@@ -33,6 +34,12 @@ pub use event::{
     HostProbeKind, MemcpyKind, NvtxEvent, NvtxRangeKind,
 };
 pub use export::{ExportFormat, TraceExportResult};
+pub use graph::{
+    GRAPH_MAX_EDGES, GRAPH_MAX_ENDPOINTS, GRAPH_MAX_LINUX_ENDPOINTS, GraphEdgeResult,
+    GraphEdgeSpec, GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope,
+    GraphValidationIssue, MeasurementGraphResult, MeasurementGraphSpec,
+    MeasurementGraphValidationResult,
+};
 pub use measurement::{
     AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
     AggregateInventory, AggregateInventoryResult, CaptureCompleteness, ClockQuality,
