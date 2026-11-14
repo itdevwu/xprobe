@@ -1,0 +1,1083 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MeasurementGraphResult",
+  "description": "Per-edge results from one shared bounded capture.",
+  "type": "object",
+  "properties": {
+    "artifact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvidenceArtifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "collection": {
+      "description": "The shared capture every edge was correlated from.",
+      "$ref": "#/$defs/CollectionSummary"
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphEdgeResult"
+      }
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion3"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "session_id",
+    "status",
+    "target",
+    "edges",
+    "collection"
+  ],
+  "$defs": {
+    "ArgumentValue": {
+      "type": "object",
+      "properties": {
+        "abi_type": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "read_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "abi_type"
+      ]
+    },
+    "CaptureCompleteness": {
+      "type": "string",
+      "enum": [
+        "complete"
+      ]
+    },
+    "ClockDomain": {
+      "type": "string",
+      "enum": [
+        "host_monotonic",
+        "cupti",
+        "cupti_normalized_to_host_monotonic"
+      ]
+    },
+    "ClockQuality": {
+      "type": "object",
+      "properties": {
+        "alignment": {
+          "type": "string"
+        },
+        "estimated_error_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "alignment"
+      ]
+    },
+    "CollectionSummary": {
+      "type": "object",
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/CaptureCompleteness"
+        },
+        "cuda_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cupti": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CuptiCollectionSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dropped_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "host_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "completeness",
+        "host_events",
+        "cuda_events",
+        "dropped_events"
+      ]
+    },
+    "CorrelationConfidence": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "high",
+        "heuristic",
+        "ambiguous"
+      ]
+    },
+    "CorrelationSummary": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/CorrelationConfidence"
+        },
+        "method": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "confidence",
+        "score"
+      ]
+    },
+    "CudaEvent": {
+      "type": "object",
+      "properties": {
+        "block": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dim3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "callback_domain": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "callback_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "context_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "correlation_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "device_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "grid": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dim3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kernel_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kernel_name_mangled": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memcpy_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemcpyKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime_correlation_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stream_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "CuptiCollectionSummary": {
+      "type": "object",
+      "properties": {
+        "buffer_utilization": {
+          "type": "number",
+          "format": "double"
+        },
+        "dropped_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "observed_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "record_capacity": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retained_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record_capacity",
+        "observed_records",
+        "retained_records",
+        "dropped_records",
+        "buffer_utilization"
+      ]
+    },
+    "Dim3": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "z": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "attributes": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "clock_domain": {
+          "$ref": "#/$defs/ClockDomain"
+        },
+        "cpu": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cuda": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CudaEvent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HostEvent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nvtx": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NvtxEvent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/EventSource"
+        },
+        "tid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "timestamp_error_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timestamp_raw": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "session_id",
+        "event_id",
+        "sequence",
+        "source",
+        "event_type",
+        "pid",
+        "tid",
+        "timestamp_raw",
+        "timestamp_ns",
+        "clock_domain"
+      ]
+    },
+    "EventSource": {
+      "type": "string",
+      "enum": [
+        "ebpf",
+        "cupti_callback",
+        "cupti_activity",
+        "marker"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "host_function_entry",
+        "host_function_exit",
+        "kernel_function_entry",
+        "kernel_function_exit",
+        "tracepoint",
+        "syscall_entry",
+        "syscall_exit",
+        "cuda_api_entry",
+        "cuda_api_exit",
+        "gpu_kernel_start",
+        "gpu_kernel_end",
+        "gpu_memcpy_start",
+        "gpu_memcpy_end",
+        "gpu_memset_start",
+        "gpu_memset_end",
+        "nvtx_range_start",
+        "nvtx_range_end",
+        "python_gc_start",
+        "python_gc_end",
+        "marker"
+      ]
+    },
+    "Evidence": {
+      "description": "Matched pair evidence. `summary` keeps representative exemplars inline and\nreferences the bounded capture artifact; `full` also inlines every pair.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exemplars": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceExemplar"
+          }
+        },
+        "mode": {
+          "$ref": "#/$defs/EvidenceMode"
+        },
+        "pairs": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/MatchedEventPair"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "exemplars"
+      ]
+    },
+    "EvidenceArtifact": {
+      "description": "Bounded capture written by `measure`; re-correlate it with `measure --input`.",
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "format": {
+          "$ref": "#/$defs/ExportFormat"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "format",
+        "events"
+      ]
+    },
+    "EvidenceExemplar": {
+      "description": "One matched pair selected for a latency rank. Ranks use the same\nnearest-rank indices as `measurement.latency_ns`, so an exemplar's latency\nequals the reported statistic.",
+      "type": "object",
+      "properties": {
+        "pair": {
+          "$ref": "#/$defs/MatchedEventPair"
+        },
+        "ranks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LatencyRank"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ranks",
+        "pair"
+      ]
+    },
+    "EvidenceMode": {
+      "type": "string",
+      "enum": [
+        "summary",
+        "full"
+      ]
+    },
+    "ExportFormat": {
+      "type": "string",
+      "enum": [
+        "jsonl",
+        "chrome"
+      ]
+    },
+    "GraphEdgeResult": {
+      "type": "object",
+      "properties": {
+        "clock": {
+          "$ref": "#/$defs/ClockQuality"
+        },
+        "correlation": {
+          "$ref": "#/$defs/CorrelationSummary"
+        },
+        "end_selector": {
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Exemplars and optional full pairs; the artifact is graph-level.",
+          "$ref": "#/$defs/Evidence"
+        },
+        "from": {
+          "type": "string"
+        },
+        "measurement": {
+          "$ref": "#/$defs/Measurement"
+        },
+        "name": {
+          "type": "string"
+        },
+        "quality": {
+          "$ref": "#/$defs/ResultQuality"
+        },
+        "start_selector": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "warnings": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Warning"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "from",
+        "to",
+        "start_selector",
+        "end_selector",
+        "measurement",
+        "quality",
+        "correlation",
+        "clock",
+        "evidence"
+      ]
+    },
+    "HostEvent": {
+      "type": "object",
+      "properties": {
+        "arguments": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArgumentValue"
+          }
+        },
+        "binary_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "probe_kind": {
+          "$ref": "#/$defs/HostProbeKind"
+        },
+        "return_value": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol_demangled": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "probe_kind"
+      ]
+    },
+    "HostProbeKind": {
+      "type": "string",
+      "enum": [
+        "uprobe",
+        "uretprobe",
+        "kprobe",
+        "kretprobe",
+        "tracepoint",
+        "syscall",
+        "usdt"
+      ]
+    },
+    "LatencyRank": {
+      "type": "string",
+      "enum": [
+        "min",
+        "p50",
+        "p90",
+        "p99",
+        "max"
+      ]
+    },
+    "LatencyStatistics": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mean": {
+          "type": "number",
+          "format": "double"
+        },
+        "min": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p50": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p90": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p95": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p99": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "mean",
+        "p50",
+        "p90",
+        "p95",
+        "p99",
+        "max"
+      ]
+    },
+    "MatchedEventPair": {
+      "type": "object",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/Event"
+        },
+        "latency_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start": {
+          "$ref": "#/$defs/Event"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "latency_ns"
+      ]
+    },
+    "Measurement": {
+      "type": "object",
+      "properties": {
+        "latency_ns": {
+          "$ref": "#/$defs/LatencyStatistics"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "samples": {
+          "$ref": "#/$defs/SampleSummary"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "samples",
+        "latency_ns"
+      ]
+    },
+    "MemcpyKind": {
+      "type": "string",
+      "enum": [
+        "HtoD",
+        "DtoH",
+        "DtoD",
+        "HtoH",
+        "PtoP",
+        "unknown"
+      ]
+    },
+    "NvtxEvent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "name_complete": {
+          "type": "boolean"
+        },
+        "range_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "range_kind": {
+          "$ref": "#/$defs/NvtxRangeKind"
+        },
+        "start_tid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "name_complete",
+        "range_kind",
+        "range_id",
+        "start_tid"
+      ]
+    },
+    "NvtxRangeKind": {
+      "type": "string",
+      "enum": [
+        "thread",
+        "process"
+      ]
+    },
+    "QualityIssue": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/QualitySeverity"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ]
+    },
+    "QualitySeverity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "caution"
+      ]
+    },
+    "QualityVerdict": {
+      "oneOf": [
+        {
+          "description": "No caution-level issue; info issues may still be listed.",
+          "type": "string",
+          "const": "good"
+        },
+        {
+          "description": "At least one issue limits how the latency may be interpreted.",
+          "type": "string",
+          "const": "caution"
+        }
+      ]
+    },
+    "ResultQuality": {
+      "description": "Deterministic interpretation of the result's quality fields.",
+      "type": "object",
+      "properties": {
+        "issues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QualityIssue"
+          }
+        },
+        "verdict": {
+          "$ref": "#/$defs/QualityVerdict"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "issues"
+      ]
+    },
+    "SampleSummary": {
+      "type": "object",
+      "properties": {
+        "ambiguous": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "dropped": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "matched": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unmatched_end": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unmatched_start": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "matched",
+        "unmatched_start",
+        "unmatched_end",
+        "ambiguous",
+        "dropped"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "2.0"
+      ]
+    },
+    "SchemaVersion3": {
+      "description": "Version of records whose shape changed in xprobe 0.6.\n\nRecords keep their own version so unchanged contracts, such as Event JSONL\nartifacts, remain readable at `2.0`.",
+      "type": "string",
+      "enum": [
+        "3.0"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "timed_out",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

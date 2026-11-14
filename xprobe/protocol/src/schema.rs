@@ -3,13 +3,14 @@ use schemars::{Schema, schema_for};
 use crate::{
     AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
     CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
+    MeasurementGraphResult, MeasurementGraphSpec, MeasurementGraphValidationResult,
     MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SyscallAggregateResult,
     SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, TriageResult,
     ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 19] {
+pub fn generated_schemas() -> [(&'static str, Schema); 22] {
     [
         ("event.schema.json", schema_for!(Event)),
         ("error.schema.json", schema_for!(ErrorResponse)),
@@ -54,5 +55,17 @@ pub fn generated_schemas() -> [(&'static str, Schema); 19] {
         ("validate.schema.json", schema_for!(ValidationResult)),
         ("trace-export.schema.json", schema_for!(TraceExportResult)),
         ("triage-result.schema.json", schema_for!(TriageResult)),
+        (
+            "measurement-graph-spec.schema.json",
+            schema_for!(MeasurementGraphSpec),
+        ),
+        (
+            "measurement-graph-validate.schema.json",
+            schema_for!(MeasurementGraphValidationResult),
+        ),
+        (
+            "measurement-graph-result.schema.json",
+            schema_for!(MeasurementGraphResult),
+        ),
     ]
 }
