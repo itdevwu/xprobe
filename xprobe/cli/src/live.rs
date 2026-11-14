@@ -28,6 +28,7 @@ use xprobe_protocol::AggregateActivity;
 use xprobe_protocol::AggregateInventoryResult;
 use xprobe_protocol::CuptiCollectionSummary;
 use xprobe_protocol::ErrorCode;
+use xprobe_protocol::Event;
 use xprobe_protocol::EventType;
 use xprobe_protocol::HostCaptureResult;
 use xprobe_protocol::MatchPolicy;
@@ -38,6 +39,8 @@ use xprobe_protocol::ResolvedLinuxSelector;
 use xprobe_protocol::ResolvedProbe;
 use xprobe_protocol::SessionStatus;
 use xprobe_protocol::TargetIdentity;
+use xprobe_protocol::ValidatedEndpoint;
+use xprobe_protocol::ValidationRequirements;
 use xprobe_protocol::ValidationResult;
 use xprobe_protocol::Warning;
 
@@ -50,6 +53,74 @@ pub(crate) struct LiveMeasureRequest {
     pub(crate) match_policy_text: &'static str,
     pub(crate) mode: MeasurementMode,
     pub(crate) options: MeasureOptions,
+}
+
+/// Resolved endpoints and merged requirements for one live capture.
+pub(crate) struct LivePlan {
+    pub(crate) report: ProcessReport,
+    pub(crate) endpoints: Vec<ValidatedEndpoint>,
+    pub(crate) requirements: ValidationRequirements,
+}
+
+/// A correlated view of the capture that the live loop can finish with.
+pub(crate) trait LiveOutcome {
+    fn set_status(&mut self, status: SessionStatus);
+    fn push_warning(&mut self, warning: Warning);
+    fn into_events(self) -> Vec<Event>;
+}
+
+/// How a live capture is correlated and when it is complete.
+pub(crate) trait LiveEvaluator {
+    type Outcome: LiveOutcome;
+
+    /// Correlate the capture so far. With `require_complete` false, a
+    /// `NO_MATCHED_SAMPLES` failure means "keep collecting".
+    fn evaluate(
+        &self,
+        host_captures: &[HostCaptureResult],
+        collection: &LiveCollection,
+        require_complete: bool,
+    ) -> Result<Self::Outcome, CommandFailure>;
+
+    /// Whether every requested sample bound has been reached.
+    fn reached_samples(&self, outcome: &Self::Outcome) -> bool;
+}
+
+impl LiveOutcome for MeasurementExecution {
+    fn set_status(&mut self, status: SessionStatus) {
+        self.result.status = status;
+    }
+
+    fn push_warning(&mut self, warning: Warning) {
+        self.result.warnings.push(warning);
+    }
+
+    fn into_events(self) -> Vec<Event> {
+        self.events
+    }
+}
+
+/// The single start/end edge of `measure --from/--to` and `MeasurementSpec`.
+struct SingleEdge<'a>(&'a MeasureOptions);
+
+impl LiveEvaluator for SingleEdge<'_> {
+    type Outcome = MeasurementExecution;
+
+    fn evaluate(
+        &self,
+        host_captures: &[HostCaptureResult],
+        collection: &LiveCollection,
+        require_complete: bool,
+    ) -> Result<MeasurementExecution, CommandFailure> {
+        measure_live_capture(host_captures, collection, self.0, require_complete)
+    }
+
+    fn reached_samples(&self, outcome: &MeasurementExecution) -> bool {
+        self.0.samples.is_some_and(|samples| {
+            outcome.result.measurement.samples.matched
+                >= u64::try_from(samples).expect("sample limit fits u64")
+        })
+    }
 }
 
 type HostCaptureHandle = JoinHandle<Result<HostCaptureResult, CommandFailure>>;
@@ -118,17 +189,30 @@ pub(crate) fn collect_live_measurement(
 ) -> Result<MeasurementExecution, CommandFailure> {
     assert_eq!(request.mode, MeasurementMode::Exact);
     validate_live_limits(request)?;
-    let mut collection = prepare_live_collection(request)?;
+    let plan = single_edge_plan(request)?;
+    collect_live(plan, request, &SingleEdge(&request.options))
+}
+
+/// Run one bounded exact capture of `plan` and correlate it with `evaluator`.
+///
+/// Attachment, polling, timeout, CUPTI shutdown, cleanup failures, and
+/// artifact preservation are shared by every exact live measurement.
+pub(crate) fn collect_live<E: LiveEvaluator>(
+    plan: LivePlan,
+    request: &LiveMeasureRequest,
+    evaluator: &E,
+) -> Result<E::Outcome, CommandFailure> {
+    let mut collection = start_live_collection(plan, request)?;
 
     let outcome = (|| {
         loop {
             refresh_live_sources(&mut collection, request)?;
             let now = Instant::now();
-            if let Some(result) = evaluate_live_result(&collection, request, now)? {
+            if let Some(result) = evaluate_live_result(&collection, evaluator, now)? {
                 break Ok(result);
             }
             if now >= collection.deadline {
-                break finish_live_timeout(&mut collection, request);
+                break finish_live_timeout(&mut collection, evaluator);
             }
             if collection.socket.is_none() {
                 thread::sleep(Duration::from_millis(10));
@@ -140,23 +224,21 @@ pub(crate) fn collect_live_measurement(
     let mut execution = match (outcome, stop_result) {
         (Ok(mut execution), Ok(())) => {
             if cuda_capture && collection.host_captures.is_some() {
-                let status = execution.result.status;
-                execution = measure_live_capture(
+                let status = execution.1;
+                execution.0 = evaluator.evaluate(
                     collection.host_captures.as_deref().unwrap_or(&[]),
                     &collection,
-                    &request.options,
                     true,
                 )?;
-                execution.result.status = status;
+                execution.0.set_status(status);
             }
-            execution
+            execution.0
         }
         (Err(error), Ok(())) => {
             if cuda_capture && collection.host_captures.is_some() {
-                return match measure_live_capture(
+                return match evaluator.evaluate(
                     collection.host_captures.as_deref().unwrap_or(&[]),
                     &collection,
-                    &request.options,
                     true,
                 ) {
                     Ok(_) => Err(error),
@@ -166,7 +248,7 @@ pub(crate) fn collect_live_measurement(
             return Err(error);
         }
         (Ok(execution), Err(cleanup)) => {
-            return Err(cleanup.with_artifact_events(execution.events));
+            return Err(cleanup.with_artifact_events(execution.0.into_events()));
         }
         (Err(mut error), Err(cleanup)) => {
             let artifact_events = error.artifact_events.take();
@@ -205,7 +287,7 @@ pub(crate) fn collect_live_measurement(
                 serde_json::Value::from(path.display().to_string()),
             );
         }
-        execution.result.warnings.push(Warning {
+        execution.push_warning(Warning {
             code: "CUPTI_AGENT_INJECTED".to_owned(),
             message: "xprobe injected the CUPTI agent and left the shared object mapped".to_owned(),
             details,
@@ -317,6 +399,11 @@ pub(crate) fn validate_live_limits(request: &LiveMeasureRequest) -> Result<(), C
 pub(crate) fn prepare_live_collection(
     request: &LiveMeasureRequest,
 ) -> Result<LiveCollection, CommandFailure> {
+    start_live_collection(single_edge_plan(request)?, request)
+}
+
+/// Validate the request's start/end pair into a capture plan.
+fn single_edge_plan(request: &LiveMeasureRequest) -> Result<LivePlan, CommandFailure> {
     let report = inspect::run(request.pid).map_err(|error| {
         CommandFailure::new(error.code(), error.to_string(), error.recoverable())
     })?;
@@ -354,13 +441,35 @@ pub(crate) fn prepare_live_collection(
     if request.mode == MeasurementMode::Aggregate {
         validate_aggregate_selection(&validation)?;
     }
+    Ok(LivePlan {
+        report,
+        endpoints: vec![validation.start, validation.end],
+        requirements: validation.requirements,
+    })
+}
 
-    let activation = prepare_cupti_activation(&report, &validation, request)?;
-    let arm_config = cupti_arm_config(&validation, request.options.max_events, request.mode)?;
+/// Arm CUPTI and attach host collectors for a validated plan.
+pub(crate) fn start_live_collection(
+    plan: LivePlan,
+    request: &LiveMeasureRequest,
+) -> Result<LiveCollection, CommandFailure> {
+    let LivePlan {
+        report,
+        endpoints,
+        requirements,
+    } = plan;
+
+    let activation = prepare_cupti_activation(&report, &requirements, request)?;
+    let arm_config = cupti_arm_config(
+        &endpoints,
+        &requirements,
+        request.options.max_events,
+        request.mode,
+    )?;
     let baseline = arm_cupti_capture(
         &activation,
         arm_config.as_ref(),
-        validation.requirements.needs_nvtx,
+        requirements.needs_nvtx,
         request,
     )?;
     let socket = activation.socket;
@@ -389,7 +498,7 @@ pub(crate) fn prepare_live_collection(
         .options
         .duration
         .and_then(|duration| started.checked_add(duration));
-    let collectors = start_host_collectors(&report, &validation, request)?;
+    let collectors = start_host_collectors(&report, &endpoints, request)?;
     let host_captures = collectors.handles.is_empty().then(Vec::new);
 
     Ok(LiveCollection {
@@ -530,15 +639,16 @@ pub(crate) fn cleanup_failed_arm(
 }
 
 pub(crate) fn cupti_arm_config(
-    validation: &ValidationResult,
+    endpoints: &[ValidatedEndpoint],
+    requirements: &ValidationRequirements,
     max_events: usize,
     mode: MeasurementMode,
 ) -> Result<Option<cupti::CuptiArmConfig>, CommandFailure> {
-    if !validation.requirements.needs_cupti {
+    if !requirements.needs_cupti {
         return Ok(None);
     }
-    let filters = [&validation.start, &validation.end]
-        .into_iter()
+    let mut filters = endpoints
+        .iter()
         .filter_map(|endpoint| endpoint.cuda.as_ref())
         .map(|selector| {
             cupti::event_filter(selector).map_err(|error| {
@@ -546,6 +656,15 @@ pub(crate) fn cupti_arm_config(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if mode == MeasurementMode::Exact {
+        let mut unique = Vec::with_capacity(filters.len());
+        for filter in filters {
+            if !unique.contains(&filter) {
+                unique.push(filter);
+            }
+        }
+        filters = unique;
+    }
     let record_capacity = u64::try_from(max_events).map_err(|error| {
         CommandFailure::new(
             ErrorCode::SessionLimitExceeded,
@@ -580,10 +699,10 @@ pub(crate) struct AgentSelection {
 
 pub(crate) fn prepare_cupti_activation(
     report: &ProcessReport,
-    validation: &ValidationResult,
+    requirements: &ValidationRequirements,
     request: &LiveMeasureRequest,
 ) -> Result<CuptiActivation, CommandFailure> {
-    if !validation.requirements.needs_cupti {
+    if !requirements.needs_cupti {
         if request.cupti_socket.is_some() {
             return Err(CommandFailure::new(
                 ErrorCode::InvalidEventSelector,
@@ -791,7 +910,7 @@ impl Drop for LiveCollection {
 
 pub(crate) fn start_host_collectors(
     report: &ProcessReport,
-    validation: &ValidationResult,
+    endpoints: &[ValidatedEndpoint],
     request: &LiveMeasureRequest,
 ) -> Result<HostCollectors, CommandFailure> {
     inspect::verify_target(&report.target).map_err(|error| {
@@ -800,7 +919,7 @@ pub(crate) fn start_host_collectors(
     let cancelled = Arc::new(AtomicBool::new(false));
     let mut probes = Vec::new();
     let mut linux_probes = Vec::new();
-    for endpoint in [&validation.start, &validation.end] {
+    for endpoint in endpoints {
         if let Some(probe) = endpoint.host.as_ref()
             && !probes
                 .iter()
@@ -843,7 +962,7 @@ pub(crate) fn start_host_collectors(
                 symbol_demangled: probe.symbol_demangled,
                 offset,
                 probe_kind: probe.probe_kind,
-                probe_id: u32::try_from(index + 1).expect("two endpoints fit u32"),
+                probe_id: u32::try_from(index + 1).expect("bounded endpoints fit u32"),
                 samples: host_samples,
                 timeout: host_timeout,
                 cancelled: Arc::clone(&cancelled),
@@ -1148,87 +1267,83 @@ pub(crate) fn injection_warning(collection: &LiveCollection) -> Warning {
     }
 }
 
-pub(crate) fn evaluate_live_result(
+pub(crate) fn evaluate_live_result<E: LiveEvaluator>(
     collection: &LiveCollection,
-    request: &LiveMeasureRequest,
+    evaluator: &E,
     now: Instant,
-) -> Result<Option<MeasurementExecution>, CommandFailure> {
+) -> Result<Option<(E::Outcome, SessionStatus)>, CommandFailure> {
     let Some(host) = collection.host_captures.as_ref() else {
         return Ok(None);
     };
     if collection.socket.is_some() && collection.latest_cuda.is_none() {
         return Ok(None);
     }
-    let mut execution = match measure_live_capture(host, collection, &request.options, false) {
-        Ok(execution) => execution,
+    let mut outcome = match evaluator.evaluate(host, collection, false) {
+        Ok(outcome) => outcome,
         Err(error) if error.code == ErrorCode::NoMatchedSamples => return Ok(None),
         Err(error) => return Err(error),
     };
-    let reached_samples = request.options.samples.is_some_and(|samples| {
-        execution.result.measurement.samples.matched
-            >= u64::try_from(samples).expect("sample limit fits u64")
-    });
     let reached_duration = collection.collection_end.is_some_and(|end| now >= end);
-    if reached_samples || reached_duration {
+    if evaluator.reached_samples(&outcome) || reached_duration {
         inspect::verify_target(&collection.report.target).map_err(|error| {
             CommandFailure::new(error.code(), error.to_string(), error.recoverable())
         })?;
-        return Ok(Some(execution));
+        return Ok(Some((outcome, SessionStatus::Completed)));
     }
     if now >= collection.deadline {
-        execution.result.status = SessionStatus::TimedOut;
-        return Ok(Some(execution));
+        outcome.set_status(SessionStatus::TimedOut);
+        return Ok(Some((outcome, SessionStatus::TimedOut)));
     }
     Ok(None)
 }
 
-pub(crate) fn finish_live_timeout(
+pub(crate) fn finish_live_timeout<E: LiveEvaluator>(
     collection: &mut LiveCollection,
-    request: &LiveMeasureRequest,
-) -> Result<MeasurementExecution, CommandFailure> {
+    evaluator: &E,
+) -> Result<(E::Outcome, SessionStatus), CommandFailure> {
     collection.collectors.cancel();
     if collection.host_captures.is_none() {
         collection.host_captures = Some(collection.collectors.join()?);
     }
-    let mut execution = measure_live_capture(
-        collection
-            .host_captures
-            .as_ref()
-            .expect("host captures were assigned"),
-        collection,
-        &request.options,
-        true,
-    )
-    .map_err(|mut error| {
-        if error.code == ErrorCode::NoMatchedSamples {
-            let host_events = collection.host_captures.as_ref().map_or(0, |captures| {
-                captures.iter().map(|capture| capture.events.len()).sum()
-            });
-            let cuda_events = collection.latest_cuda.as_ref().map_or(0, |capture| {
-                capture
-                    .events
-                    .iter()
-                    .filter(|event| {
-                        collection
-                            .baseline_timestamp
-                            .is_none_or(|start| event.timestamp_ns > start)
-                    })
-                    .count()
-            });
-            error.message = format!(
-                "no event pairs matched before the live measurement timeout \
+    let mut outcome = evaluator
+        .evaluate(
+            collection
+                .host_captures
+                .as_ref()
+                .expect("host captures were assigned"),
+            collection,
+            true,
+        )
+        .map_err(|mut error| {
+            if error.code == ErrorCode::NoMatchedSamples {
+                let host_events = collection.host_captures.as_ref().map_or(0, |captures| {
+                    captures.iter().map(|capture| capture.events.len()).sum()
+                });
+                let cuda_events = collection.latest_cuda.as_ref().map_or(0, |capture| {
+                    capture
+                        .events
+                        .iter()
+                        .filter(|event| {
+                            collection
+                                .baseline_timestamp
+                                .is_none_or(|start| event.timestamp_ns > start)
+                        })
+                        .count()
+                });
+                error.message = format!(
+                    "no event pairs matched before the live measurement timeout \
                  (host events: {host_events}, CUDA events: {cuda_events})"
-            );
-            error
-                .with_detail("timed_out", true)
-                .with_detail("host_events", host_events as u64)
-                .with_detail("cuda_events", cuda_events as u64)
-        } else {
-            error
-        }
-    })?;
-    execution.result.status = SessionStatus::TimedOut;
-    Ok(execution)
+                );
+                error
+                    .with_detail("timed_out", true)
+                    .with_detail("host_events", host_events as u64)
+                    .with_detail("cuda_events", cuda_events as u64)
+            } else {
+                error
+            }
+        })?;
+    outcome.set_status(SessionStatus::TimedOut);
+    Ok((outcome, SessionStatus::TimedOut))
 }
 
 pub(crate) fn measure_live_capture(
