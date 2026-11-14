@@ -31,7 +31,7 @@ message, recoverability, details, and hints.
 ## `doctor`
 
 ```bash
-xprobe doctor --json --non-interactive --no-color
+xprobe doctor
 ```
 
 Reports Linux/kernel identity, BTF, BPF/perf permissions, lockdown, ptrace
@@ -43,8 +43,7 @@ and its resolved library path.
 ## `discover`
 
 ```bash
-xprobe discover --pid 4242 [--limit 200] \
-  --json --non-interactive --no-color
+xprobe discover --pid 4242 [--limit 200]
 ```
 
 Treats the PID as a process-tree root and queries NVML for active CUDA compute
@@ -117,7 +116,7 @@ nonempty exact, prefix, suffix, or contains filter shorter than 128 bytes.
 xprobe validate --pid 4242 \
   --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
-  --match exact --json --non-interactive --no-color
+  --match exact
 ```
 
 Validation is read-only. It verifies target identity, resolves host and Python
@@ -169,8 +168,7 @@ xprobe measure --pid 4242 \
   --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
   --match exact --samples 100 --timeout-ms 30000 \
-  --events-out /tmp/xprobe-events.jsonl \
-  --json --non-interactive --no-color
+  --events-out /tmp/xprobe-events.jsonl
 ```
 
 Linux syscall duration:
@@ -178,8 +176,7 @@ Linux syscall duration:
 ```bash
 xprobe measure --pid 4242 \
   --from 'syscall:mmap:entry' --to 'syscall:mmap:exit' \
-  --match exact --samples 100 --max-events 1000 \
-  --json --non-interactive --no-color
+  --match exact --samples 100 --max-events 1000
 ```
 
 CPU/Python hotspot inventory:
@@ -187,16 +184,14 @@ CPU/Python hotspot inventory:
 ```bash
 xprobe measure --pid 4242 --cpu-sample --duration-ms 1000 \
   --frequency-hz 99 --max-samples 10000 --max-groups 256 \
-  --stack-depth 64 --max-threads 1024 \
-  --json --non-interactive --no-color
+  --stack-depth 64 --max-threads 1024
 ```
 
 Syscall lifecycle inventory:
 
 ```bash
 xprobe measure --pid 4242 --syscall-aggregate --duration-ms 1000 \
-  --max-groups 256 --max-inflight 1024 \
-  --json --non-interactive --no-color
+  --max-groups 256 --max-inflight 1024
 ```
 
 CPython garbage-collection duration:
@@ -204,8 +199,7 @@ CPython garbage-collection duration:
 ```bash
 xprobe measure --pid 4242 \
   --from python:gc_start --to python:gc_end \
-  --match exact --samples 100 --max-events 1000 \
-  --json --non-interactive --no-color
+  --match exact --samples 100 --max-events 1000
 ```
 
 NVTX application range:
@@ -214,8 +208,7 @@ NVTX application range:
 xprobe measure --pid 4242 \
   --from 'cuda:nvtx_range_start:name~^forward$' \
   --to 'cuda:nvtx_range_end:name~^forward$' \
-  --match exact --samples 100 --max-events 1000 \
-  --json --non-interactive --no-color
+  --match exact --samples 100 --max-events 1000
 ```
 
 Completed captures:
@@ -224,15 +217,13 @@ Completed captures:
 xprobe measure --input host.json --input cupti.bin \
   --from 'uprobe:/srv/app/server:request:entry' \
   --to 'cuda:kernel_start:name~flash.*' \
-  --match first-after --samples 100 \
-  --json --non-interactive --no-color
+  --match first-after --samples 100
 ```
 
 Versioned live spec:
 
 ```bash
-xprobe measure --spec measurement.json \
-  --json --non-interactive --no-color
+xprobe measure --spec measurement.json
 ```
 
 Same-window triage of an unknown live workload:
@@ -246,8 +237,7 @@ Broad GPU activity inventory:
 ```bash
 xprobe measure --pid 4242 \
   --from 'cuda:kernel_start' --to 'cuda:kernel_end' \
-  --match exact --aggregate --duration-ms 1000 --max-groups 4096 \
-  --json --non-interactive --no-color
+  --match exact --aggregate --duration-ms 1000 --max-groups 4096
 ```
 
 Exactly one source mode is used: `--pid`, one or more `--input`, or `--spec`.

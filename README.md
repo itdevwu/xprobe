@@ -37,47 +37,29 @@ GitHub-hosted build attestation verification.
 
 ## Measure
 
-For an unknown CPU workload, start with one representative sampled inventory:
+Triage an unknown process over one representative window. Findings are ranked
+by their estimated share of the window, and each carries a ready next step:
 
 ```bash
-xprobe validate --pid 4242 --cpu-sample \
-  --json --non-interactive --no-color
-
-xprobe measure --pid 4242 \
-  --cpu-sample --duration-ms 1000 \
-  --json --non-interactive --no-color
+xprobe measure --pid 4242 --triage --duration-ms 2000 > triage.json
+jq '.findings[0].next.spec' triage.json > next.json
+xprobe measure --spec next.json
 ```
 
-Use its hotspot and selector evidence, or a GPU aggregate inventory, to state a
-narrow hypothesis. Then validate and measure that boundary directly:
+Measure a known boundary directly, or several related boundaries from one
+capture with a [measurement graph](docs/cli-contract.md#measurement-graphs):
 
 ```bash
-xprobe validate --pid 4242 \
-  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
-  --to 'cuda:kernel_start:name~flash.*' \
-  --match exact --json --non-interactive --no-color
-
 xprobe measure --pid 4242 \
   --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
-  --match exact --samples 100 --timeout-ms 30000 \
-  --events-out /tmp/xprobe-events.jsonl \
-  --json --non-interactive --no-color
+  --match exact --samples 100
 ```
 
-Kernel launch latency is only one event pair. xprobe can first inventory sampled
-CPU/Python hotspots, syscall lifecycles, or GPU activity, then measure host
-function spans, CPython GC, syscall latency, named Linux events, CUDA API calls,
-GPU operation durations, transfers, NVTX ranges, and CPU/GPU paths after
-selecting the correct process.
-
-`measure` also accepts completed `--input` captures and versioned live
-`--spec` files. JSON results contain latency statistics, a quality verdict,
-rank exemplar pairs, unmatched and ambiguous counts, collection completeness,
-CUPTI buffer usage, clock quality, correlation confidence, and warnings. Live
-captures always write the bounded event capture (`jsonl` or `chrome`, private
-temporary file unless `--events-out` is set), including when correlation or
-clock validation fails; `--evidence full` inlines every matched pair.
+Output is JSON whenever stdout is not a terminal. Results carry latency
+statistics, a `good`/`caution` quality verdict, rank exemplar pairs, and the
+path of the bounded event capture, which `measure --input` re-correlates
+offline. See the [CLI contract](docs/cli-contract.md) for every mode.
 
 ## Public CLI
 
@@ -85,8 +67,8 @@ clock validation fails; `--evidence full` inlines every matched pair.
 | --- | --- |
 | `doctor` | Report local eBPF, ptrace, NVIDIA, CUDA, and CUPTI capabilities |
 | `discover` | List NVML-confirmed CUDA context holders under a process-tree root |
-| `validate` | Check an event pair or inventory mode and report requirements without attaching |
-| `measure` | Inventory bounded work or correlate bounded event evidence |
+| `validate` | Check an event pair, graph, or inventory mode without attaching |
+| `measure` | Triage, inventory, or correlate bounded live or recorded evidence |
 
 `measure --pid` automatically loads the matching CUDA 12 or CUDA 13 CUPTI Agent
 when a selected endpoint requires it. It reports the target mutation on stderr
@@ -100,9 +82,11 @@ attach cannot retrofit an initialized NVTX dispatch.
 | Surface | Current support |
 | --- | --- |
 | OS/architecture | Linux x86_64, glibc 2.34 or newer |
+| Triage | One window of thread time, cgroup throttling, CPU samples, syscalls, NVML health, and CUDA kernels |
+| Measurement graphs | Up to eight edges from one capture |
 | CPU inventory | PID-scoped sampled user stacks with native ELF and CPython perf-map symbols |
 | Host events | ELF functions, named syscall/tracepoint boundaries, and CPython GC USDT |
-| Coarse aggregation | Bounded syscall lifecycle and CUDA kernel/memcpy/memset groups |
+| Coarse aggregation | Bounded syscall lifecycle and CUDA kernel/memcpy/memset groups, with pageable/pinned copies |
 | CUDA callbacks | Runtime and Driver API entry/exit |
 | GPU activity | Kernel, memcpy, and memset start/end |
 | Application ranges | Bounded ASCII NVTX thread and process ranges |
@@ -122,6 +106,7 @@ offset CUPTI clock as host monotonic.
 - [CLI contract](docs/cli-contract.md)
 - [CUPTI agent and injection](docs/cupti-agent.md)
 - [Development and hardware tests](docs/development.md)
+- [Releasing](docs/releasing.md)
 - [Agent integration](docs/agent-integration.md)
 - [Public JSON schemas](schemas/)
 
