@@ -193,6 +193,25 @@ def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
         assert required in setup, required
 
 
+def check_readme_art(workspace: pathlib.Path) -> None:
+    """README art is generated; committed SVGs must match the renderer."""
+    with tempfile.TemporaryDirectory(prefix="xprobe-art-") as directory:
+        subprocess.run(
+            [sys.executable, "-I", workspace / "scripts/render-readme-art.py", directory],
+            check=True,
+        )
+        rendered = sorted(pathlib.Path(directory).glob("*.svg"))
+        assert rendered
+        for path in rendered:
+            committed = workspace / "docs/assets" / path.name
+            assert committed.read_text() == path.read_text(), (
+                f"{committed} is stale; run scripts/render-readme-art.py docs/assets"
+            )
+    readme = (workspace / "README.md").read_text()
+    for asset in ("docs/assets/xprobe-flow-light.svg", "docs/assets/xprobe-flow-dark.svg"):
+        assert asset in readme, asset
+
+
 def check_schemas(workspace: pathlib.Path) -> None:
     schema_paths = sorted((workspace / "schemas").glob("*.schema.json"))
     assert schema_paths
@@ -287,6 +306,7 @@ def main() -> None:
     check_skill(workspace, binary)
     check_schemas(workspace)
     check_installation_docs(workspace)
+    check_readme_art(workspace)
     documented = check_documented_flags(
         binary, [workspace / "README.md", *sorted((workspace / "docs").glob("*.md"))]
     )
