@@ -133,7 +133,9 @@ per-CPU values and maps known x86_64 numbers to selector hints.
 CUDA events use an in-process CUPTI Agent. CUDA 12 and CUDA 13 builds share the
 same source and capture ABI but link their matching CUPTI SONAME. Loading the
 Agent creates a control socket; `measure` separately arms one fresh,
-`--max-events`-bounded capture with filters for its CUDA endpoints. Runtime and
+`--max-events`-bounded capture with up to eight filters for its CUDA endpoints
+(control protocol v5 carries the active filter count, and hot paths scan only
+active filters). Runtime and
 Driver callbacks plus kernel, memcpy, and memset activity are filtered before
 fixed records consume capacity. Callback hot paths do not perform blocking I/O
 or allocation.
@@ -198,6 +200,13 @@ stderr and records `CUPTI_AGENT_INJECTED` in the result. It never `dlclose`s the
 agent because unloading callback code in a live CUDA process is unsafe.
 
 ## Correlation and evidence
+
+Every exact live measurement runs one shared capture loop over a plan of
+validated endpoints and merged requirements. The loop owns attachment, polling,
+timeout, CUPTI shutdown, cleanup, and artifact preservation; an evaluator owns
+correlation and sample completion. A single edge and a measurement graph differ
+only in their evaluator: a graph validates the merged capture once and
+correlates each edge independently.
 
 All sources normalize into the versioned `Event` type. `measure` supports:
 

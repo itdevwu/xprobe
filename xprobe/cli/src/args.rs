@@ -260,8 +260,16 @@ pub(crate) struct ResolveArgs {
 #[derive(Debug, Args)]
 pub(crate) struct ValidateArgs {
     /// Target process ID.
-    #[arg(long)]
-    pub(crate) pid: u32,
+    #[arg(long, required_unless_present = "spec")]
+    pub(crate) pid: Option<u32>,
+
+    /// Validate a versioned measurement graph spec; its target selects the
+    /// process.
+    #[arg(
+        long,
+        conflicts_with_all = ["pid", "from", "to", "match_policy", "cpu_sample", "syscall_aggregate"]
+    )]
+    pub(crate) spec: Option<PathBuf>,
 
     /// Start event selector.
     #[arg(long)]

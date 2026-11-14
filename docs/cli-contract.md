@@ -127,6 +127,14 @@ and Python symbolization status. `validate --syscall-aggregate` checks the
 bounded eBPF aggregate path. Inventory modes do not take event-pair selectors.
 Results conform to `schemas/validate.schema.json`.
 
+`validate --spec graph.json` validates a measurement graph without `--pid`; the
+spec's target selects the process. It emits
+`schemas/measurement-graph-validate.schema.json` (schema `3.0`) with each named
+endpoint's resolution, each edge's policy recommendation, requirements merged
+across edges, and issues scoped to the graph, an endpoint, or an edge. Unknown
+or unused endpoints, duplicate edge names, missing bounds, and more than two
+syscall, tracepoint, or USDT endpoints are issues, not command errors.
+
 Supported policies are `exact`, `first-after`, `nearest`, `stack-nested`, and
 `stream-order`. Exact uses deterministic CUPTI correlation IDs, NVTX range
 kind/ID, one named syscall's per-thread entry/exit lifecycle, or one CPython GC
@@ -367,6 +375,53 @@ declared alignment returns `CLOCK_ALIGNMENT_FAILED`. Drops and unknown clock
 error are never silently converted to high-quality results. Error `details` and
 `hints` carry selectors, policies, counters, clock domains, and explicit next
 actions where applicable; callers must not infer these fields from messages.
+
+## Measurement graphs
+
+A graph measures several edges from one bounded capture of one process:
+
+```json
+{
+  "schema_version": "3.0",
+  "name": "request_path",
+  "target": {"pid": 4242, "process_start_time": 123456},
+  "endpoints": {
+    "request": "uprobe:/srv/app/server:handle_request:entry",
+    "launch_exit": "cuda:runtime_api:cudaLaunchKernel:exit",
+    "kernel_start": "cuda:kernel_start:name~^flash",
+    "kernel_end": "cuda:kernel_end:name~^flash"
+  },
+  "edges": [
+    {"name": "request_to_launch", "from": "request", "to": "launch_exit",
+     "match_policy": "first_after", "samples": 100},
+    {"name": "launch_to_kernel", "from": "launch_exit", "to": "kernel_start",
+     "match_policy": "exact", "samples": 100},
+    {"name": "kernel_duration", "from": "kernel_start", "to": "kernel_end",
+     "match_policy": "exact", "samples": 100}
+  ],
+  "duration_ms": null,
+  "timeout_ms": 30000,
+  "max_events": 20000
+}
+```
+
+`measure --spec graph.json` accepts this `schemas/measurement-graph-spec.schema.json`
+document. A graph has 1–8 named endpoints and 1–8 edges; every edge sets
+`samples` or the graph sets `duration_ms`. Collectors attach once per unique
+endpoint: uprobes have no further limit, CUDA endpoints share up to eight Agent
+filters, and syscall, tracepoint, and USDT endpoints share two Linux collector
+slots. `max_events` bounds the whole capture. Collection ends when every edge
+reaches its samples or the duration elapses.
+
+The capture is validated once, then each edge is correlated independently with
+the single-edge rules. A graph never joins edges into per-request paths and
+never implies causality between edges. Results use
+`schemas/measurement-graph-result.schema.json` (schema `3.0`): per-edge
+statistics, quality verdict, correlation, clock quality, and evidence, one
+shared collection summary, and the shared event artifact. Any invalid edge or
+edge correlation failure fails the whole command with the edge name in the
+message and `details.edge`; the captured events are still written to the
+artifact so the caller can re-correlate edges with `measure --input`.
 
 ## Compatibility
 
