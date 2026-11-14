@@ -11,7 +11,7 @@ absent, reports another version, or fails a required capability:
 ```bash
 command -v xprobe >/dev/null 2>&1 && xprobe --version
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/itdevwu/xprobe/v0.6.0/install.sh \
+  https://raw.githubusercontent.com/itdevwu/xprobe/v0.6.1/install.sh \
   -o /tmp/xprobe-install.sh
 sh /tmp/xprobe-install.sh
 export PATH="$HOME/.local/bin:$PATH"
@@ -45,7 +45,7 @@ The release archive needs host glibc 2.34 or newer. Otherwise build the
 matching source with the host glibc:
 
 ```bash
-git clone --depth 1 --branch v0.6.0 https://github.com/itdevwu/xprobe.git
+git clone --depth 1 --branch v0.6.1 https://github.com/itdevwu/xprobe.git
 cd xprobe
 mamba env create --file environment.yml
 mamba run -n xprobe-dev just build
@@ -83,6 +83,6 @@ references, examples, and analyzer are part of the contract:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.6.0/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.6.1/skills/xprobe-measure-latency \
   --global
 ```
