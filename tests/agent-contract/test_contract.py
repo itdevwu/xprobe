@@ -56,6 +56,30 @@ def release_version(workspace: pathlib.Path) -> str:
     return release_match.group(1)
 
 
+def check_documented_flags(binary: pathlib.Path, documents: list[pathlib.Path]) -> set[str]:
+    """Require every flag in a documented `xprobe` command to exist in --help."""
+    help_flags: dict[str, set[str]] = {}
+    for document in documents:
+        for block in re.findall(r"```bash\n(.*?)```", document.read_text(), re.DOTALL):
+            command = re.sub(r"\\\n\s*", " ", block)
+            for line in command.splitlines():
+                words = line.split()
+                if len(words) < 2 or words[0] != "xprobe" or words[1].startswith("-"):
+                    continue
+                subcommand = words[1]
+                if subcommand not in help_flags:
+                    help_text = subprocess.run(
+                        [binary, subcommand, "--help"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout
+                    help_flags[subcommand] = set(re.findall(r"--[a-z][a-z0-9-]*", help_text))
+                for flag in re.findall(r"(?<!\S)--[a-z][a-z0-9-]*", line):
+                    assert flag in help_flags[subcommand], (document.name, subcommand, flag)
+    return set(help_flags)
+
+
 def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
     skill_path = workspace / SKILL_PATH
     skill_root = skill_path.parent.resolve()
@@ -105,26 +129,8 @@ def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
         assert required in normalized_skill, required
 
     # Every documented xprobe command uses flags its subcommand accepts.
-    help_flags = {}
-    for document in [skill_path, *references]:
-        for block in re.findall(r"```bash\n(.*?)```", document.read_text(), re.DOTALL):
-            command = re.sub(r"\\\n\s*", " ", block)
-            for line in command.splitlines():
-                words = line.split()
-                if len(words) < 2 or words[0] != "xprobe" or words[1].startswith("-"):
-                    continue
-                subcommand = words[1]
-                if subcommand not in help_flags:
-                    help_text = subprocess.run(
-                        [binary, subcommand, "--help"],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                    ).stdout
-                    help_flags[subcommand] = set(re.findall(r"--[a-z][a-z0-9-]*", help_text))
-                for flag in re.findall(r"(?<!\S)--[a-z][a-z0-9-]*", line):
-                    assert flag in help_flags[subcommand], (document.name, subcommand, flag)
-    assert {"measure", "validate"} <= set(help_flags), sorted(help_flags)
+    checked = check_documented_flags(binary, [skill_path, *references])
+    assert {"measure", "validate"} <= checked, sorted(checked)
 
     analyzer = skill_root / "scripts/analyze_trace.py"
     assert analyzer.is_file()
@@ -281,6 +287,10 @@ def main() -> None:
     check_skill(workspace, binary)
     check_schemas(workspace)
     check_installation_docs(workspace)
+    documented = check_documented_flags(
+        binary, [workspace / "README.md", *sorted((workspace / "docs").glob("*.md"))]
+    )
+    assert {"doctor", "discover", "validate", "measure"} <= documented, sorted(documented)
     print(
         json.dumps(
             {

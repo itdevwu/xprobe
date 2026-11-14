@@ -134,7 +134,7 @@ After installing the CLI, run:
 
 ```bash
 xprobe --version
-xprobe doctor --json --non-interactive --no-color
+xprobe doctor
 ```
 
 Host selectors require eBPF/perf permissions. Online CUDA Agent injection

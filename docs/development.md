@@ -24,52 +24,10 @@ is tested locally with Docker and NVIDIA Container Toolkit. CPU comparison
 tools and a USDT-enabled CPython are installed inside the pinned benchmark
 container; they are not host or release archive dependencies.
 
-## Release packaging
+## Releases
 
-A release archive requires one Agent built against each supported CUPTI major:
-
-```bash
-CUDA_PATH=/opt/cuda-12 cmake -S . -B build/cuda12 -G Ninja \
-  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=12
-cmake --build build/cuda12 --target xprobe-cupti
-
-CUDA_PATH=/opt/cuda-13 cmake -S . -B build/cuda13 -G Ninja \
-  -DXPROBE_BUILD_BPF=OFF -DXPROBE_REQUIRE_CUPTI=ON -DXPROBE_CUDA_MAJOR=13
-cmake --build build/cuda13 --target xprobe-cupti
-
-scripts/package-release.sh
-tests/install/test_install.sh dist/xprobe-*-linux-x86_64.tar.gz
-```
-
-Packaging checks both CUPTI SONAMEs, rejects build-time RPATHs, and includes the
-versioned installer. It also rejects CLI or Agent ELF dependencies above
-`GLIBC_2.34`, matching the supported runtime floor and preventing a release
-runner change from silently raising it. The archive test also accepts a mocked
-glibc 2.34 runtime, rejects 2.33, installs into a temporary prefix, runs the
-packaged binary, verifies both Agents and shared resources, and uninstalls it.
-After publishing the GitHub release, `scripts/verify-public-release.sh` downloads
-the public archive and checksum again, repeats the installation test, and
-inspects every shipped ELF. This final gate verifies the artifact users can
-actually download rather than the workflow's local copy.
-
-GitHub Actions runs only tests and builds supported by hosted runners. Before
-creating a tag, run the complete live suite on the local NVIDIA development
-machine:
-
-```bash
-mamba env create --file environment-pytorch.yml
-PYTORCH_ENV="$(mamba run -n xprobe-pytorch python -c 'import sys; print(sys.prefix)')" \
-  just test-release-live
-```
-
-`environment-pytorch.yml` pins the PyTorch fixture: Python 3.11, because
-torch 2.3 Dynamo does not support 3.12, plus Triton and NumPy 1.x.
-
-This local gate covers BPF and perf attachment, CUDA 12 and 13 behavior,
-injection, NVTX, mixed host/GPU collection, PyTorch, concurrent workers, and
-the release benchmarks. The tag workflow independently rebuilds both CUPTI
-Agents, packages on Ubuntu 22.04, enforces the GLIBC ceiling, and verifies the
-published archive.
+Release packaging, the local live gate, and public verification are described
+in [Releasing](releasing.md).
 
 ## eBPF tests
 
@@ -154,7 +112,7 @@ required:
 
 ```bash
 nvidia-smi
-xprobe doctor --json --non-interactive --no-color
+xprobe doctor
 ```
 
 Record the actual GPU model, driver version, compute capability, and available
