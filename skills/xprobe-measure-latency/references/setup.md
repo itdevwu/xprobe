@@ -1,72 +1,48 @@
 # Setup
 
-Use this reference at the start of a task when the CLI is absent or its version
-does not match this Skill. The user installs this Skill once; the agent performs
-and verifies the CLI bootstrap. Do not ask the user to run a second installation
-command unless their environment prevents the agent from writing a usable prefix.
+The user installs this Skill once; the agent bootstraps and verifies the CLI.
+Offline analysis of an existing artifact needs no CLI.
 
 ## Check and bootstrap xprobe
 
-For live work, check the executable first. This Skill supports xprobe `0.5.x`
-with schema version `2.0`; install the current release when the CLI is absent,
-outside that range, or fails its required capability checks. Offline analysis
-of an existing schema-v2 artifact does not require an installed CLI.
+This Skill supports xprobe `0.5.x`. Install the matching release when the CLI is
+absent, reports another version, or fails a required capability:
 
 ```bash
-if command -v xprobe >/dev/null 2>&1; then
-  xprobe --version
-fi
-```
-
-Download the released bootstrap, which verifies the release archive before
-installing under `~/.local`:
-
-```bash
+command -v xprobe >/dev/null 2>&1 && xprobe --version
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/itdevwu/xprobe/v0.5.2/install.sh \
   -o /tmp/xprobe-install.sh
 sh /tmp/xprobe-install.sh
 export PATH="$HOME/.local/bin:$PATH"
 xprobe --version
-xprobe doctor --json --non-interactive --no-color
+xprobe doctor
 ```
 
-Use the downloaded script's `--prefix` option for another installation root.
-Export that prefix's `bin` directory into `PATH`, rerun `xprobe --version`, then
-run `xprobe doctor --json --non-interactive --no-color`. Surface bootstrap,
-PATH, permission, driver, CUDA, or CUPTI failures explicitly and adjust from the
-reported detail; do not continue to measurement on an unverified installation.
-The CLI needs no Node.js. CUDA is optional until a GPU selector is measured.
+The bootstrap verifies the archive and installs under `~/.local`; pass
+`--prefix DIR` for another root and export its `bin`. Surface PATH,
+permission, driver, CUDA, or CUPTI failures from `doctor` details; do not
+measure on an unverified installation. CUDA is needed only for GPU selectors.
 
-## Run with a containerized live target
+## Containerized live target
 
-A host-side `measure` cannot safely inject when the target has a different
-mount namespace. Do not retry with a guessed Agent path. Run the matching
-xprobe release in the application container itself, or have an explicitly
-privileged launcher enter both the target PID and mount namespaces. `docker
-exec` or `kubectl exec` is suitable only after the caller has identified the
-exact container from workload evidence. An adjacent sidecar or ephemeral
-container normally has a different mount namespace and is not equivalent.
+A host-side `measure` cannot inject into a target with a different mount
+namespace. Run xprobe in the application container itself, or through a
+launcher that enters both its PID and mount namespaces; a sidecar is not
+equivalent. Do not guess a pod, container, or PID: identify the container from
+workload evidence first.
 
-Bootstrap xprobe under a writable prefix in that namespace, then resolve the
-target again from its procfs view. Record the namespace-local PID and
-`/proc/PID/stat` start time, and rerun `doctor` and read-only `validate` there
-before measurement. Never carry a host PID or an earlier process identity into
-the container command. Keep stdout, stderr, status, and artifacts outside the
-container through an explicit writable or shared path.
+Inside, resolve the namespace-local PID and its `/proc/PID/stat` start time
+again, rerun `doctor` and `validate` there, and write outputs to a path shared
+with the caller. Entering a namespace does not add capabilities the container
+was not granted: report missing ptrace, perf, BPF, NVIDIA device, or CUPTI
+access as an environment failure instead of falling back to host-side
+injection.
 
-Entering a namespace does not add capabilities that the running container was
-not granted. Surface missing ptrace, perf, BPF, NVIDIA device, or CUPTI access
-as an environment failure; do not silently fall back to a host-side injection
-or a different container. For NVTX, the matching Agent must still be configured
-in the application container before its first NVTX API call.
+## Build locally when the release cannot run
 
-## Build locally when the release is unsuitable
-
-The `glibc 2.34` requirement applies to the precompiled release archive. When
-that archive cannot run on the host, build the matching source locally with the
-host glibc instead. This is a local-use fallback, not permission to weaken the
-release package's `GLIBC_2.34` ceiling.
+The release archive needs host glibc 2.34 or newer. Otherwise build the
+matching source with the host glibc:
 
 ```bash
 git clone --depth 1 --branch v0.5.2 https://github.com/itdevwu/xprobe.git
@@ -74,16 +50,10 @@ cd xprobe
 mamba env create --file environment.yml
 mamba run -n xprobe-dev just build
 export PATH="$PWD/target/debug:$PATH"
-xprobe --version
-xprobe doctor --json --non-interactive --no-color
 ```
 
-For CPU-only work, this build is sufficient; no CUDA toolkit or CUPTI Agent is
-required. Do not use `scripts/package-release.sh` for this path because it
-enforces the distributable archive compatibility policy.
-
-For GPU or mixed work, build one local Agent against the target's CUDA 12 or
-CUDA 13 toolkit, then point the CLI at it:
+That suffices for CPU work. For GPU work, build one Agent against the target's
+CUDA 12 or 13 toolkit and export it:
 
 ```bash
 mamba run -n xprobe-dev env CUDA_PATH=/opt/cuda-12 cmake -S . -B build/cuda12 -G Ninja \
@@ -92,40 +62,27 @@ mamba run -n xprobe-dev cmake --build build/cuda12 --target xprobe-bpf xprobe-cu
 export XPROBE_CUPTI_AGENT_PATH="$PWD/build/cuda12/cupti/libxprobe-cupti.so"
 ```
 
-Replace `12` and the toolkit path with `13` for CUDA 13. CUDA/CUPTI majors other
-than 12 or 13 are not supported: do not force an Agent build or bypass the
-version check. For an NVTX range measurement, start or restart the target with
-the same local Agent configured before the target's first NVTX call:
+CUDA/CUPTI majors other than 12 or 13 are not supported. Do not use
+`scripts/package-release.sh` for a local build; it enforces the release glibc
+ceiling.
+
+## NVTX ranges
+
+Online injection cannot attach to an already initialized NVTX dispatch. Restart
+the target with the Agent configured before its first NVTX call, record the new
+PID and start time, and validate again:
 
 ```bash
 NVTX_INJECTION64_PATH="$XPROBE_CUPTI_AGENT_PATH" python serve.py
 ```
 
-Record the new PID plus procfs start time and run `validate` again. Do not use
-online injection as a fallback for an already initialized NVTX process.
+## Repair the Skill
 
-## Repair the Skill only when needed
-
-The user normally installed this Skill before invoking the agent. When its files
-are missing or incompatible with xprobe `0.5.x`, install the complete current
-release directory through the Agent Skills CLI:
+When Skill files are missing or mismatched, reinstall the whole directory; its
+references, examples, and analyzer are part of the contract:
 
 ```bash
 npx skills@1 add \
   https://github.com/itdevwu/xprobe/tree/v0.5.2/skills/xprobe-measure-latency \
   --global
 ```
-
-For non-interactive automation, select the host explicitly:
-
-```bash
-npx --yes skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.2/skills/xprobe-measure-latency \
-  --agent codex --global --copy --yes
-```
-
-Replace `codex` with `claude-code` or `cursor` as needed. Omit `--global` for a
-repository-scoped installation. Without Node.js, copy the full Skill directory
-from the release archive into the target agent's documented Skill location; do
-not copy only `SKILL.md`, because its references, examples, and analyzer are
-part of the contract.

@@ -1,119 +1,97 @@
 ---
 name: xprobe-measure-latency
-description: Profile live or recorded Linux CPU, CPython, and NVIDIA CUDA workloads with bounded xprobe evidence. Use when an agent needs to install or repair xprobe, inventory unknown CPU/GPU work, find native or Python hotspots, inspect syscall or CPython GC cost, validate and measure a known function, syscall, CUDA API, kernel, transfer, synchronization point, NVTX range, or event-to-event latency, compare workers, investigate regressions, or inspect an existing xprobe artifact.
+description: Find where time goes in a live or recorded Linux CPU, CPython, or NVIDIA CUDA workload with bounded xprobe evidence. Use to triage an unknown slow process, measure a known function, syscall, CUDA API, kernel, transfer, NVTX range, or event-to-event latency, measure several related latencies at once, compare workers or regressions, inspect an existing xprobe artifact, or install and repair xprobe.
 ---
 
 # Profile workloads with xprobe
 
-Choose the shortest route supported by the question and existing evidence. Do
-not run a fixed checklist or collect every source.
+Reach an answer in two commands: triage, then one exact measurement. Choose the
+shortest route the evidence allows; never collect every source by checklist.
+
+Commands print JSON whenever stdout is not a terminal. Measurement, graph, and
+triage results use schema version `3.0`; other records and Event JSONL use
+`2.0`. Treat malformed output or an unknown version as an error.
 
 ## Route the task
 
-- **Existing artifact**: Read [references/trace-analysis.md](references/trace-analysis.md)
-  and [references/result-quality.md](references/result-quality.md). Analyze it
-  directly or use `measure --input`; skip installation, `doctor`, `discover`,
-  and live attachment unless a new capture is required.
-- **Known live boundary**: Read [references/cli-contract.md](references/cli-contract.md)
-  and [references/result-quality.md](references/result-quality.md). Confirm PID
-  plus start time, run read-only `validate`, then one bounded measurement. Do
-  not run a broad inventory solely to satisfy a checklist.
-- **Unknown CPU or Python workload**: Read
-  [references/investigation.md](references/investigation.md). Start with bounded
-  `--cpu-sample` evidence. Add `--syscall-aggregate` only for a kernel-facing
-  hypothesis; validate CPython GC boundaries only for a GC hypothesis. Narrow
-  from emitted selector hints rather than guessing or requiring manual symbol
-  inspection first. Do not run CUDA discovery.
-- **Unknown GPU or mixed workload**: Read
-  [references/investigation.md](references/investigation.md). Use `discover`
-  only to select CUDA context holders. Collect the relevant bounded GPU
-  aggregate and, for mixed work, a bounded CPU sample inventory. Run independent
-  coarse captures concurrently when an aligned workload window matters, with
-  separate bounds, outputs, failures, and perturbation accounting.
-- **Multiple processes**: Also read
-  [references/multi-process.md](references/multi-process.md). Select explicit
-  PID/start-time identities. Inventory one representative per defensible worker
-  class, then run independent narrow commands concurrently where useful.
-- **Containerized live target**: Also read
-  [references/setup.md](references/setup.md). Run the matching CLI in the
-  target's PID and mount namespaces, then reacquire the namespace-local PID plus
-  procfs start time before validation. Resolve the container from explicit
-  workload evidence; do not guess a pod, container, or PID.
-- **Setup or repair**: Read [references/setup.md](references/setup.md) only when
-  a required live command is absent, incompatible, or unhealthy. Existing
-  artifacts do not require a local collector.
+- **Existing artifact**: analyze it offline. Re-correlate Event JSONL with
+  `measure --input`; summarize GPU activity with `scripts/analyze_trace.py`.
+  Skip installation, `doctor`, `discover`, and live attachment unless a new
+  capture is required.
+- **Unknown live workload**: identify the process, then triage one
+  representative cycle (one request, batch, or iteration, after warmup):
 
-Classify live work as CPU-only or GPU/mixed before choosing collectors. Run
-`doctor` when capability is unknown or a command reports an environment
-failure, not as a prerequisite for valid offline or already-diagnosed work.
+  ```bash
+  xprobe measure --pid "$PID" --triage --duration-ms 2000
+  ```
 
-## Narrow from evidence
+  Read `findings` from rank 1. A finding's `next.spec` is a ready measurement:
+  write it to a file and run `xprobe measure --spec next.json`. An
+  `environment` finding (throttling, runqueue wait, GPU clock limits) is a
+  conclusion, not a cue to profile code.
+- **Known boundary**: skip triage. Run read-only `validate` when injection or
+  selector resolution is uncertain, then one bounded `measure`.
+- **Several related boundaries** (request → launch → kernel): one measurement
+  graph captures every edge at once; see [selectors](references/selectors.md).
+- **CUDA worker unknown**: `discover --pid ROOT` lists CUDA context holders; pick
+  from workload evidence. For several workers read
+  [multi-process](references/multi-process.md).
+- **Missing CLI, container target, or environment failure**: read
+  [setup](references/setup.md). Run `doctor` only when capability is unknown or
+  a command reports an environment failure.
 
-For unknown CPU work, validate and run one representative `--cpu-sample`
-window. Inspect sample loss, stack truncation, thread coverage, symbol coverage,
-`python_status`, stack groups, and inclusive/exclusive hotspots. An active
-Python perf map provides Python frames; `inactive` or `unsupported` does not
-invalidate native frames. Use native or Python hotspot context and emitted
-entry/return selector hints to form the next hypothesis.
+Read [interpreting results](references/interpreting.md) before stating a
+latency claim, and [selectors](references/selectors.md) before writing a
+selector yourself.
 
-Use `--syscall-aggregate` when CPU evidence or the question points to I/O,
-allocation, scheduling, or VM behavior. Inspect unmatched/inflight/drop and map
-capacity before using a group's selector hints. For suspected CPython garbage
-collection, validate `python:gc_start` to `python:gc_end`; validation checks the
-target's ELF USDT metadata and may reject a build without those probes.
+## Read results
 
-For unknown GPU work, aggregate only relevant kernel, memcpy, or memset
-families over a representative cycle. Read group counts, duration totals,
-bytes, completeness, and selector hints. Scope breadth and capture duration are
-independent: narrowing scope is not a substitute for retaining a representative
-window.
+- Triage: check `sources` before trusting silence. An `unavailable` source and
+  every `not_covered` item are questions triage did not answer. Shares are
+  estimates; blocked time includes idle waiting.
+- Exact results: start from `quality.verdict` and its issues. `caution` limits
+  the claim; say why. Rank exemplars (min, p50, p90, p99, max) are inline; the
+  full capture is at `evidence.artifact.path`.
+- A command error is not a result. Errors keep structured `details`, including
+  any preserved artifact path; follow `hints` instead of retrying blindly.
 
-Every hotspot or aggregate group is a hypothesis, not final attribution. Pass
-the selected exact endpoints through read-only `validate`, honor its policy
-recommendation explicitly, and collect one detailed bounded measurement per
-stated hypothesis. A failed validation revises the hypothesis; it does not
-justify unrelated collection.
+## Dig deeper when the first pass is inconclusive
 
-## Preserve these invariants
+Escalate one step at a time, each driven by the previous result; details are in
+[deep dive](references/deep-dive.md).
 
-- Use JSON mode. Measurement results use schema version `3.0`; other records
-  and Event JSONL use `2.0`. Treat malformed output and unknown versions as
-  errors.
-- Identify a live process by PID plus procfs start time and verify it around
-  validation and attachment. Never substitute a reused PID.
-- Bound every capture by duration or samples, timeout, and record/group/thread
-  capacity. Preserve each command's stdout, stderr, status, and artifact.
-- For one narrow exact hypothesis, start with modest record headroom over the
-  requested samples and always write the bounded event artifact. Increase
-  `--max-events` only from observed unmatched records or capacity pressure, not
-  as a default substitute for narrower selectors.
-- Before CUDA injection, disclose that `measure` will ptrace the process and
-  leave the CUPTI shared object mapped. `startup_required` NVTX work must restart
-  with the matching Agent before the first NVTX call.
-- Inspect completeness, loss/drops, capacities, unmatched/ambiguous evidence,
-  symbol and stack coverage, clock alignment, method, confidence, and evidence
-  pairs before interpreting latency.
+1. **Triage found nothing actionable**: fix `unavailable` sources first, then
+   widen the window to cover a slow cycle, or run the focused inventory triage
+   omits (memcpy/memset activity, larger CPU sample, `-X perf` for Python).
+2. **A span is slow but unexplained**: split it with a measurement graph into
+   sub-edges, and follow sampled stacks down to a callee boundary.
+3. **Only the tail is slow**: read the p99 and max exemplars, then inspect the
+   artifact around them; re-correlate it offline with `measure --input` before
+   recapturing.
+4. **Threads are blocked**: measure the dominant syscall exactly, check Python
+   GC lifecycles, and treat lock or I/O attribution as not yet covered.
+5. **It is a regression**: run the same spec on the baseline and compare
+   distributions and quality, not single means.
+
+Stop escalating when a step adds no new boundary; report what is known, what
+remains unexplained, and which hand-off tool fits.
+
+## Keep these invariants
+
+- Identify a live process by PID plus procfs start time; never reuse a PID-only
+  choice after a restart.
+- Bound every capture by samples or duration, timeout, and capacity.
+- Before CUDA injection, tell the user that `measure` will ptrace the process
+  and leave the CUPTI shared object mapped. NVTX needs the Agent at startup.
 - Keep process and CUDA stream identity in every claim. Summed concurrent GPU
-  duration is not wall time; temporal correlation is not exact causality.
+  time is not wall time, sampled shares are estimates, and temporal correlation
+  is not exact causality.
+- Record an application baseline for regressions or overhead claims.
 
-Record a baseline when investigating regression or profiler overhead. Warm up
-framework and JIT work before a representative capture. Independent CPU and GPU
-inventories can run concurrently, but compare their perturbation and never
-merge their distinct result contracts as if they were one timeline.
+## Stop or hand off
 
-For exact GPU artifacts, run `scripts/analyze_trace.py` and inspect launch
-variants, stream distribution, `busy_union_ns`, overlap factor, and gaps.
-Aggregate and sampled inventories contain no event timeline and cannot be
-re-correlated offline.
-
-## Stop or hand off deliberately
-
-Stop on target reuse, permission failure, invalid selectors, unavailable
-required collectors, incomplete collection, loss/drops, or a clock/correlation
-problem that invalidates the claim. Preserve structured failures and artifacts.
-
-Once evidence isolates unexplained time inside one GPU kernel, use NCU or PC
-sampling for microarchitecture. Once native sampling isolates code without an
-observable boundary, use a runtime-specific profiler or instrumentation. Do not
-claim xprobe identifies Python semantics when `python_status` or symbolization
-coverage says otherwise.
+Stop on target exit or reuse, permission failure, invalid selectors, drops, or
+a clock failure that invalidates the claim; report the structured error. Once
+time is isolated inside one GPU kernel, hand off to NCU or PC sampling; once it
+is isolated in code without an observable boundary, use a runtime-specific
+profiler. Do not claim Python semantics when `python_status` says otherwise.

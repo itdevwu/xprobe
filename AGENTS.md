@@ -54,14 +54,16 @@
 
 - Follow `skills/xprobe-measure-latency/SKILL.md` for measurement tasks.
 - Choose the shortest Skill route supported by the evidence. Existing artifacts
-  do not require live readiness checks; known selectors may proceed directly to
-  validation and bounded measurement. Use broad-to-narrow inventory only when
-  selectors are unknown. Classify live work as CPU-only or GPU/mixed before
-  choosing collectors; `discover` is only for CUDA context holders. Scope
-  breadth and capture duration are independent. Do not guess selectors.
-- Read evidence pairs, artifact analysis, stream identity, collection quality,
-  and profiler overhead before interpreting latency. Summed concurrent GPU
-  duration is not wall time.
+  are analyzed offline; known boundaries go straight to bounded measurement;
+  unknown live work starts with one triage window and continues with its ranked
+  next spec or a measurement graph. Escalate only from evidence, and do not
+  guess selectors. `discover` is only for CUDA context holders.
+- Read the quality verdict, source coverage, stream identity, and profiler
+  overhead before interpreting latency. Summed concurrent GPU duration is not
+  wall time.
+- Keep the Skill entry point short and each fact in one place. Field meanings
+  belong to schemas and flags to `--help`; Skill tests check behavior, links,
+  and documented flags rather than pinning prose.
 - Keep reusable analysis deterministic and bundled with the Skill. Keep model
   orchestration in the caller rather than adding CLI commands or a service.
 

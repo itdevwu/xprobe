@@ -13,10 +13,13 @@ def main() -> None:
     skill_root = workspace / "skills/xprobe-measure-latency"
     sources = {
         "skill": normalize((skill_root / "SKILL.md").read_text()),
-        "investigation": normalize(
-            (skill_root / "references/investigation.md").read_text()
-        ),
         "setup": normalize((skill_root / "references/setup.md").read_text()),
+        "selectors": normalize((skill_root / "references/selectors.md").read_text()),
+        "interpreting": normalize((skill_root / "references/interpreting.md").read_text()),
+        "deep_dive": normalize((skill_root / "references/deep-dive.md").read_text()),
+        "multi_process": normalize(
+            (skill_root / "references/multi-process.md").read_text()
+        ),
     }
     fixture = json.loads(
         (workspace / "tests/agent-contract/fixtures/workflow-routes.json").read_text()
@@ -29,11 +32,12 @@ def main() -> None:
         covered.add(scenario["name"])
     assert covered == {
         "existing_artifact",
+        "unknown_workload",
         "known_selector",
-        "unknown_cpu",
+        "several_boundaries",
+        "dig_deeper",
         "python_semantics",
-        "mixed_cpu_gpu",
-        "unsupported_python_runtime",
+        "multi_process",
         "container_namespace",
     }
     print(json.dumps({"schema_version": "2.0", "ok": True, "routes": sorted(covered)}))

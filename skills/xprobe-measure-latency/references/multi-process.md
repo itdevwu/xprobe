@@ -1,95 +1,41 @@
 # Multi-process workloads
 
-Keep process selection and concurrency in the agent framework. xprobe has no
-multi-process command: each `validate` and `measure` remains an independent,
-bounded invocation for one stable target identity.
+xprobe has no multi-process command. Selection and concurrency stay in the
+agent; each `validate` and `measure` targets one PID plus process start time.
 
 ## Select workers
 
-Run one `discover` after workload warmup and retain the full candidate records
-used for selection. Select workers from application ownership, command/rank
-metadata, GPU UUIDs, and the intended experiment. Do not select every candidate
-merely because it owns a CUDA context.
+Run `discover --pid ROOT` after warmup and keep the candidate records. Select
+from application ownership, command line, rank, and GPU UUID, not merely
+because a process holds a CUDA context. For workers that configuration and
+evidence show to be homogeneous, triage one representative worker and reuse its
+selectors; otherwise treat each class separately.
 
-Treat workers as homogeneous only when application configuration and observed
-workload evidence support that claim. For a homogeneous rank set, use one
-representative worker for each required CPU sample, syscall, or GPU aggregate
-inventory. Derive narrow
-selectors from that inventory, then apply those selectors to every selected
-worker. For heterogeneous workers, inventory one representative per defensible
-class or investigate workers separately.
+Name every spec, result, stderr log, and artifact with the worker's
+`target.pid` and `target.process_start_time`. Never reuse an artifact path
+across workers or attempts.
 
-Record each selected candidate's exact `target.pid` and
-`target.process_start_time`. Name every spec, result, stderr log, and event
-artifact with both values. Never reuse an artifact path across workers or
-attempts.
+## Validate, then capture concurrently
 
-## Revalidate identity
+Write one spec per worker with its own bounds. Validate each and require that
+the response's `target` exactly matches the selected identity; a mismatch or
+failure removes that worker rather than substituting a new PID. Disclose any
+`injection_required` worker before measuring.
 
-Create one narrow Measurement Spec per selected worker. Copy its full discovery
-identity into `target`; give every spec its own samples or duration,
-`timeout_ms`, and `max_events`. Capacities are per worker, never a shared budget.
+Launch one bounded `measure --spec` per worker as native concurrent tool calls
+so the windows cover the same workload cycle. Wait for every command. Do not
+cancel sibling commands when one fails; mark the overall experiment incomplete
+and report usable per-worker results separately.
 
-Issue one read-only `validate` call per selected worker, concurrently when the
-agent framework supports concurrent tool calls. Before any mutation, require
-that each validation response is valid and that its `target` exactly matches
-the selected PID and `process_start_time`. Preserve each validation JSON and its
-warnings. A mismatch, exit, or failed validation removes that worker from the
-measurement batch; do not replace it with a newly observed PID.
-
-When validation reports `injection_required`, disclose and retain that worker's
-mutation warning. Do not preload or repeatedly broad-profile all ranks merely
-to make injection look uniform. Injection completes before that worker's ARM
-window, but its application-level startup perturbation still belongs in the
-report.
-
-## Capture concurrently
-
-After every selected identity has passed validation, launch one bounded
-`xprobe measure --spec WORKER_SPEC` per selected worker using native concurrent
-tool calls from the agent framework. Start the calls in one concurrency batch
-so their capture windows cover the same controlled request, batch, or iteration
-cycle. Do not serialize the commands unless the investigation explicitly needs
-different workload windows.
-
-The same rule applies to mixed evidence on one worker: a CPU sample inventory
-and GPU aggregate may run as two concurrent xprobe commands when they must cover
-the same controlled window. They keep independent duration, timeout, sample or
-group capacities, result schemas, stderr, and output paths. Do not merge them or
-infer exact CPU/GPU causality from overlapping command times. Avoid concurrent
-broad CUPTI captures for the same process because Agent activation and shared
-workload perturbation make them poor independent observations.
-
-Keep these outputs separate for every worker:
-
-- spec with the discovered target identity;
-- validation JSON and stderr;
-- measurement JSON and stderr;
-- exact Event JSONL artifact when requested;
-- separate CPU, syscall, and GPU inventory JSON when collected;
-- command exit status and start/end wall timestamps.
-
-Wait for every command. Do not cancel sibling commands or discard successful
-outputs when one worker fails. Preserve injection warnings, configured capacity,
-collection quality, and the structured error for each worker. Mark the overall
-experiment incomplete when any selected worker fails, while describing usable
-single-worker evidence separately.
+On one worker, a CPU sample inventory and GPU aggregate may also run as two
+concurrent commands with separate bounds and outputs. Prefer triage when one
+window must cover both.
 
 ## Interpret without merging
 
-Read every result's status, completeness, drops, utilization, ambiguity, clock,
-correlation, and evidence independently. Compare per-worker distributions only
-after checking that selectors, workload phase, device assignment, and quality
-are comparable.
-
-Do not concatenate artifacts and rerun correlation across processes. CUPTI
-correlation IDs, CUDA contexts, streams, host thread identity, and process
-clocks are process-scoped evidence; overlapping wall timestamps do not establish
-cross-process causality. Report variation or concurrent observation, not an
-exact relationship between worker events.
-
-Measure an application baseline before the batch and again afterward. Report
-per-worker command startup time and workload throughput during collection.
-Concurrent captures can perturb shared CPU, GPU, storage, and driver resources,
-so a result that changes the workload materially needs a smaller worker set,
-narrower selectors, or a shorter but still representative window.
+Read each result's quality independently and compare per-worker distributions
+only when selectors, phase, and device assignment match. Do not concatenate
+artifacts and correlate across processes: correlation IDs, streams, and threads
+are process-scoped, and overlapping timestamps do not establish a relationship.
+Concurrent captures perturb shared resources; record a workload baseline and
+reduce the worker set if throughput changes materially.
