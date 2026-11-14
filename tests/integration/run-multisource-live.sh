@@ -18,6 +18,9 @@ live_capture="$1/live.jsonl"
 live_measurement="$1/live-measure.json"
 spec="${build_dir}/measurement-spec.json"
 spec_measurement="$1/spec-measure.json"
+graph="${build_dir}/measurement-graph.json"
+graph_validation="$1/graph-validate.json"
+graph_measurement="$1/graph-measure.json"
 gpu_info="$1/gpu.txt"
 compute_capability=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed -n '1p')
 compute_arch=${compute_capability//./}
@@ -87,6 +90,25 @@ printf '{"schema_version":"2.0","name":"spec_host_to_kernel","target":{"pid":%s,
   --cupti-socket "${snapshot_socket}" \
   --json --non-interactive --no-color >"${spec_measurement}"
 
+kernel='cuda:kernel_start:name~xprobe_multisource_kernel.*'
+kernel_end='cuda:kernel_end:name~xprobe_multisource_kernel.*'
+cat >"${graph}" <<GRAPH
+{"schema_version":"3.0","name":"request_path",
+ "target":{"pid":${target_pid},"process_start_time":${process_start_time}},
+ "endpoints":{"request":"uprobe:${fixture}:xprobe_request_marker:entry",
+              "launch_exit":"cuda:runtime_api:cudaLaunchKernel:exit",
+              "kernel_start":"${kernel}","kernel_end":"${kernel_end}"},
+ "edges":[{"name":"request_to_launch","from":"request","to":"launch_exit","match_policy":"first_after","samples":3},
+          {"name":"launch_to_kernel","from":"launch_exit","to":"kernel_start","match_policy":"exact","samples":3},
+          {"name":"kernel_duration","from":"kernel_start","to":"kernel_end","match_policy":"exact","samples":3}],
+ "duration_ms":null,"timeout_ms":10000,"max_events":100000}
+GRAPH
+/workspace/target/debug/xprobe validate --spec "${graph}" >"${graph_validation}"
+/workspace/target/debug/xprobe measure \
+  --spec "${graph}" \
+  --cupti-socket "${snapshot_socket}" \
+  --events-out "$1/graph-events.jsonl" >"${graph_measurement}"
+
 if [[ $(stat -c '%a' "${snapshot_socket}") != 600 ]]; then
   echo "CUPTI snapshot socket is not mode 0600" >&2
   exit 1
@@ -100,4 +122,5 @@ touch "${stop}"
 wait "${target_pid}"
 trap - EXIT
 chmod 0644 "${live_capture}" \
-  "${live_measurement}" "${spec_measurement}" "${gpu_info}"
+  "${live_measurement}" "${spec_measurement}" "${gpu_info}" \
+  "${graph_validation}" "${graph_measurement}" "$1/graph-events.jsonl"

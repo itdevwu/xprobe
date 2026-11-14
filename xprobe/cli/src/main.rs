@@ -24,6 +24,7 @@ use xprobe_protocol::{
 mod args;
 mod dev;
 mod failure;
+mod graph;
 mod inventory;
 mod live;
 mod render;
@@ -415,6 +416,12 @@ fn run_measure_spec(
             );
         }
     };
+    if value.get("edges").is_some() {
+        return match graph::parse_spec(value, path) {
+            Ok(spec) => graph::run_measure_graph(spec, cupti_socket, agent_path, output, json),
+            Err(error) => emit_command_failure(error, json),
+        };
+    }
     if value.get("sample_event").is_some() {
         return run_cpu_sampling_file_spec(
             value,
@@ -791,6 +798,7 @@ fn emit_aggregate_inventory(result: &AggregateInventoryResult, json: bool) -> Ex
 fn run_validate(args: ValidateArgs) -> ExitCode {
     let ValidateArgs {
         pid,
+        spec,
         from,
         to,
         match_policy,
@@ -803,6 +811,24 @@ fn run_validate(args: ValidateArgs) -> ExitCode {
                 non_interactive: _,
             },
     } = args;
+    if let Some(path) = spec {
+        let value = match fs::read(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("invalid graph spec {}: {error}", path.display()))
+            }) {
+            Ok(value) => value,
+            Err(message) => {
+                return emit_error(ErrorCode::InvalidEventSelector, message, true, json);
+            }
+        };
+        return match graph::parse_spec(value, &path) {
+            Ok(spec) => graph::run_validate_graph(&spec, json),
+            Err(error) => emit_command_failure(error, json),
+        };
+    }
+    let pid = pid.expect("clap requires --pid without --spec");
     let report = match inspect::run(pid) {
         Ok(report) => report,
         Err(error) => {

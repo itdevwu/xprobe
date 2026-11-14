@@ -1352,7 +1352,35 @@ pub(crate) fn measure_live_capture(
     options: &MeasureOptions,
     require_complete: bool,
 ) -> Result<MeasurementExecution, CommandFailure> {
-    let capture = completed_live_capture(host_captures, collection, &options.session_id)?;
+    let capture = checked_live_capture(
+        host_captures,
+        collection,
+        &options.session_id,
+        require_complete,
+    )?;
+    let options = MeasureOptions {
+        dropped_events: capture.dropped_records,
+        ..options.clone()
+    };
+    let mut result = measure(&capture.events, &options).map_err(|error| {
+        measurement_failure(&error, &options, &capture.events, require_complete)
+    })?;
+    apply_collection_summary(&mut result, &capture);
+    Ok(MeasurementExecution {
+        result,
+        events: capture.events,
+    })
+}
+
+/// Merge the live sources into one capture and reject incomplete or unknown
+/// records, preserving the events as an artifact on failure.
+pub(crate) fn checked_live_capture(
+    host_captures: &[HostCaptureResult],
+    collection: &LiveCollection,
+    session_id: &str,
+    require_complete: bool,
+) -> Result<completed::CompletedCapture, CommandFailure> {
+    let capture = completed_live_capture(host_captures, collection, session_id)?;
     reject_incomplete_capture(&capture, true, require_complete)
         .map_err(|error| error.with_artifact_events(capture.events.clone()))?;
     if capture.unknown_records != 0 {
@@ -1368,18 +1396,7 @@ pub(crate) fn measure_live_capture(
         .with_hint("rebuild xprobe and the CUPTI Agent from the same release")
         .with_artifact_events(capture.events));
     }
-    let options = MeasureOptions {
-        dropped_events: capture.dropped_records,
-        ..options.clone()
-    };
-    let mut result = measure(&capture.events, &options).map_err(|error| {
-        measurement_failure(&error, &options, &capture.events, require_complete)
-    })?;
-    apply_collection_summary(&mut result, &capture);
-    Ok(MeasurementExecution {
-        result,
-        events: capture.events,
-    })
+    Ok(capture)
 }
 
 pub(crate) fn completed_live_capture(

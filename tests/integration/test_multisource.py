@@ -70,6 +70,16 @@ def main() -> None:
         assert spec_result["measurement"]["name"] == "spec_host_to_kernel"
         assert spec_result["measurement"]["samples"]["matched"] == 3
 
+        graph_validation = json.loads(
+            (pathlib.Path(output_dir) / "graph-validate.json").read_text()
+        )
+        graph_result = json.loads(
+            (pathlib.Path(output_dir) / "graph-measure.json").read_text()
+        )
+        graph_events = (
+            pathlib.Path(output_dir) / "graph-events.jsonl"
+        ).read_text().splitlines()
+
         trace_path = pathlib.Path(output_dir) / "trace.json"
         exported = subprocess.run(
             [
@@ -102,6 +112,28 @@ def main() -> None:
     assert live_result["correlation"]["confidence"] == "heuristic"
     assert live_result["clock"]["alignment"] == "cupti_normalized_to_host_monotonic"
     assert live_result["collection"]["cuda_events"] >= 3
+    assert graph_validation["schema_version"] == "3.0", graph_validation
+    assert graph_validation["valid"] is True, graph_validation["issues"]
+    assert [edge["name"] for edge in graph_validation["edges"]] == [
+        "request_to_launch",
+        "launch_to_kernel",
+        "kernel_duration",
+    ]
+    assert graph_validation["requirements"]["needs_ebpf"] is True
+    assert graph_validation["requirements"]["needs_cupti"] is True
+    assert graph_result["schema_version"] == "3.0", graph_result
+    assert graph_result["status"] == "completed", graph_result
+    edges = {edge["name"]: edge for edge in graph_result["edges"]}
+    assert set(edges) == {"request_to_launch", "launch_to_kernel", "kernel_duration"}
+    for edge in edges.values():
+        assert edge["measurement"]["samples"]["matched"] >= 3, edge
+        assert edge["measurement"]["latency_ns"]["min"] > 0, edge
+        assert edge["evidence"]["exemplars"], edge
+    assert edges["request_to_launch"]["correlation"]["confidence"] == "heuristic"
+    assert edges["launch_to_kernel"]["correlation"]["confidence"] == "exact"
+    assert edges["kernel_duration"]["correlation"]["confidence"] == "exact"
+    assert graph_result["artifact"]["events"] == len(graph_events)
+    assert graph_result["collection"]["host_events"] >= 3
     assert export_result["format"] == "chrome"
     assert export_result["event_count"] == len(chrome_trace["traceEvents"])
     assert export_result["event_count"] == len(live_events)
@@ -118,6 +150,10 @@ def main() -> None:
                 "live_events": len(live_events),
                 "live_matched": live_result["measurement"]["samples"]["matched"],
                 "spec_matched": spec_result["measurement"]["samples"]["matched"],
+                "graph_p50_ns": {
+                    name: edge["measurement"]["latency_ns"]["p50"]
+                    for name, edge in edges.items()
+                },
                 "trace_events": export_result["event_count"],
                 "min_ns": live_result["measurement"]["latency_ns"]["min"],
                 "gpu": gpu,
