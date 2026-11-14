@@ -31,7 +31,7 @@ pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{
     ArgumentValue, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, HostEvent,
-    HostProbeKind, MemcpyKind, NvtxEvent, NvtxRangeKind,
+    HostProbeKind, MemcpyKind, MemoryKind, NvtxEvent, NvtxRangeKind,
 };
 pub use export::{ExportFormat, TraceExportResult};
 pub use graph::{

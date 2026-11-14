@@ -147,6 +147,13 @@ def run_inner(xprobe: pathlib.Path) -> None:
     }
     assert "cuda:memcpy_start:kind=HtoD" in transfer_hints
     assert "cuda:memcpy_start:kind=DtoH" in transfer_hints
+    host_sides = {
+        (group["memcpy_kind"], group["src_memory"], group["dst_memory"])
+        for group in transfers["inventory"]["groups"]
+    }
+    # The workload copies between pinned host buffers and device memory.
+    assert ("HtoD", "pinned", "device") in host_sides, host_sides
+    assert ("DtoH", "device", "pinned") in host_sides, host_sides
     assert_exact(exact_kernel)
     assert_exact(synchronization)
     assert_exact(nvtx)

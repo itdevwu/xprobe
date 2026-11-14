@@ -301,6 +301,9 @@ memcpy, or memset activity start/end pair. It uses `--max-groups` (default
 `schemas/aggregate-inventory-result.schema.json`. The result is a coarse
 inventory, not exact event evidence: it reports count, total/min/max/mean
 duration, optional transferred bytes, table occupancy, and drop completeness.
+Memcpy groups also split by `src_memory` and `dst_memory` (`pageable`,
+`pinned`, `device`, `managed`, ...); pageable host memory forces staged,
+synchronous copies. Aggregate results use schema `3.0`.
 Aggregate kernel regex must be reducible to an exact, prefix, suffix, or
 contains filter because this mode intentionally has no Rust-side event pass.
 Each kernel group reports `name_complete`. CUPTI names that fill the fixed

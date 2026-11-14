@@ -108,6 +108,8 @@ struct xprobe_cupti_aggregate_slot {
     uint32_t kind;
     uint32_t device_id;
     uint32_t memcpy_kind;
+    uint32_t src_memory_kind;
+    uint32_t dst_memory_kind;
     char name[XPROBE_CUPTI_NAME_LENGTH];
 };
 
@@ -648,12 +650,15 @@ static uint64_t aggregate_hash(uint32_t kind, uint32_t device_id,
 
 static int aggregate_key_matches(
     const struct xprobe_cupti_aggregate_slot *slot, uint32_t kind,
-    uint32_t device_id, uint32_t memcpy_kind, const char *name)
+    uint32_t device_id, uint32_t memcpy_kind, uint32_t src_memory_kind,
+    uint32_t dst_memory_kind, const char *name)
 {
     const char *key_name = name == NULL ? "" : name;
 
     return slot->kind == kind && slot->device_id == device_id &&
            slot->memcpy_kind == memcpy_kind &&
+           slot->src_memory_kind == src_memory_kind &&
+           slot->dst_memory_kind == dst_memory_kind &&
            strncmp(slot->name, key_name, XPROBE_CUPTI_NAME_LENGTH - 1U) == 0;
 }
 
@@ -704,7 +709,8 @@ static void update_aggregate_slot(struct xprobe_cupti_aggregate_slot *slot,
 }
 
 static void aggregate_activity(uint32_t kind, uint32_t device_id,
-                               uint32_t memcpy_kind, const char *name,
+                               uint32_t memcpy_kind, uint32_t src_memory_kind,
+                               uint32_t dst_memory_kind, const char *name,
                                uint64_t start_ns, uint64_t end_ns, uint64_t bytes)
 {
     uint64_t hash;
@@ -718,7 +724,10 @@ static void aggregate_activity(uint32_t kind, uint32_t device_id,
         remember_output_error();
         return;
     }
-    hash = aggregate_hash(kind, device_id, memcpy_kind, name);
+    hash = aggregate_hash(kind, device_id,
+                          memcpy_kind | (src_memory_kind << 8U) |
+                              (dst_memory_kind << 16U),
+                          name);
     first = hash % record_capacity;
     for (uint64_t probe = 0U; probe < record_capacity; ++probe) {
         uint64_t index = (first + probe) % record_capacity;
@@ -726,7 +735,8 @@ static void aggregate_activity(uint32_t kind, uint32_t device_id,
         uint64_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
 
         if (state == hash &&
-            aggregate_key_matches(slot, kind, device_id, memcpy_kind, name) != 0) {
+            aggregate_key_matches(slot, kind, device_id, memcpy_kind,
+                                  src_memory_kind, dst_memory_kind, name) != 0) {
             update_aggregate_slot(slot, end_ns - start_ns, bytes);
             return;
         }
@@ -740,6 +750,8 @@ static void aggregate_activity(uint32_t kind, uint32_t device_id,
             slot->kind = kind;
             slot->device_id = device_id;
             slot->memcpy_kind = memcpy_kind;
+            slot->src_memory_kind = src_memory_kind;
+            slot->dst_memory_kind = dst_memory_kind;
             copy_name(slot->name, name);
             atomic_store_explicit(&slot->count, 0U, memory_order_relaxed);
             atomic_store_explicit(&slot->total_duration_ns, 0U,
@@ -1191,7 +1203,7 @@ static int activity_started_during_capture(uint64_t timestamp_ns)
         }                                                                          \
         if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {                       \
             aggregate_activity(                                                     \
-                XPROBE_CUPTI_GPU_KERNEL_START, (kernel)->deviceId, 0U,              \
+                XPROBE_CUPTI_GPU_KERNEL_START, (kernel)->deviceId, 0U, 0U, 0U,      \
                 (kernel)->name, normalize_activity_timestamp((kernel)->start),      \
                 normalize_activity_timestamp((kernel)->end), 0U);                   \
             return;                                                                \
@@ -1314,7 +1326,9 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
             if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
                 aggregate_activity(
                     XPROBE_CUPTI_GPU_MEMCPY_START, memcpy_record->deviceId,
-                    semantic_memcpy_kind((uint32_t)memcpy_record->copyKind), NULL,
+                    semantic_memcpy_kind((uint32_t)memcpy_record->copyKind),
+                    (uint32_t)memcpy_record->srcKind,
+                    (uint32_t)memcpy_record->dstKind, NULL,
                     normalize_activity_timestamp(memcpy_record->start),
                     normalize_activity_timestamp(memcpy_record->end),
                     memcpy_record->bytes);
@@ -1338,7 +1352,7 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
             if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
                 aggregate_activity(
                     XPROBE_CUPTI_GPU_MEMSET_START, memset_record->deviceId, 0U,
-                    NULL, normalize_activity_timestamp(memset_record->start),
+                    0U, 0U, NULL, normalize_activity_timestamp(memset_record->start),
                     normalize_activity_timestamp(memset_record->end),
                     memset_record->bytes);
                 continue;
@@ -1579,7 +1593,8 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
         header->feature_flags |= XPROBE_CUPTI_FEATURE_NVTX_RECORDS;
     }
     if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
-        header->feature_flags |= XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS;
+        header->feature_flags |= XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS |
+                                XPROBE_CUPTI_FEATURE_MEMORY_KINDS;
     } else if (activity_timestamps_are_host_monotonic(available) != 0) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS;
     }
@@ -1623,6 +1638,8 @@ static int write_aggregate_records(int descriptor,
         output.kind = slot->kind;
         output.device_id = slot->device_id;
         output.memcpy_kind = slot->memcpy_kind;
+        output.src_memory_kind = slot->src_memory_kind;
+        output.dst_memory_kind = slot->dst_memory_kind;
         memcpy(output.name, slot->name, sizeof(output.name));
         if (write_function(descriptor, &output, sizeof(output)) != 0) {
             return -1;

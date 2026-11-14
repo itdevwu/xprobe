@@ -13,7 +13,7 @@
       "type": "boolean"
     },
     "schema_version": {
-      "$ref": "#/$defs/SchemaVersion"
+      "$ref": "#/$defs/SchemaVersion3"
     },
     "session_id": {
       "type": "string"
@@ -150,6 +150,16 @@
           "format": "uint32",
           "minimum": 0
         },
+        "dst_memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "duration_ns": {
           "$ref": "#/$defs/AggregateDuration"
         },
@@ -176,6 +186,17 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "src_memory": {
+          "description": "Source and destination memory of memcpy groups; `null` for other\nactivity or when the Agent did not report memory kinds.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryKind"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "start_selector_hint": {
@@ -245,10 +266,25 @@
         "unknown"
       ]
     },
-    "SchemaVersion": {
+    "MemoryKind": {
+      "description": "Host or device memory behind one side of a copy (`CUpti_ActivityMemoryKind`).\nPageable host memory forces staged, synchronous transfers; pinned memory\nallows direct DMA.",
       "type": "string",
       "enum": [
-        "2.0"
+        "unknown",
+        "pageable",
+        "pinned",
+        "device",
+        "array",
+        "managed",
+        "device_static",
+        "managed_static"
+      ]
+    },
+    "SchemaVersion3": {
+      "description": "Version of records whose shape changed in xprobe 0.6.\n\nRecords keep their own version so unchanged contracts, such as Event JSONL\nartifacts, remain readable at `2.0`.",
+      "type": "string",
+      "enum": [
+        "3.0"
       ]
     },
     "SessionStatus": {

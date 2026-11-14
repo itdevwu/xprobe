@@ -5,7 +5,7 @@ use std::{error::Error, fmt};
 use xprobe_protocol::{
     AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
     AggregateInventory, AggregateInventoryResult, CaptureCompleteness, ErrorCode, MemcpyKind,
-    SchemaVersion, SessionStatus,
+    MemoryKind, SchemaVersion3, SessionStatus,
 };
 
 /// One Agent aggregate table slot. Several slots may describe the same group.
@@ -16,6 +16,8 @@ pub struct RawGpuAggregateGroup {
     pub name_complete: Option<bool>,
     pub device_id: Option<u32>,
     pub memcpy_kind: Option<MemcpyKind>,
+    pub src_memory: Option<MemoryKind>,
+    pub dst_memory: Option<MemoryKind>,
     pub count: u64,
     pub total_duration_ns: u64,
     pub min_duration_ns: u64,
@@ -115,7 +117,7 @@ pub fn analyze(
         .map(protocol_group)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(AggregateInventoryResult {
-        schema_version: SchemaVersion::current(),
+        schema_version: SchemaVersion3::current(),
         ok: true,
         session_id: request.session_id,
         status: SessionStatus::Completed,
@@ -151,6 +153,8 @@ fn merge_groups(
                 memcpy_kind_rank(left.memcpy_kind.as_ref())
                     .cmp(&memcpy_kind_rank(right.memcpy_kind.as_ref()))
             })
+            .then_with(|| left.src_memory.cmp(&right.src_memory))
+            .then_with(|| left.dst_memory.cmp(&right.dst_memory))
     });
     let mut merged: Vec<RawGpuAggregateGroup> = Vec::with_capacity(groups.len());
     for group in groups {
@@ -162,6 +166,8 @@ fn merge_groups(
             || previous.name != group.name
             || previous.device_id != group.device_id
             || previous.memcpy_kind != group.memcpy_kind
+            || previous.src_memory != group.src_memory
+            || previous.dst_memory != group.dst_memory
         {
             merged.push(group);
             continue;
@@ -220,6 +226,8 @@ fn protocol_group(group: RawGpuAggregateGroup) -> Result<AggregateGroup, GpuAggr
         name_complete: group.name_complete,
         device_id: group.device_id,
         memcpy_kind: group.memcpy_kind,
+        src_memory: group.src_memory,
+        dst_memory: group.dst_memory,
         start_selector_hint,
         end_selector_hint,
         count: group.count,
@@ -296,7 +304,7 @@ fn utilization(occupied: u64, capacity: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use xprobe_protocol::{AggregateActivity, MemcpyKind};
+    use xprobe_protocol::{AggregateActivity, MemcpyKind, MemoryKind};
 
     use super::{
         GpuAggregateCapture, GpuAggregateError, GpuAggregateRequest, RawGpuAggregateGroup, analyze,
@@ -310,6 +318,8 @@ mod tests {
             name_complete: Some(complete),
             device_id: Some(0),
             memcpy_kind: None,
+            src_memory: None,
+            dst_memory: None,
             count,
             total_duration_ns: total,
             min_duration_ns: total / count,
@@ -325,6 +335,8 @@ mod tests {
             name_complete: None,
             device_id: Some(0),
             memcpy_kind: Some(kind),
+            src_memory: None,
+            dst_memory: None,
             count,
             total_duration_ns: 10 * count,
             min_duration_ns: 10,
@@ -368,6 +380,32 @@ mod tests {
         assert_eq!(result.collection.groups, 3);
         assert_eq!(result.collection.occupied_slots, 4);
         assert!((result.collection.table_utilization - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn keeps_pageable_and_pinned_copies_apart() {
+        let mut pageable = memcpy(MemcpyKind::HostToDevice, 2, Some(64));
+        pageable.src_memory = Some(MemoryKind::Pageable);
+        pageable.dst_memory = Some(MemoryKind::Device);
+        let mut pinned = pageable.clone();
+        pinned.src_memory = Some(MemoryKind::Pinned);
+        let capture = GpuAggregateCapture {
+            groups: vec![pinned, pageable.clone(), pageable],
+            observed_activities: 6,
+            group_capacity: 8,
+        };
+        let groups = analyze(request(), capture).unwrap().inventory.groups;
+        let kinds = groups
+            .iter()
+            .map(|group| (group.src_memory, group.count))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [
+                (Some(MemoryKind::Pageable), 4),
+                (Some(MemoryKind::Pinned), 2)
+            ]
+        );
     }
 
     #[test]

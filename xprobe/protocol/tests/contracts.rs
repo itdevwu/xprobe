@@ -188,7 +188,7 @@ fn measurement_spec_contract_round_trips() {
 #[test]
 fn aggregate_inventory_contract_round_trips() {
     assert_round_trip::<AggregateInventoryResult>(&json!({
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "ok": true,
         "session_id": "xp_inventory",
         "status": "completed",
@@ -202,6 +202,8 @@ fn aggregate_inventory_contract_round_trips() {
                 "name_complete": true,
                 "device_id": 0,
                 "memcpy_kind": null,
+                "src_memory": null,
+                "dst_memory": null,
                 "start_selector_hint": "cuda:kernel_start:name~^vector_add$",
                 "end_selector_hint": "cuda:kernel_end:name~^vector_add$",
                 "count": 10,
