@@ -23,7 +23,7 @@ only installation action required from the user:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.5.2/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.6.0/skills/xprobe-measure-latency \
   --global
 ```
 

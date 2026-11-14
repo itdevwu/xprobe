@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-cli"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "clap",
  "serde",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-collector"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "libbpf-rs",
  "perf-event-open",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-core"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "cpp_demangle",
  "nix",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-correlator"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-exporter"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "serde_json",
  "xprobe-protocol",
@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "xprobe-protocol"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "schemars",
  "serde",
