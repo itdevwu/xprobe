@@ -14,7 +14,8 @@ command, and when to stop. Escalate one step at a time.
    intermittent or per-request, drive one slow request during the window or
    lengthen `--duration-ms` to cover several cycles.
 3. **Triage omits transfers.** GPU activity in triage covers kernels only.
-   Inventory copies and memsets explicitly:
+   Inventory copies and memsets explicitly; groups with `src_memory` or
+   `dst_memory` of `pageable` point at host buffers to pin:
 
    ```bash
    xprobe measure --pid "$PID" --from cuda:memcpy_start --to cuda:memcpy_end \

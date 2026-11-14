@@ -19,7 +19,8 @@ enum xprobe_cupti_feature {
     XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS = 1U << 0,
     XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS = 1U << 1,
     XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS = 1U << 2,
-    XPROBE_CUPTI_FEATURE_NVTX_RECORDS = 1U << 3
+    XPROBE_CUPTI_FEATURE_NVTX_RECORDS = 1U << 3,
+    XPROBE_CUPTI_FEATURE_MEMORY_KINDS = 1U << 4
 };
 
 enum xprobe_cupti_capture_mode {
@@ -145,7 +146,11 @@ struct xprobe_cupti_aggregate_record {
     uint32_t kind;
     uint32_t device_id;
     uint32_t memcpy_kind;
-    uint32_t reserved[5];
+    /* CUpti_ActivityMemoryKind of a memcpy's source and destination; 0 for
+     * other activity. Valid when XPROBE_CUPTI_FEATURE_MEMORY_KINDS is set. */
+    uint32_t src_memory_kind;
+    uint32_t dst_memory_kind;
+    uint32_t reserved[3];
     char name[XPROBE_CUPTI_NAME_LENGTH];
 };
 

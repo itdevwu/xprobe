@@ -660,7 +660,7 @@ sub run_batch_body {
     require_condition($inventory_exit == 0,
         'representative aggregate inventory command failed');
     verify_identity($representative, 'after aggregate inventory');
-    my $inventory = load_json($inventory_stdout, 'aggregate inventory');
+    my $inventory = load_json($inventory_stdout, 'aggregate inventory', '3.0');
     require_condition($inventory->{ok} && $inventory->{status} eq 'completed',
         'aggregate inventory is not complete');
     my $inventory_collection = $inventory->{collection};

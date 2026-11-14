@@ -12,7 +12,7 @@ use std::{
 
 use serde_json::Value;
 use xprobe_protocol::{
-    ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, MemcpyKind, NvtxEvent,
+    ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, MemcpyKind, MemoryKind, NvtxEvent,
     NvtxRangeKind, SchemaVersion,
 };
 
@@ -37,10 +37,12 @@ const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
 const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
 const FEATURE_AGGREGATE_RECORDS: u32 = 1 << 2;
 const FEATURE_NVTX_RECORDS: u32 = 1 << 3;
+const FEATURE_MEMORY_KINDS: u32 = 1 << 4;
 const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS
     | FEATURE_TRANSFER_RECORDS
     | FEATURE_AGGREGATE_RECORDS
-    | FEATURE_NVTX_RECORDS;
+    | FEATURE_NVTX_RECORDS
+    | FEATURE_MEMORY_KINDS;
 const UNKNOWN_U32: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +124,8 @@ pub struct CuptiAggregateGroup {
     pub name_complete: Option<bool>,
     pub device_id: Option<u32>,
     pub memcpy_kind: Option<MemcpyKind>,
+    pub src_memory: Option<MemoryKind>,
+    pub dst_memory: Option<MemoryKind>,
     pub count: u64,
     pub total_duration_ns: u64,
     pub min_duration_ns: u64,
@@ -628,7 +632,7 @@ fn decode_payload(
     if feature_flags & FEATURE_AGGREGATE_RECORDS != 0 {
         let mut groups = Vec::with_capacity(record_count);
         for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
-            groups.push(decode_aggregate_record(record, index)?);
+            groups.push(decode_aggregate_record(record, index, feature_flags)?);
         }
         return Ok((Vec::new(), groups));
     }
@@ -652,6 +656,7 @@ fn decode_payload(
 fn decode_aggregate_record(
     record: &[u8],
     index: usize,
+    feature_flags: u32,
 ) -> Result<CuptiAggregateGroup, CuptiDecodeError> {
     let count = read_u64(record, 0);
     let total_duration_ns = read_u64(record, 8);
@@ -699,17 +704,46 @@ fn decode_aggregate_record(
     }
     let memcpy_kind = (activity == CuptiAggregateActivity::Memcpy)
         .then(|| decode_semantic_memcpy_kind(read_u32(record, 48)));
+    let memory_kinds =
+        activity == CuptiAggregateActivity::Memcpy && feature_flags & FEATURE_MEMORY_KINDS != 0;
+    let memory_kind = |offset: usize| {
+        memory_kinds
+            .then(|| decode_memory_kind(read_u32(record, offset)))
+            .transpose()
+            .map_err(|()| CuptiDecodeError::InvalidAggregateRecord {
+                index,
+                message: "memory kind is unsupported",
+            })
+    };
+    let src_memory = memory_kind(52)?;
+    let dst_memory = memory_kind(56)?;
     Ok(CuptiAggregateGroup {
         activity,
         name: has_name.then(|| name.to_owned()),
         name_complete: has_name.then_some(name_length + 1 < CUPTI_NAME_CAPACITY),
         device_id: optional_unknown(read_u32(record, 44)),
         memcpy_kind,
+        src_memory,
+        dst_memory,
         count,
         total_duration_ns,
         min_duration_ns,
         max_duration_ns,
         total_bytes: has_bytes.then(|| read_u64(record, 32)),
+    })
+}
+
+fn decode_memory_kind(value: u32) -> Result<MemoryKind, ()> {
+    Ok(match value {
+        0 => MemoryKind::Unknown,
+        1 => MemoryKind::Pageable,
+        2 => MemoryKind::Pinned,
+        3 => MemoryKind::Device,
+        4 => MemoryKind::Array,
+        5 => MemoryKind::Managed,
+        6 => MemoryKind::DeviceStatic,
+        7 => MemoryKind::ManagedStatic,
+        _ => return Err(()),
     })
 }
 
@@ -982,7 +1016,9 @@ mod tests {
         FILTER_SIZE, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture, encode_control,
         read_snapshot,
     };
-    use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind, NvtxRangeKind};
+    use xprobe_protocol::{
+        ClockDomain, EventSource, EventType, MemcpyKind, MemoryKind, NvtxRangeKind,
+    };
 
     fn capture(records: &[[u8; RECORD_SIZE]]) -> Vec<u8> {
         let mut bytes = vec![0_u8; HEADER_SIZE + records.len() * RECORD_SIZE];
@@ -1271,10 +1307,10 @@ mod tests {
     #[test]
     fn rejects_unknown_feature_flags() {
         let mut bytes = capture(&[]);
-        bytes[20..24].copy_from_slice(&16_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&32_u32.to_le_bytes());
         assert_eq!(
             decode_capture(&bytes, "xp_test"),
-            Err(CuptiDecodeError::UnsupportedFeatureFlags(16))
+            Err(CuptiDecodeError::UnsupportedFeatureFlags(32))
         );
     }
 
@@ -1370,6 +1406,31 @@ mod tests {
             Some(MemcpyKind::HostToDevice)
         );
         assert_eq!(decoded.aggregate_groups[1].total_bytes, Some(4096));
+    }
+
+    #[test]
+    fn decodes_memcpy_memory_kinds_only_when_reported() {
+        let mut pageable = aggregate_record(5, 2, 200, 0, 1, "");
+        pageable[52..56].copy_from_slice(&1_u32.to_le_bytes());
+        pageable[56..60].copy_from_slice(&3_u32.to_le_bytes());
+        let mut bytes = aggregate_capture(&[pageable], 2);
+        let features = super::FEATURE_TRANSFER_RECORDS
+            | super::FEATURE_AGGREGATE_RECORDS
+            | super::FEATURE_MEMORY_KINDS;
+        bytes[20..24].copy_from_slice(&features.to_le_bytes());
+        let group = &decode_capture(&bytes, "unused").unwrap().aggregate_groups[0];
+        assert_eq!(group.src_memory, Some(MemoryKind::Pageable));
+        assert_eq!(group.dst_memory, Some(MemoryKind::Device));
+
+        let older = aggregate_capture(&[pageable], 2);
+        let group = &decode_capture(&older, "unused").unwrap().aggregate_groups[0];
+        assert_eq!((group.src_memory, group.dst_memory), (None, None));
+
+        let mut invalid = pageable;
+        invalid[52..56].copy_from_slice(&99_u32.to_le_bytes());
+        let mut bytes = aggregate_capture(&[invalid], 2);
+        bytes[20..24].copy_from_slice(&features.to_le_bytes());
+        assert!(decode_capture(&bytes, "unused").is_err());
     }
 
     #[test]

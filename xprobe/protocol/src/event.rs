@@ -171,3 +171,21 @@ pub enum MemcpyKind {
     #[serde(rename = "unknown")]
     Unknown,
 }
+
+/// Host or device memory behind one side of a copy (`CUpti_ActivityMemoryKind`).
+/// Pageable host memory forces staged, synchronous transfers; pinned memory
+/// allows direct DMA.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    Unknown,
+    Pageable,
+    Pinned,
+    Device,
+    Array,
+    Managed,
+    DeviceStatic,
+    ManagedStatic,
+}

@@ -602,6 +602,8 @@ mod tests {
             name_complete: Some(true),
             device_id: Some(0),
             memcpy_kind: None,
+            src_memory: None,
+            dst_memory: None,
             start_selector_hint: format!("cuda:kernel_start:name~^{name}$"),
             end_selector_hint: format!("cuda:kernel_end:name~^{name}$"),
             count: 10,

@@ -165,6 +165,16 @@
           "format": "uint32",
           "minimum": 0
         },
+        "dst_memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "duration_ns": {
           "$ref": "#/$defs/AggregateDuration"
         },
@@ -191,6 +201,17 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "src_memory": {
+          "description": "Source and destination memory of memcpy groups; `null` for other\nactivity or when the Agent did not report memory kinds.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryKind"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "start_selector_hint": {
@@ -568,6 +589,20 @@
         "HtoH",
         "PtoP",
         "unknown"
+      ]
+    },
+    "MemoryKind": {
+      "description": "Host or device memory behind one side of a copy (`CUpti_ActivityMemoryKind`).\nPageable host memory forces staged, synchronous transfers; pinned memory\nallows direct DMA.",
+      "type": "string",
+      "enum": [
+        "unknown",
+        "pageable",
+        "pinned",
+        "device",
+        "array",
+        "managed",
+        "device_static",
+        "managed_static"
       ]
     },
     "PcieLink": {

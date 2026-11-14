@@ -52,7 +52,9 @@ do not compare their capacities or completeness as one collector.
 - Syscall aggregation: durations are exact for matched lifecycles, but groups
   have no order or percentiles; check unmatched, inflight, and drops.
 - GPU aggregation: count, summed, min, max, and mean duration and bytes per
-  group; no ordering, overlap, or correlation.
+  group; no ordering, overlap, or correlation. Memcpy groups split by
+  `src_memory` and `dst_memory`: a `pageable` host side means staged,
+  synchronous copies that pinned memory would avoid.
 
 ## GPU concurrency
 

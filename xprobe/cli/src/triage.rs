@@ -42,11 +42,10 @@ const SYSCALL_MAX_INFLIGHT: u64 = 1024;
 const GPU_MAX_GROUPS: usize = 4096;
 const GPU_HEALTH_INTERVAL: Duration = Duration::from_millis(250);
 
-const NOT_COVERED: [&str; 4] = [
+const NOT_COVERED: [&str; 3] = [
     "where blocked threads wait (off-CPU stacks, lock and I/O attribution)",
     "exact GPU busy intervals; NVML utilization is a device-wide sampled estimate",
-    "memcpy and memset activity; GPU activity covers kernels only",
-    "pageable versus pinned host memory in transfers",
+    "memcpy and memset activity, including pageable versus pinned host memory; run a memcpy aggregate inventory",
 ];
 
 #[derive(Debug)]

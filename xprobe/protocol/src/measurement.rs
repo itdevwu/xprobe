@@ -247,7 +247,7 @@ pub struct CuptiCollectionSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AggregateInventoryResult {
-    pub schema_version: SchemaVersion,
+    pub schema_version: SchemaVersion3,
     pub ok: bool,
     pub session_id: String,
     pub status: SessionStatus,
@@ -274,6 +274,10 @@ pub struct AggregateGroup {
     pub name_complete: Option<bool>,
     pub device_id: Option<u32>,
     pub memcpy_kind: Option<crate::MemcpyKind>,
+    /// Source and destination memory of memcpy groups; `null` for other
+    /// activity or when the Agent did not report memory kinds.
+    pub src_memory: Option<crate::MemoryKind>,
+    pub dst_memory: Option<crate::MemoryKind>,
     pub start_selector_hint: String,
     pub end_selector_hint: String,
     pub count: u64,

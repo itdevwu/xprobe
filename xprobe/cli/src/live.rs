@@ -1167,6 +1167,8 @@ pub(crate) fn aggregate_inventory_result(
                 name_complete: group.name_complete,
                 device_id: group.device_id,
                 memcpy_kind: group.memcpy_kind.clone(),
+                src_memory: group.src_memory,
+                dst_memory: group.dst_memory,
                 count: group.count,
                 total_duration_ns: group.total_duration_ns,
                 min_duration_ns: group.min_duration_ns,
