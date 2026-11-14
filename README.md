@@ -1,6 +1,8 @@
 <div align="center">
   <h1>xprobe</h1>
-  <p><strong><i>AI-native heterogeneous profiling tool for CPU and GPU.</i></strong></p>
+  <p><strong>Find out why your CPU, Python, or CUDA process is slow — in two commands.</strong></p>
+  <p>A bounded Linux profiler for AI coding agents and the humans working with them:<br>
+  eBPF + perf + NVIDIA CUPTI, one CLI, strict JSON, no daemon.</p>
   <p>
     <a href="https://github.com/itdevwu/xprobe/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/itdevwu/xprobe/ci.yml?branch=master&amp;style=for-the-badge&amp;label=CI"></a>
     <a href="https://github.com/itdevwu/xprobe/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/itdevwu/xprobe?style=for-the-badge&amp;sort=semver"></a>
@@ -9,12 +11,38 @@
   </p>
 </div>
 
-`xprobe` is an AI harness for measuring latency between two observable events
-in a process, on the CPU, NVIDIA GPU, or across both. Its bounded native
-profiler combines sampled native/Python stacks, eBPF function, syscall,
-tracepoint and CPython runtime evidence with NVIDIA CUPTI, an agent-friendly
-CLI, strict JSON contracts, explicit correlation quality, and no daemon or
-server lifecycle.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/xprobe-flow-dark.svg">
+    <img alt="xprobe triages a slow PyTorch CUDA process into ranked findings, then measures request to launch 1.14 ms, launch to kernel 99 µs, and kernel 1.2 µs on CPU and GPU timelines" src="docs/assets/xprobe-flow-light.svg" width="860">
+  </picture>
+</p>
+
+<p align="center"><sub>Real numbers from the v0.6.0 release gate on an RTX 3060: a PyTorch CUDA workload and a request → launch → kernel path.</sub></p>
+
+## What it does
+
+Point xprobe at a running process. It watches one bounded window and tells you
+where the time went — on-CPU hotspots, threads waiting for a CPU or blocked,
+container CPU throttling, hot syscalls, GPU kernels, and GPU clock limits —
+ranked by impact, each with a ready next measurement. The second command then
+measures that exact latency: a function, a syscall, a CUDA API call, a kernel,
+a copy, an NVTX range, or a whole request → launch → kernel path from a single
+capture.
+
+- **Built for AI agents.** Ships as an [Agent Skill](skills/xprobe-measure-latency/SKILL.md)
+  for Claude Code, Codex, and Cursor. Compact JSON with a `good`/`caution`
+  quality verdict, so an agent can act on results without reading 100 KB of
+  events.
+- **CPU, Python, and GPU in one tool.** Sampled native and CPython stacks,
+  eBPF uprobes, syscalls, tracepoints, CPython GC, and CUDA 12/13 activity via
+  CUPTI, correlated with explicit confidence.
+- **Bounded by design.** Every capture is limited by samples or duration,
+  timeout, and capacity; there is no daemon; CUDA injection is disclosed
+  before it happens; the raw events are always kept for offline re-analysis.
+- **Honest about what it knows.** Sampled shares are estimates, temporal
+  matches are labeled heuristic, and anything a capture cannot answer is listed
+  as not covered.
 
 ## Install
 
