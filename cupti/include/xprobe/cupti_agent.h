@@ -10,9 +10,9 @@ extern "C" {
 #define XPROBE_CUPTI_AGENT_ABI_VERSION 4U
 #define XPROBE_CUPTI_OUTPUT_MAGIC "XPCUPTI"
 #define XPROBE_CUPTI_CONTROL_MAGIC "XPCTRL\0"
-#define XPROBE_CUPTI_CONTROL_VERSION 4U
+#define XPROBE_CUPTI_CONTROL_VERSION 5U
 #define XPROBE_CUPTI_NAME_LENGTH 128U
-#define XPROBE_CUPTI_FILTER_COUNT 2U
+#define XPROBE_CUPTI_FILTER_COUNT 8U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
 
 enum xprobe_cupti_feature {
@@ -80,7 +80,8 @@ struct xprobe_cupti_control_request {
     uint64_t record_capacity;
     uint64_t record_offset;
     uint32_t capture_mode;
-    uint32_t reserved;
+    /* ARM: active filters in filters[0..filter_count); other commands: 0. */
+    uint32_t filter_count;
     struct xprobe_cupti_filter filters[XPROBE_CUPTI_FILTER_COUNT];
 };
 

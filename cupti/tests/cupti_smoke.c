@@ -32,12 +32,13 @@ int main(void)
         return 7;
     }
     if (sizeof(struct xprobe_cupti_filter) != 144U ||
-        sizeof(struct xprobe_cupti_control_request) != 328U) {
+        sizeof(struct xprobe_cupti_control_request) != 1192U) {
         return 8;
     }
     if (offsetof(struct xprobe_cupti_control_request, record_capacity) != 16U ||
         offsetof(struct xprobe_cupti_control_request, record_offset) != 24U ||
         offsetof(struct xprobe_cupti_control_request, capture_mode) != 32U ||
+        offsetof(struct xprobe_cupti_control_request, filter_count) != 36U ||
         offsetof(struct xprobe_cupti_control_request, filters) != 40U ||
         offsetof(struct xprobe_cupti_filter, name) != 16U) {
         return 9;
