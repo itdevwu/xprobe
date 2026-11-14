@@ -95,7 +95,7 @@ _Static_assert(sizeof(struct xprobe_cupti_aggregate_record) == 200U,
                "unexpected CUPTI aggregate record layout");
 _Static_assert(sizeof(struct xprobe_cupti_filter) == 144U,
                "unexpected CUPTI filter layout");
-_Static_assert(sizeof(struct xprobe_cupti_control_request) == 328U,
+_Static_assert(sizeof(struct xprobe_cupti_control_request) == 1192U,
                "unexpected CUPTI control request layout");
 
 struct xprobe_cupti_aggregate_slot {
@@ -156,6 +156,8 @@ static _Atomic int snapshot_thread_stop;
 static _Atomic int snapshot_listener = -1;
 static int snapshot_thread_started;
 static struct xprobe_cupti_filter capture_filters[XPROBE_CUPTI_FILTER_COUNT];
+/* Written only while capture is inactive; hot paths scan just these slots. */
+static size_t capture_filter_count;
 static _Atomic int capture_filter_enabled;
 static _Atomic int nvtx_injection_active;
 static pthread_once_t injection_agent_once = PTHREAD_ONCE_INIT;
@@ -557,7 +559,7 @@ static int values_match_capture(uint32_t first_kind, uint32_t second_kind,
     if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
         return 1;
     }
-    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+    for (size_t index = 0U; index < capture_filter_count; ++index) {
         const struct xprobe_cupti_filter *filter = &capture_filters[index];
 
         if (filter_matches_values(filter, first_kind, api_domain, memcpy_kind,
@@ -576,7 +578,7 @@ static int capture_filter_matches(const struct xprobe_cupti_record *record)
     if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
         return 1;
     }
-    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+    for (size_t index = 0U; index < capture_filter_count; ++index) {
         if (record_matches_filter(record, &capture_filters[index]) != 0) {
             return 1;
         }
@@ -1730,11 +1732,15 @@ static int valid_filter(const struct xprobe_cupti_filter *filter)
 }
 
 static int valid_aggregate_filters(
-    const struct xprobe_cupti_filter filters[XPROBE_CUPTI_FILTER_COUNT])
+    const struct xprobe_cupti_filter filters[XPROBE_CUPTI_FILTER_COUNT],
+    uint32_t filter_count)
 {
     uint32_t start = filters[0].record_kind;
     uint32_t end = filters[1].record_kind;
 
+    if (filter_count != 2U) {
+        return 0;
+    }
     if (!((start == XPROBE_CUPTI_GPU_KERNEL_START &&
            end == XPROBE_CUPTI_GPU_KERNEL_END) ||
           (start == XPROBE_CUPTI_GPU_MEMCPY_START &&
@@ -1755,8 +1761,16 @@ static int arm_capture(const struct xprobe_cupti_control_request *request)
     int status;
     int needs_nvtx = 0;
 
+    if (request->filter_count == 0U ||
+        request->filter_count > XPROBE_CUPTI_FILTER_COUNT) {
+        fprintf(stderr, "xprobe CUPTI: invalid capture filter count\n");
+        remember_output_error();
+        return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
+    }
     for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
-        if (valid_filter(&request->filters[index]) == 0) {
+        if (valid_filter(&request->filters[index]) == 0 ||
+            (index >= request->filter_count &&
+             request->filters[index].record_kind != 0U)) {
             fprintf(stderr, "xprobe CUPTI: invalid capture filter\n");
             remember_output_error();
             return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
@@ -1769,7 +1783,7 @@ static int arm_capture(const struct xprobe_cupti_control_request *request)
         }
     }
     if (request->capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
-        valid_aggregate_filters(request->filters) == 0) {
+        valid_aggregate_filters(request->filters, request->filter_count) == 0) {
         fprintf(stderr,
                 "xprobe CUPTI: aggregate capture requires one matching "
                 "activity start/end pair\n");
@@ -1790,6 +1804,7 @@ static int arm_capture(const struct xprobe_cupti_control_request *request)
     }
     reset_capture();
     memcpy(capture_filters, request->filters, sizeof(capture_filters));
+    capture_filter_count = request->filter_count;
     atomic_store_explicit(&capture_filter_enabled, 1, memory_order_release);
     return activate_capture();
 }
@@ -1861,7 +1876,8 @@ static void *serve_snapshots(void *unused)
             (request.command < XPROBE_CUPTI_CONTROL_ARM ||
              request.command > XPROBE_CUPTI_CONTROL_CLOSE) ||
             request.capture_mode > XPROBE_CUPTI_CAPTURE_AGGREGATE ||
-            request.reserved != 0U) {
+            (request.command != XPROBE_CUPTI_CONTROL_ARM &&
+             request.filter_count != 0U)) {
             fprintf(stderr, "xprobe CUPTI: invalid snapshot control request\n");
         } else if (pthread_mutex_lock(&flush_mutex) != 0) {
             fprintf(stderr, "xprobe CUPTI: failed to lock snapshot flush mutex\n");
@@ -2084,7 +2100,7 @@ static int capture_needs_record_kind(uint32_t first_kind, uint32_t second_kind)
     if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
         return 1;
     }
-    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+    for (size_t index = 0U; index < capture_filter_count; ++index) {
         uint32_t kind = capture_filters[index].record_kind;
 
         if (kind == first_kind || kind == second_kind) {
@@ -2103,7 +2119,7 @@ static int capture_needs_api_domain(uint32_t domain)
     if (atomic_load_explicit(&capture_filter_enabled, memory_order_relaxed) == 0) {
         return 1;
     }
-    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+    for (size_t index = 0U; index < capture_filter_count; ++index) {
         const struct xprobe_cupti_filter *filter = &capture_filters[index];
 
         if ((filter->record_kind == XPROBE_CUPTI_CUDA_API_ENTRY ||
@@ -2163,7 +2179,7 @@ static int api_filter_matches_callback(CUpti_CallbackDomain domain,
             break;
         }
     }
-    for (size_t index = 0U; index < XPROBE_CUPTI_FILTER_COUNT; ++index) {
+    for (size_t index = 0U; index < capture_filter_count; ++index) {
         const struct xprobe_cupti_filter *filter = &capture_filters[index];
 
         if ((filter->record_kind == XPROBE_CUPTI_CUDA_API_ENTRY ||

@@ -22,15 +22,16 @@ pub use filter::{CuptiFilterError, bounded_name_filter, event_filter};
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
-const CONTROL_VERSION: u32 = 4;
+const CONTROL_VERSION: u32 = 5;
 const ABI_VERSION: u32 = 4;
 const HEADER_SIZE: usize = 88;
 const HEADER_SIZE_U32: u32 = 88;
 const RECORD_SIZE: usize = 200;
 const RECORD_SIZE_U32: u32 = 200;
-const CONTROL_SIZE: usize = 328;
+const CONTROL_SIZE: usize = 1192;
 const FILTER_SIZE: usize = 144;
-const FILTER_COUNT: usize = 2;
+/// Endpoint filters one ARM can carry; matches `XPROBE_CUPTI_FILTER_COUNT`.
+pub const CUPTI_FILTER_COUNT: usize = 8;
 pub const CUPTI_NAME_CAPACITY: usize = 128;
 const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
 const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
@@ -456,9 +457,9 @@ fn encode_control(
             "CUPTI record capacity must be positive".to_owned(),
         ));
     }
-    if config.filters.is_empty() || config.filters.len() > FILTER_COUNT {
+    if config.filters.is_empty() || config.filters.len() > CUPTI_FILTER_COUNT {
         return Err(CuptiSnapshotError::InvalidControl(format!(
-            "CUPTI capture requires one or two endpoint filters, found {}",
+            "CUPTI capture requires between one and {CUPTI_FILTER_COUNT} endpoint filters, found {}",
             config.filters.len()
         )));
     }
@@ -469,6 +470,8 @@ fn encode_control(
     }
     control[16..24].copy_from_slice(&config.record_capacity.to_ne_bytes());
     control[32..36].copy_from_slice(&(config.capture_mode as u32).to_ne_bytes());
+    let filter_count = u32::try_from(config.filters.len()).expect("filter count is bounded");
+    control[36..40].copy_from_slice(&filter_count.to_ne_bytes());
     for (index, filter) in config.filters.iter().enumerate() {
         let offset = 40 + index * FILTER_SIZE;
         control[offset..offset + 4].copy_from_slice(&(filter.record_kind as u32).to_ne_bytes());
@@ -974,9 +977,10 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        CUPTI_NAME_CAPACITY, CuptiApiDomain, CuptiArmConfig, CuptiCaptureMode, CuptiDecodeError,
-        CuptiEventFilter, CuptiMemcpyKind, CuptiNameFilter, CuptiRecordKind, HEADER_SIZE,
-        OUTPUT_MAGIC, RECORD_SIZE, decode_capture, encode_control, read_snapshot,
+        CUPTI_FILTER_COUNT, CUPTI_NAME_CAPACITY, CuptiApiDomain, CuptiArmConfig, CuptiCaptureMode,
+        CuptiDecodeError, CuptiEventFilter, CuptiMemcpyKind, CuptiNameFilter, CuptiRecordKind,
+        FILTER_SIZE, HEADER_SIZE, OUTPUT_MAGIC, RECORD_SIZE, decode_capture, encode_control,
+        read_snapshot,
     };
     use xprobe_protocol::{ClockDomain, EventSource, EventType, MemcpyKind, NvtxRangeKind};
 
@@ -1402,7 +1406,7 @@ mod tests {
         )
         .expect("ARM request must encode");
 
-        assert_eq!(control.len(), 328);
+        assert_eq!(control.len(), 1192);
         assert_eq!(&control[0..8], super::CONTROL_MAGIC);
         assert_eq!(u32::from_ne_bytes(control[12..16].try_into().unwrap()), 1);
         assert_eq!(
@@ -1411,10 +1415,36 @@ mod tests {
         );
         assert_eq!(u64::from_ne_bytes(control[24..32].try_into().unwrap()), 0);
         assert_eq!(u32::from_ne_bytes(control[32..36].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(control[36..40].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(control[40..44].try_into().unwrap()), 3);
         assert_eq!(u32::from_ne_bytes(control[52..56].try_into().unwrap()), 2);
         assert_eq!(&control[56..62], b"flash_");
         assert!(control[184..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn encodes_up_to_the_filter_capacity() {
+        let filter = CuptiEventFilter {
+            record_kind: CuptiRecordKind::GpuKernelEnd,
+            api_domain: CuptiApiDomain::Any,
+            memcpy_kind: CuptiMemcpyKind::Any,
+            name: CuptiNameFilter::Any,
+        };
+        let config = |count: usize| CuptiArmConfig {
+            record_capacity: 16,
+            capture_mode: CuptiCaptureMode::Exact,
+            filters: vec![filter.clone(); count],
+        };
+        let control = encode_control(1, 0, Some(&config(CUPTI_FILTER_COUNT))).unwrap();
+        assert_eq!(u32::from_ne_bytes(control[36..40].try_into().unwrap()), 8);
+        let last = 40 + 7 * FILTER_SIZE;
+        assert_eq!(
+            u32::from_ne_bytes(control[last..last + 4].try_into().unwrap()),
+            4
+        );
+        assert!(encode_control(1, 0, Some(&config(CUPTI_FILTER_COUNT + 1))).is_err());
+        let snapshot = encode_control(2, 0, None).unwrap();
+        assert_eq!(u32::from_ne_bytes(snapshot[36..40].try_into().unwrap()), 0);
     }
 
     #[test]
@@ -1461,7 +1491,11 @@ mod tests {
         )
         .expect_err("empty filter set must fail");
 
-        assert!(error.to_string().contains("one or two endpoint filters"));
+        assert!(
+            error
+                .to_string()
+                .contains("between one and 8 endpoint filters")
+        );
     }
 
     #[test]
