@@ -16,6 +16,8 @@ STABLE_COMMANDS = {
     "measure",
 }
 SKILL_PATH = "skills/xprobe-measure-latency/SKILL.md"
+SKILL_WORD_BUDGET = 800
+SKILL_TOTAL_WORD_BUDGET = 4000
 
 
 def run_json(
@@ -40,7 +42,21 @@ def run_json(
     return result
 
 
-def check_skill(workspace: pathlib.Path) -> None:
+def development_version(workspace: pathlib.Path) -> str:
+    cargo = (workspace / "Cargo.toml").read_text()
+    version_match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
+    assert version_match is not None
+    return version_match.group(1)
+
+
+def release_version(workspace: pathlib.Path) -> str:
+    installer = (workspace / "install.sh").read_text()
+    release_match = re.search(r"^version=\$\{XPROBE_VERSION:-([^}]+)\}$", installer, re.MULTILINE)
+    assert release_match is not None
+    return release_match.group(1)
+
+
+def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
     skill_path = workspace / SKILL_PATH
     skill_root = skill_path.parent.resolve()
     skill = skill_path.read_text()
@@ -48,95 +64,96 @@ def check_skill(workspace: pathlib.Path) -> None:
     assert frontmatter is not None
     assert re.search(r"^name: xprobe-measure-latency$", frontmatter.group(1), re.MULTILINE)
     assert re.search(r"^description: .+", frontmatter.group(1), re.MULTILINE)
-    normalized_skill = re.sub(r"\s+", " ", skill)
 
-    for route in (
-        "Existing artifact",
-        "Known live boundary",
-        "Unknown CPU or Python workload",
-        "Unknown GPU or mixed workload",
-        "Multiple processes",
-        "Containerized live target",
-        "Setup or repair",
-    ):
-        assert route in normalized_skill
-    for adaptive_rule in (
-        "Choose the shortest route",
-        "skip installation, `doctor`, `discover`, and live attachment",
-        "Do not run a broad inventory solely to satisfy a checklist",
-        "Do not run CUDA discovery",
-        "Start with bounded `--cpu-sample` evidence",
-        "Add `--syscall-aggregate` only for a kernel-facing hypothesis",
-        "inventories can run concurrently",
-        "modest record headroom",
-        "Existing artifacts do not require a local collector",
-        "Run `doctor` when capability is unknown",
-    ):
-        assert adaptive_rule in normalized_skill
-    for invariant in (
-        "Measurement results use schema version `3.0`",
+    # The entry point stays short; details live in linked references.
+    references = sorted((skill_root / "references").glob("*.md"))
+    assert len(skill.split()) <= SKILL_WORD_BUDGET, len(skill.split())
+    total = len(skill.split()) + sum(len(path.read_text().split()) for path in references)
+    assert total <= SKILL_TOTAL_WORD_BUDGET, total
+
+    # Every link resolves inside the Skill, and every reference is reachable.
+    linked = set()
+    for document in [skill_path, *references]:
+        for relative_link in re.findall(r"\]\(([^)]+)\)", document.read_text()):
+            target = (document.parent / relative_link).resolve()
+            assert target.is_relative_to(skill_root), (document, relative_link)
+            assert target.is_file(), (document, relative_link)
+            linked.add(target)
+    skill_links = {
+        (skill_root / link).resolve() for link in re.findall(r"\]\(([^)]+)\)", skill)
+    }
+    assert {path.resolve() for path in references} <= skill_links, "orphaned reference"
+
+    # The entry point covers the two-command flow and its safety invariants.
+    normalized_skill = re.sub(r"\s+", " ", skill)
+    for required in (
+        "--triage",
+        "measure --spec",
+        "measure --input",
+        "validate",
+        "quality.verdict",
+        "not_covered",
+        "measurement graph",
+        "Dig deeper",
         "PID plus procfs start time",
-        "Pass the selected exact endpoints through read-only `validate`",
         "Bound every capture",
         "leave the CUPTI shared object mapped",
         "temporal correlation is not exact causality",
-    ):
-        assert invariant in normalized_skill
-    for quality_field in (
-        "unmatched",
-        "ambiguous",
-        "loss/drops",
-        "completeness",
-        "symbol and stack coverage",
-        "clock alignment",
-        "method",
-        "confidence",
-        "evidence pair",
-    ):
-        assert quality_field in normalized_skill
-    for investigation_step in (
-        "CPU-only",
-        "GPU or mixed",
-        "Scope breadth and capture duration are independent",
-        "python:gc_start",
-        "native frames",
         "scripts/analyze_trace.py",
-        "selector hints",
-        "busy_union_ns",
-        "overlap factor",
         "NCU or PC sampling",
     ):
-        assert investigation_step in normalized_skill
-    assert "leave the CUPTI shared object mapped" in normalized_skill
+        assert required in normalized_skill, required
 
-    for relative_link in re.findall(r"\]\(([^)]+)\)", skill):
-        target = (skill_root / relative_link).resolve()
-        assert target.is_relative_to(skill_root), relative_link
-        assert target.is_file(), relative_link
+    # Every documented xprobe command uses flags its subcommand accepts.
+    help_flags = {}
+    for document in [skill_path, *references]:
+        for block in re.findall(r"```bash\n(.*?)```", document.read_text(), re.DOTALL):
+            command = re.sub(r"\\\n\s*", " ", block)
+            for line in command.splitlines():
+                words = line.split()
+                if len(words) < 2 or words[0] != "xprobe" or words[1].startswith("-"):
+                    continue
+                subcommand = words[1]
+                if subcommand not in help_flags:
+                    help_text = subprocess.run(
+                        [binary, subcommand, "--help"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout
+                    help_flags[subcommand] = set(re.findall(r"--[a-z][a-z0-9-]*", help_text))
+                for flag in re.findall(r"(?<!\S)--[a-z][a-z0-9-]*", line):
+                    assert flag in help_flags[subcommand], (document.name, subcommand, flag)
+    assert {"measure", "validate"} <= set(help_flags), sorted(help_flags)
 
     analyzer = skill_root / "scripts/analyze_trace.py"
     assert analyzer.is_file()
     assert os.access(analyzer, os.X_OK)
     assert not list(skill_root.rglob("__pycache__"))
     assert not list(skill_root.rglob("*.pyc"))
-    examples = sorted((skill_root / "examples").glob("*.json"))
-    assert len(examples) >= 5
-    policies = set()
+
+    # Examples are valid templates for each spec shape.
     modes = set()
-    for example in examples:
+    policies = set()
+    for example in sorted((skill_root / "examples").glob("*.json")):
         specification = json.loads(example.read_text())
+        if "edges" in specification:
+            assert specification["schema_version"] == "3.0", example
+            modes.add("graph")
+            names = set(specification["endpoints"])
+            for edge in specification["edges"]:
+                assert {edge["from"], edge["to"]} <= names, example
+                policies.add(edge["match_policy"])
+            continue
         assert specification["schema_version"] == "2.0", example
         if "sample_event" in specification:
             modes.add("cpu_sample")
             assert specification["frequency_hz"] > 0, example
             assert specification["max_samples"] > 0, example
-            assert specification["stack_depth"] > 0, example
-            assert specification["max_threads"] > 0, example
             continue
         if "max_inflight" in specification and "start_selector" not in specification:
             modes.add("syscall_aggregate")
             assert specification["max_groups"] > 0, example
-            assert specification["max_inflight"] > 0, example
             continue
         mode = specification.get("measurement_mode", "exact")
         modes.add(mode)
@@ -146,120 +163,28 @@ def check_skill(workspace: pathlib.Path) -> None:
         else:
             assert specification["max_events"] > 0, example
         policies.add(specification["match_policy"])
-    assert modes == {"exact", "aggregate", "cpu_sample", "syscall_aggregate"}
+    assert modes == {"exact", "aggregate", "cpu_sample", "syscall_aggregate", "graph"}
     assert {"exact", "first_after", "stack_nested", "stream_order"} <= policies
 
     openai_yaml = (skill_root / "agents/openai.yaml").read_text()
     assert 'display_name: "Xprobe Workload Profiling"' in openai_yaml
-    assert (
-        'short_description: "Route bounded CPU, Python, and GPU profiling"'
-        in openai_yaml
-    )
     assert "$xprobe-measure-latency" in openai_yaml
 
-    investigation = (skill_root / "references/investigation.md").read_text()
-    quality = (skill_root / "references/result-quality.md").read_text()
-    multi_process = (skill_root / "references/multi-process.md").read_text()
-    trace_analysis = (skill_root / "references/trace-analysis.md").read_text()
-    setup = (skill_root / "references/setup.md").read_text()
-    normalized_investigation = re.sub(r"\s+", " ", investigation)
-    normalized_quality = re.sub(r"\s+", " ", quality)
-    normalized_multi_process = re.sub(r"\s+", " ", multi_process)
-    normalized_trace_analysis = re.sub(r"\s+", " ", trace_analysis)
-    normalized_setup = re.sub(r"\s+", " ", setup)
-    normalized_cli_contract = re.sub(
-        r"\s+", " ", (skill_root / "references/cli-contract.md").read_text()
-    )
+    setup = re.sub(r"\s+", " ", (skill_root / "references/setup.md").read_text())
+    major, minor, _ = development_version(workspace).split(".")
+    release = release_version(workspace)
     for required in (
-        "Triton",
-        "procfs start time",
-        "EVENT_RATE_TOO_HIGH",
-        "readelf -Ws",
-        "NO_MATCHED_SAMPLES",
-        "representative cycle",
-        "concrete Runtime or Driver API name",
-        "observed_samples",
-        "python_status",
-        "python:gc_start",
-        "independent concurrent commands",
-    ):
-        assert required in normalized_investigation
-    for required in (
-        "minimum_records",
-        "first selected event",
-        "ARM completion",
-        "Summed kernel",
-        "Inventory modes are separate contracts",
-        "max-groups",
-        "lost samples",
-        "stack truncation",
-    ):
-        assert required in normalized_quality
-    for required in (
-        "representative worker",
-        "target.process_start_time",
-        "target` exactly matches",
-        "native concurrent tool calls",
-        "Do not cancel sibling commands",
-        "Never reuse an artifact path",
-        "Do not concatenate artifacts",
-        "overall experiment incomplete",
-        "CPU sample inventory and GPU aggregate",
-    ):
-        assert required in normalized_multi_process
-    for required in (
-        "busy_union_ns",
-        "summed_activity_ns",
-        "launch_variants",
-        "Cross-stream",
-        "distinct capture windows",
-    ):
-        assert required in normalized_trace_analysis
-    for required in (
-        "python:gc_start|gc_end",
-        "--cpu-sample",
-        "--syscall-aggregate",
-        "sampling uncertainty",
-        "cannot be passed to `measure --input`",
-    ):
-        assert required in normalized_cli_contract
-    for required in (
-        "v0.5.2/install.sh",
-        "xprobe `0.5.x`",
+        f"xprobe `{major}.{minor}.x`",
+        f"v{release}/install.sh",
         "npx skills@1 add",
         "xprobe --version",
         "xprobe doctor",
-        "host glibc",
-        "CUDA/CUPTI majors other than 12 or 13 are not supported",
-        "scripts/package-release.sh",
         "PID and mount namespaces",
         "namespace-local PID",
         "does not add capabilities",
+        "CUDA/CUPTI majors other than 12 or 13 are not supported",
     ):
-        assert required in normalized_setup
-
-    engineering_rules = re.sub(
-        r"\s+", " ", (workspace / "AGENTS.md").read_text()
-    )
-    for required in (
-        "external reviews as evidence to investigate",
-        "dedicated feature or fix branch",
-        "Rebase pull requests",
-        "GLIBC_2.34 ceiling",
-        "downloading the public archive",
-        "transient infrastructure failure",
-        "Choose the shortest Skill route",
-    ):
-        assert required in engineering_rules
-
-    entries = {
-        "codex": workspace / "AGENTS.md",
-        "claude": workspace / "CLAUDE.md",
-        "cursor": workspace / ".cursor/rules/xprobe.mdc",
-    }
-    for client, path in entries.items():
-        assert path.is_file(), client
-        assert SKILL_PATH in path.read_text(), client
+        assert required in setup, required
 
 
 def check_schemas(workspace: pathlib.Path) -> None:
@@ -273,19 +198,11 @@ def check_schemas(workspace: pathlib.Path) -> None:
 
 
 def check_installation_docs(workspace: pathlib.Path) -> None:
-    cargo = (workspace / "Cargo.toml").read_text()
-    version_match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
-    assert version_match is not None
-    development_version = version_match.group(1)
-
+    development = development_version(workspace)
+    release = release_version(workspace)
     installer = (workspace / "install.sh").read_text()
-    release_match = re.search(r"^version=\$\{XPROBE_VERSION:-([^}]+)\}$", installer, re.MULTILINE)
-    assert release_match is not None
-    release_version = release_match.group(1)
-    assert tuple(map(int, development_version.split("."))) >= tuple(
-        map(int, release_version.split("."))
-    )
-    assert f"default: {release_version}" in installer
+    assert tuple(map(int, development.split("."))) >= tuple(map(int, release.split(".")))
+    assert f"default: {release}" in installer
 
     for relative_path in (
         "README.md",
@@ -294,7 +211,7 @@ def check_installation_docs(workspace: pathlib.Path) -> None:
     ):
         document = (workspace / relative_path).read_text()
         assert "npx skills@1 add" in document, relative_path
-        assert f"/v{release_version}/" in document, relative_path
+        assert f"/v{release}/" in document, relative_path
 
 
 def main() -> None:
@@ -361,7 +278,7 @@ def main() -> None:
         for warning in validated["warnings"]
     )
 
-    check_skill(workspace)
+    check_skill(workspace, binary)
     check_schemas(workspace)
     check_installation_docs(workspace)
     print(

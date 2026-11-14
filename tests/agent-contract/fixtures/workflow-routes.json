@@ -2,38 +2,105 @@
   "scenarios": [
     {
       "name": "existing_artifact",
-      "sources": ["skill"],
-      "required": ["measure --input", "skip installation", "unless a new capture is required"]
+      "sources": [
+        "skill"
+      ],
+      "required": [
+        "measure --input",
+        "skip installation",
+        "unless a new capture is required"
+      ]
+    },
+    {
+      "name": "unknown_workload",
+      "sources": [
+        "skill"
+      ],
+      "required": [
+        "unknown live workload",
+        "--triage",
+        "next.spec",
+        "not_covered"
+      ]
     },
     {
       "name": "known_selector",
-      "sources": ["skill"],
-      "required": ["known live boundary", "run read-only validate", "do not run a broad inventory solely to satisfy a checklist"]
+      "sources": [
+        "skill"
+      ],
+      "required": [
+        "known boundary",
+        "skip triage",
+        "validate"
+      ]
     },
     {
-      "name": "unknown_cpu",
-      "sources": ["skill", "investigation"],
-      "required": ["unknown cpu or python workload", "--cpu-sample", "observed_samples", "entry_selector_hint"]
+      "name": "several_boundaries",
+      "sources": [
+        "skill",
+        "selectors"
+      ],
+      "required": [
+        "measurement graph",
+        "up to eight edges",
+        "at most two syscall, tracepoint, or usdt endpoints"
+      ]
+    },
+    {
+      "name": "dig_deeper",
+      "sources": [
+        "skill",
+        "deep_dive"
+      ],
+      "required": [
+        "dig deeper",
+        "split it with a measurement graph",
+        "p99 and max exemplars",
+        "not covered by this release",
+        "stop escalating"
+      ]
     },
     {
       "name": "python_semantics",
-      "sources": ["skill", "investigation"],
-      "required": ["python_status", "native frames", "python:gc_start", "capability rather than its process name"]
+      "sources": [
+        "skill",
+        "interpreting",
+        "selectors"
+      ],
+      "required": [
+        "python_status",
+        "native fallback",
+        "-X perf",
+        "python:gc_start",
+        "check capability, not the process name"
+      ]
     },
     {
-      "name": "mixed_cpu_gpu",
-      "sources": ["skill", "investigation"],
-      "required": ["bounded cpu sample inventory", "gpu aggregate", "independent concurrent commands", "separate bounds, outputs, failures"]
-    },
-    {
-      "name": "unsupported_python_runtime",
-      "sources": ["skill", "investigation"],
-      "required": ["`inactive` or `unsupported`", "native fallback", "do not claim xprobe identifies python semantics"]
+      "name": "multi_process",
+      "sources": [
+        "skill",
+        "multi_process"
+      ],
+      "required": [
+        "discover --pid root",
+        "pid plus process start time",
+        "do not cancel sibling commands",
+        "do not concatenate artifacts"
+      ]
     },
     {
       "name": "container_namespace",
-      "sources": ["skill", "setup"],
-      "required": ["containerized live target", "PID and mount namespaces", "namespace-local PID", "do not guess a pod, container, or PID", "does not add capabilities"]
+      "sources": [
+        "skill",
+        "setup"
+      ],
+      "required": [
+        "container target",
+        "pid and mount namespaces",
+        "namespace-local pid",
+        "do not guess a pod, container, or pid",
+        "does not add capabilities"
+      ]
     }
   ]
 }

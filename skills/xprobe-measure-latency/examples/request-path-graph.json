@@ -1,0 +1,22 @@
+{
+  "schema_version": "3.0",
+  "name": "request_path",
+  "target": {
+    "pid": 1234,
+    "process_start_time": 987654
+  },
+  "endpoints": {
+    "request": "uprobe:/srv/app/server:request_begin:entry",
+    "launch_exit": "cuda:runtime_api:cudaLaunchKernel:exit",
+    "kernel_start": "cuda:kernel_start:name~^vector_add",
+    "kernel_end": "cuda:kernel_end:name~^vector_add"
+  },
+  "edges": [
+    {"name": "request_to_launch", "from": "request", "to": "launch_exit", "match_policy": "first_after", "samples": 100},
+    {"name": "launch_to_kernel", "from": "launch_exit", "to": "kernel_start", "match_policy": "exact", "samples": 100},
+    {"name": "kernel_duration", "from": "kernel_start", "to": "kernel_end", "match_policy": "exact", "samples": 100}
+  ],
+  "duration_ms": null,
+  "timeout_ms": 30000,
+  "max_events": 4000
+}
