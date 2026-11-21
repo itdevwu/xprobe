@@ -30,14 +30,14 @@ pub use cpu_sampling::{
 pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{
-    ArgumentValue, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType, HostEvent,
-    HostProbeKind, MemcpyKind, MemoryKind, NvtxEvent, NvtxRangeKind,
+    ArgumentValue, CUDA_LAUNCH_APIS, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType,
+    HostEvent, HostProbeKind, MemcpyKind, MemoryKind, NvtxEvent, NvtxRangeKind, is_cuda_launch_api,
 };
 pub use export::{ExportFormat, TraceExportResult};
 pub use graph::{
-    GRAPH_MAX_EDGES, GRAPH_MAX_ENDPOINTS, GRAPH_MAX_LINUX_ENDPOINTS, GraphEdgeResult,
-    GraphEdgeSpec, GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope, GraphTarget,
-    GraphValidationIssue, MeasurementGraphResult, MeasurementGraphSpec,
+    GRAPH_MAX_CUDA_FILTERS, GRAPH_MAX_EDGES, GRAPH_MAX_ENDPOINTS, GRAPH_MAX_LINUX_ENDPOINTS,
+    GraphEdgeResult, GraphEdgeSpec, GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope,
+    GraphTarget, GraphValidationIssue, MeasurementGraphResult, MeasurementGraphSpec,
     MeasurementGraphValidationResult,
 };
 pub use measurement::{

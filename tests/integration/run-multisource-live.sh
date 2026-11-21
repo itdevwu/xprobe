@@ -96,7 +96,7 @@ cat >"${graph}" <<GRAPH
 {"schema_version":"3.0","name":"request_path",
  "target":{"pid":${target_pid},"process_start_time":${process_start_time}},
  "endpoints":{"request":"uprobe:${fixture}:xprobe_request_marker:entry",
-              "launch_exit":"cuda:runtime_api:cudaLaunchKernel:exit",
+              "launch_exit":"cuda:launch_api:exit",
               "kernel_start":"${kernel}","kernel_end":"${kernel_end}"},
  "edges":[{"name":"request_to_launch","from":"request","to":"launch_exit","match_policy":"first_after","samples":3},
           {"name":"launch_to_kernel","from":"launch_exit","to":"kernel_start","match_policy":"exact","samples":3},

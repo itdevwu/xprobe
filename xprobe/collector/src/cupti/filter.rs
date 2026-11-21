@@ -35,6 +35,42 @@ impl fmt::Display for CuptiFilterError {
 
 impl Error for CuptiFilterError {}
 
+/// Lower one validated CUDA endpoint into Agent filters.
+///
+/// `cuda:launch_api` needs one prefix filter per API domain; every other
+/// selector lowers to exactly one filter. The correlator applies the exact
+/// launch function list after collection.
+///
+/// # Errors
+///
+/// Returns [`CuptiFilterError`] for selectors the Agent cannot filter.
+pub fn event_filters(
+    selector: &ResolvedCudaSelector,
+) -> Result<Vec<CuptiEventFilter>, CuptiFilterError> {
+    if selector.api_domain.as_deref() == Some("launch_api") {
+        let record_kind = match selector.event_type {
+            EventType::CudaApiEntry => CuptiRecordKind::CudaApiEntry,
+            EventType::CudaApiExit => CuptiRecordKind::CudaApiExit,
+            ref other => return Err(CuptiFilterError::NonCudaEventType(other.clone())),
+        };
+        return Ok(vec![
+            CuptiEventFilter {
+                record_kind,
+                api_domain: CuptiApiDomain::Runtime,
+                memcpy_kind: CuptiMemcpyKind::Any,
+                name: CuptiNameFilter::Prefix("cudaLaunch".to_owned()),
+            },
+            CuptiEventFilter {
+                record_kind,
+                api_domain: CuptiApiDomain::Driver,
+                memcpy_kind: CuptiMemcpyKind::Any,
+                name: CuptiNameFilter::Prefix("cuLaunch".to_owned()),
+            },
+        ]);
+    }
+    event_filter(selector).map(|filter| vec![filter])
+}
+
 /// Lower one validated CUDA endpoint into the Agent's fixed filter layout.
 ///
 /// Name regexes that cannot be expressed as a bounded literal match lower to
@@ -150,7 +186,7 @@ mod tests {
 
     use super::{
         CuptiApiDomain, CuptiFilterError, CuptiMemcpyKind, CuptiNameFilter, CuptiRecordKind,
-        bounded_name_filter, event_filter, regex_literal,
+        bounded_name_filter, event_filter, event_filters, regex_literal,
     };
 
     fn selector(event_type: EventType) -> ResolvedCudaSelector {
@@ -202,6 +238,43 @@ mod tests {
         assert_eq!(regex_literal("kernel\\.v1"), Some("kernel.v1".to_owned()));
         assert_eq!(regex_literal("kernel\\d"), None);
         assert_eq!(regex_literal("kernel+"), None);
+    }
+
+    #[test]
+    fn lowers_launch_api_to_one_prefix_filter_per_domain() {
+        let mut launch = selector(EventType::CudaApiEntry);
+        launch.api_domain = Some("launch_api".to_owned());
+        let filters = event_filters(&launch).expect("launch selector lowers");
+        assert_eq!(
+            filters
+                .iter()
+                .map(|filter| (filter.record_kind, filter.api_domain, filter.name.clone()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    CuptiRecordKind::CudaApiEntry,
+                    CuptiApiDomain::Runtime,
+                    CuptiNameFilter::Prefix("cudaLaunch".to_owned())
+                ),
+                (
+                    CuptiRecordKind::CudaApiEntry,
+                    CuptiApiDomain::Driver,
+                    CuptiNameFilter::Prefix("cuLaunch".to_owned())
+                ),
+            ]
+        );
+        assert_eq!(
+            event_filter(&launch),
+            Err(CuptiFilterError::UnsupportedApiDomain(
+                "launch_api".to_owned()
+            ))
+        );
+
+        let kernel = selector(EventType::GpuKernelStart);
+        assert_eq!(
+            event_filters(&kernel).expect("kernel selector lowers"),
+            [event_filter(&kernel).expect("kernel selector lowers")]
+        );
     }
 
     #[test]

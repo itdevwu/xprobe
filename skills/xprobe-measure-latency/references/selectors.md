@@ -15,10 +15,13 @@ when no emitted hint covers the boundary, and pass it through `validate`.
 | Kernel tracepoint | `tracepoint:<category>:<name>` (identity and timestamp only) |
 | CPython GC | `python:gc_start`, `python:gc_end` |
 | CUDA API | `cuda:runtime_api\|driver_api:<name>:entry\|exit` |
+| Any kernel launch | `cuda:launch_api:entry\|exit` (Runtime and Driver launch APIs) |
 | GPU activity | `cuda:kernel_start\|kernel_end[:name~REGEX]`, `cuda:memcpy_start\|memcpy_end[:kind=HtoD\|DtoH\|DtoD\|HtoH\|PtoP]`, `cuda:memset_start\|memset_end` |
 | NVTX range | `cuda:nvtx_range_start\|nvtx_range_end:name~REGEX` |
 
-CUDA API selectors need a concrete Runtime or Driver API name. Kernel and NVTX
+CUDA API selectors need a concrete Runtime or Driver API name; for launch
+latency use `cuda:launch_api`, which also covers Triton and other Driver API
+launchers and costs two Agent filters. Kernel and NVTX
 regexes are filtered in the CUPTI hot path only when they reduce to an exact,
 prefix, suffix, or contains literal under 128 bytes; anything else is applied
 after a broader capture and fills capacity faster. Escape regex metacharacters.

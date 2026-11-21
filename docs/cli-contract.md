@@ -110,7 +110,13 @@ events contain process/thread identity, timestamp, mapped binary, provider, and
 marker name without copying generation or object payloads.
 
 CUDA forms include Runtime/Driver API entry/exit, kernel/memcpy/memset activity
-start/end, and NVTX range boundaries. Kernel selectors accept `name~REGEX`;
+start/end, and NVTX range boundaries. `cuda:launch_api:entry|exit` matches every
+kernel launch API in one endpoint: Runtime `cudaLaunchKernel`,
+`cudaLaunchKernelExC`, and `cudaLaunchCooperativeKernel`, and Driver
+`cuLaunchKernel`, `cuLaunchKernelEx`, and `cuLaunchCooperativeKernel`, so
+launches from cuBLAS and from Triton or other Driver API callers pair exactly
+with their kernels. A Runtime launch and the Driver launch it makes internally
+count once, as the Runtime call. It uses two of the eight Agent name filters. Kernel selectors accept `name~REGEX`;
 memcpy selectors accept `kind=<HtoD|DtoH|DtoD|HtoH|PtoP>`. NVTX selectors are
 `cuda:nvtx_range_start:name~REGEX` and
 `cuda:nvtx_range_end:name~REGEX`; their name expression must reduce to one
@@ -120,7 +126,7 @@ nonempty exact, prefix, suffix, or contains filter shorter than 128 bytes.
 
 ```bash
 xprobe validate --pid 4242 \
-  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
+  --from 'cuda:launch_api:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
   --match exact
 ```
@@ -171,7 +177,7 @@ Live target:
 
 ```bash
 xprobe measure --pid 4242 \
-  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
+  --from 'cuda:launch_api:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
   --match exact --samples 100 --timeout-ms 30000 \
   --events-out /tmp/xprobe-events.jsonl
@@ -388,7 +394,7 @@ A graph measures several edges from one bounded capture of one process:
   "target": {"pid": 4242, "process_start_time": 123456},
   "endpoints": {
     "request": "uprobe:/srv/app/server:handle_request:entry",
-    "launch_exit": "cuda:runtime_api:cudaLaunchKernel:exit",
+    "launch_exit": "cuda:launch_api:exit",
     "kernel_start": "cuda:kernel_start:name~^flash",
     "kernel_end": "cuda:kernel_end:name~^flash"
   },

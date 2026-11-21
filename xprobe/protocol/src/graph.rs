@@ -14,6 +14,9 @@ pub const GRAPH_MAX_ENDPOINTS: usize = 8;
 pub const GRAPH_MAX_EDGES: usize = 8;
 /// Linux syscall, tracepoint, and USDT endpoints share two collector slots.
 pub const GRAPH_MAX_LINUX_ENDPOINTS: usize = 2;
+/// CUDA endpoints share the Agent's eight name filters; `cuda:launch_api`
+/// endpoints use two each.
+pub const GRAPH_MAX_CUDA_FILTERS: usize = 8;
 
 /// Several start/end edges measured from one bounded capture of one process.
 ///
