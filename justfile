@@ -70,6 +70,12 @@ test-injection-live: build
 test-injection-live-cuda12: build
     python3 tests/integration/test_inject.py "{{cuda12_devel_image}}"
 
+test-cupti-burst-live: build
+    python3 tests/integration/test_cupti_burst.py "{{cuda13_devel_image}}" 50000
+
+test-cupti-burst-live-cuda12: build
+    python3 tests/integration/test_cupti_burst.py "{{cuda12_devel_image}}" 50000
+
 test-multisource-live: build
     python3 tests/integration/test_multisource.py "{{cuda13_devel_image}}" target/debug/xprobe
 
@@ -99,11 +105,13 @@ test-release-live:
     just test-bpf-live
     just test-cpu-live
     just test-cupti-live-cuda12
+    just test-cupti-burst-live-cuda12
     just test-nvtx-live-cuda12
     just test-cupti-live-cuda12-min
     just test-injection-live-cuda12
     just test-multisource-live-cuda12
     just test-cupti-live
+    just test-cupti-burst-live
     just test-nvtx-live
     just test-injection-live
     just test-multisource-live

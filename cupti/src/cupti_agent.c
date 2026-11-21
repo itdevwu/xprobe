@@ -133,6 +133,13 @@ static _Atomic uint64_t record_count;
 static _Atomic uint64_t committed_record_count;
 static _Atomic uint64_t agent_dropped_records;
 static _Atomic uint64_t cupti_dropped_records;
+/* Set while a forced flush hands over buffers that may hold activity still
+ * running on the device; their zero timestamps mean "not finished", not loss. */
+static _Atomic int forced_flush_active;
+/* Set once a timed activity that started during the capture is processed.
+ * Activity enabled while kernels are already running yields records without
+ * timestamps for that earlier work; they precede the first timed record. */
+static _Atomic int capture_has_timed_activity;
 static _Atomic uint64_t unknown_records;
 static _Atomic uint64_t requested_buffers;
 static _Atomic uint64_t completed_buffers;
@@ -262,6 +269,7 @@ static void reset_capture(void)
     atomic_store_explicit(&committed_record_count, 0U, memory_order_relaxed);
     atomic_store_explicit(&agent_dropped_records, 0U, memory_order_relaxed);
     atomic_store_explicit(&cupti_dropped_records, 0U, memory_order_relaxed);
+    atomic_store_explicit(&capture_has_timed_activity, 0, memory_order_relaxed);
     atomic_store_explicit(&unknown_records, 0U, memory_order_relaxed);
     atomic_store_explicit(&requested_buffers, 0U, memory_order_relaxed);
     atomic_store_explicit(&completed_buffers, 0U, memory_order_relaxed);
@@ -1184,21 +1192,39 @@ static void enqueue_kernel_record(uint32_t device_id, uint32_t context_id,
     enqueue_record(&record);
 }
 
-static int activity_started_during_capture(uint64_t timestamp_ns)
+/*
+ * Decide whether a filter-matching activity belongs to the capture. CUPTI
+ * hands over records whose timestamps were lost when its device buffers
+ * overflow; such a record cannot be placed in time, so it is counted as a
+ * dropped record instead of being skipped as pre-capture activity.
+ */
+static int activity_in_capture(uint64_t start_ns, uint64_t end_ns)
 {
-    return timestamp_ns != 0U &&
-           normalize_activity_timestamp(timestamp_ns) >=
-               capture_start_timestamp_ns;
+    if (start_ns == 0U || end_ns == 0U || end_ns < start_ns) {
+        if (atomic_load_explicit(&forced_flush_active, memory_order_acquire) ==
+                0 &&
+            atomic_load_explicit(&capture_has_timed_activity,
+                                 memory_order_relaxed) != 0) {
+            atomic_fetch_add_explicit(&cupti_dropped_records, 1U,
+                                      memory_order_relaxed);
+        }
+        return 0;
+    }
+    if (normalize_activity_timestamp(start_ns) < capture_start_timestamp_ns) {
+        return 0;
+    }
+    atomic_store_explicit(&capture_has_timed_activity, 1, memory_order_relaxed);
+    return 1;
 }
 
 #define ENQUEUE_KERNEL_RECORDS(kernel)                                             \
     do {                                                                           \
-        if (activity_started_during_capture((kernel)->start) == 0) {               \
-            return;                                                                \
-        }                                                                          \
         if (values_match_capture(XPROBE_CUPTI_GPU_KERNEL_START,                    \
                                  XPROBE_CUPTI_GPU_KERNEL_END, 0U, 0U,               \
                                  (kernel)->name) == 0) {                             \
+            return;                                                                \
+        }                                                                          \
+        if (activity_in_capture((kernel)->start, (kernel)->end) == 0) {            \
             return;                                                                \
         }                                                                          \
         if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {                       \
@@ -1292,8 +1318,6 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
     CUpti_Activity *activity = NULL;
     CUptiResult result;
 
-    (void)context;
-    (void)stream_id;
     (void)size;
     for (;;) {
         result = cuptiActivityGetNextRecord(buffer, valid_size, &activity);
@@ -1313,14 +1337,15 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
             const CUpti_ActivityMemcpy6 *memcpy_record =
                 (const CUpti_ActivityMemcpy6 *)activity;
-            if (activity_started_during_capture(memcpy_record->start) == 0) {
-                continue;
-            }
             if (values_match_capture(
                     XPROBE_CUPTI_GPU_MEMCPY_START,
                     XPROBE_CUPTI_GPU_MEMCPY_END, 0U,
                     semantic_memcpy_kind((uint32_t)memcpy_record->copyKind),
                     NULL) == 0) {
+                continue;
+            }
+            if (activity_in_capture(memcpy_record->start, memcpy_record->end) ==
+                0) {
                 continue;
             }
             if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
@@ -1341,12 +1366,13 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMSET) {
             const CUpti_ActivityMemset4 *memset_record =
                 (const CUpti_ActivityMemset4 *)activity;
-            if (activity_started_during_capture(memset_record->start) == 0) {
-                continue;
-            }
             if (values_match_capture(XPROBE_CUPTI_GPU_MEMSET_START,
                                      XPROBE_CUPTI_GPU_MEMSET_END, 0U, 0U,
                                      NULL) == 0) {
+                continue;
+            }
+            if (activity_in_capture(memset_record->start, memset_record->end) ==
+                0) {
                 continue;
             }
             if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
@@ -1366,6 +1392,20 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
         }
     }
 
+    if (context != NULL) {
+        /* Per-context and per-stream queues keep their own dropped counts;
+         * the global query at flush does not include them. */
+        size_t dropped = 0U;
+        result = cuptiActivityGetNumDroppedRecords(context, stream_id, &dropped);
+        if (result != CUPTI_SUCCESS) {
+            remember_cupti_error(result);
+        } else if (dropped != 0U &&
+                   atomic_load_explicit(&capture_state, memory_order_relaxed) ==
+                       XPROBE_CUPTI_CAPTURE_ACTIVE) {
+            atomic_fetch_add_explicit(&cupti_dropped_records, dropped,
+                                      memory_order_relaxed);
+        }
+    }
     free(buffer);
     atomic_fetch_add_explicit(&completed_buffers, 1U, memory_order_release);
 }
@@ -1704,20 +1744,51 @@ static int write_output(void)
     return XPROBE_CUPTI_AGENT_READY;
 }
 
-static int flush_activity_buffers(int allow_empty_flush)
+/*
+ * Deliver completed activity buffers. A forced flush also hands over buffers
+ * holding activity that is still running, whose timestamps CUPTI never fills
+ * in afterwards, so it is used only to end a capture, after a normal flush
+ * has delivered everything already complete.
+ */
+static int flush_activity_pass(int forced, int allow_empty_flush)
 {
     CUptiResult result;
-    size_t dropped = 0U;
+    int status;
     uint64_t completed_before_flush =
         atomic_load_explicit(&completed_buffers, memory_order_acquire);
 
-    result = cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+    if (forced != 0) {
+        atomic_store_explicit(&forced_flush_active, 1, memory_order_release);
+    }
+    result = cuptiActivityFlushAll(forced != 0 ? CUPTI_ACTIVITY_FLAG_FLUSH_FORCED
+                                               : 0U);
     if (result != CUPTI_SUCCESS) {
+        atomic_store_explicit(&forced_flush_active, 0, memory_order_release);
         report_cupti_error("cuptiActivityFlushAll", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
-    if (wait_for_activity_buffers(completed_before_flush, allow_empty_flush) !=
-        XPROBE_CUPTI_AGENT_READY) {
+    status = wait_for_activity_buffers(completed_before_flush, allow_empty_flush);
+    atomic_store_explicit(&forced_flush_active, 0, memory_order_release);
+    return status;
+}
+
+static int flush_activity_buffers(int final_flush, int allow_empty_flush)
+{
+    CUptiResult result;
+    size_t dropped = 0U;
+    uint64_t completed_before =
+        atomic_load_explicit(&completed_buffers, memory_order_acquire);
+    int status = flush_activity_pass(0, 1);
+
+    if (status == XPROBE_CUPTI_AGENT_READY && final_flush != 0) {
+        /* A caller that requires a delivered buffer is satisfied by either
+         * pass; the forced pass may legitimately find nothing left. */
+        int delivered = atomic_load_explicit(&completed_buffers,
+                                             memory_order_acquire) !=
+                        completed_before;
+        status = flush_activity_pass(1, allow_empty_flush != 0 || delivered);
+    }
+    if (status != XPROBE_CUPTI_AGENT_READY) {
         atomic_store_explicit(&agent_status, XPROBE_CUPTI_AGENT_CUPTI_ERROR,
                               memory_order_relaxed);
         atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_FAILED,
@@ -1831,7 +1902,7 @@ static int stop_capture(void)
     int status = XPROBE_CUPTI_AGENT_READY;
 
     if (enabled_activity_mask != 0U) {
-        status = flush_activity_buffers(1);
+        status = flush_activity_buffers(1, 1);
     }
     if (status == XPROBE_CUPTI_AGENT_READY &&
         (subscriber_active != 0 || enabled_activity_mask != 0U)) {
@@ -1911,7 +1982,7 @@ static void *serve_snapshots(void *unused)
             } else if (request.command == XPROBE_CUPTI_CONTROL_SNAPSHOT) {
                 if (atomic_load_explicit(&capture_state, memory_order_acquire) ==
                     XPROBE_CUPTI_CAPTURE_ACTIVE) {
-                    command_status = flush_activity_buffers(1);
+                    command_status = flush_activity_buffers(0, 1);
                 }
             } else {
                 command_status = stop_capture();
@@ -2581,7 +2652,7 @@ int xprobe_cupti_agent_flush(void)
         fprintf(stderr, "xprobe CUPTI: failed to lock final flush mutex\n");
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
-    status = flush_activity_buffers(0);
+    status = flush_activity_buffers(1, 0);
     if (xprobe_cupti_agent_status() != XPROBE_CUPTI_AGENT_READY) {
         const char *message = NULL;
         unsigned int code = xprobe_cupti_agent_last_cupti_result();
