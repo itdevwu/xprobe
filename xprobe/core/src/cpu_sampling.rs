@@ -230,10 +230,10 @@ fn effective_perf_check(
         .as_deref()
         .and_then(|value| value.parse::<i32>().ok())
         .is_some_and(|value| value <= 2);
-    if report.environment.effective_uid == 0
-        || report.capabilities.uprobe
-        || (same_user && user_space_process_sampling_allowed)
-    {
+    // uid 0 without CAP_PERFMON or CAP_SYS_ADMIN cannot sample other users'
+    // processes, so only capabilities or same-user access with a permissive
+    // perf_event_paranoid qualify.
+    if report.capabilities.uprobe || (same_user && user_space_process_sampling_allowed) {
         return CheckResult {
             status: CheckStatus::Available,
             detail: Some(format!(

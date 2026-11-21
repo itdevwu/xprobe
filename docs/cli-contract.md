@@ -38,7 +38,11 @@ Reports Linux/kernel identity, BTF, BPF/perf permissions, lockdown, ptrace
 policy, NVIDIA driver, CUDA toolkit/driver, CUPTI, namespaces, and conservative
 capability booleans. `ok: true` means diagnosis completed, not that every
 capability is available. The CUPTI check lists each supported installed major
-and its resolved library path.
+and its resolved library path. Privilege checks read the effective capability set
+(`CapEff`), not the user ID: root inside a container without `CAP_BPF` and
+`CAP_PERFMON` (or `CAP_SYS_ADMIN`) reports eBPF as restricted, and online
+injection needs `CAP_SYS_PTRACE` unless `ptrace_scope` permits same-user
+tracing.
 
 ## `discover`
 
