@@ -143,6 +143,94 @@ def main() -> None:
     assert unpaired["warnings"][0]["code"] == "UNPAIRED_ACTIVITY_BOUNDARIES"
     assert rejected.returncode != 0
     assert "expected schema_version 2.0" in rejected.stderr
+    check_gaps_outliers_and_slices(script)
+
+
+def api_event(sequence: int, timestamp_ns: int, name: str, correlation_id: int) -> dict:
+    return {
+        "schema_version": "2.0",
+        "event_id": f"event-{sequence}",
+        "sequence": sequence,
+        "event_type": "cuda_api_exit",
+        "pid": 1234,
+        "tid": 55,
+        "timestamp_ns": timestamp_ns,
+        "clock_domain": "cupti",
+        "cuda": {"stream_id": None, "correlation_id": correlation_id},
+        "attributes": {"cuda_api_name": name},
+    }
+
+
+def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
+    # Stream 7: k(0-100) gap 400 k(500-600) gap 50 k(650-700); a 2 KB HtoD copy
+    # on stream 9 at 200-300 partly fills the first stream gap on the device.
+    events = [
+        *pair(1, "kernel", 0, 100, stream_id=7, correlation_id=1, kernel_name="a"),
+        *pair(3, "kernel", 500, 600, stream_id=7, correlation_id=2, kernel_name="b"),
+        *pair(5, "kernel", 650, 700, stream_id=7, correlation_id=3, kernel_name="c"),
+        *pair(7, "memcpy", 200, 300, stream_id=9, correlation_id=4,
+              memcpy_kind="HtoD", bytes_count=2000),
+        api_event(9, 450, "cudaStreamSynchronize", 5),
+    ]
+    measurement = {
+        "schema_version": "3.0",
+        "ok": True,
+        "evidence": {
+            "mode": "full",
+            "exemplars": [],
+            "pairs": [
+                {"start": events[0], "end": events[1], "latency_ns": 100},
+                {"start": events[2], "end": events[3], "latency_ns": 100},
+                {"start": events[4], "end": events[5], "latency_ns": 50},
+            ],
+            "artifact": None,
+        },
+    }
+    with tempfile.TemporaryDirectory(prefix="xprobe-trace-slices-") as directory:
+        trace = pathlib.Path(directory) / "events.jsonl"
+        trace.write_text("".join(json.dumps(item) + "\n" for item in events))
+        result = pathlib.Path(directory) / "measure.json"
+        result.write_text(json.dumps(measurement))
+
+        def run(*arguments: str) -> dict:
+            return json.loads(
+                subprocess.run(
+                    [script, trace, *arguments], check=True, capture_output=True, text=True
+                ).stdout
+            )
+
+        report = run("--top-gaps", "2")
+        by_gap = run("--slice-gap", "1", "--window-ms", "0.00005")
+        by_outlier = run("--measurement", str(result), "--slice-outlier", "2")
+        by_time = run("--around", "440:460", "--max-slice-events", "1")
+        missing = subprocess.run(
+            [script, trace, "--slice-outlier", "1"], check=False, capture_output=True, text=True
+        )
+
+    copy = report["memcpy"]["by_kind"][0]
+    assert copy["bandwidth_gbps"] == 20.0, copy
+    assert copy["avg_bytes"] == 2000.0, copy
+    idle = report["gpu"]["top_idle_gaps"]
+    assert [(gap["start_ns"], gap["end_ns"]) for gap in idle] == [(300, 500), (100, 200)], idle
+    stream = next(item for item in report["streams"] if item["stream_id"] == 7)
+    assert [gap["gap_ns"] for gap in stream["top_gaps"]] == [400, 50]
+    assert stream["top_gaps"][0]["after"] == "a" and stream["top_gaps"][0]["before"] == "b"
+    assert report["outliers"] is None and report["slice"] is None
+
+    sliced = by_gap["slice"]
+    assert sliced["around"] == {"kind": "gap", "start_ns": 300, "end_ns": 500}
+    assert (sliced["start_ns"], sliced["end_ns"]) == (250, 550)
+    assert [row["name"] for row in sliced["events"]] == ["HtoD", "cudaStreamSynchronize", "b"]
+    assert sliced["events"][1]["tid"] == 55
+
+    outliers = by_outlier["outliers"]
+    assert outliers["source"] == ["full_evidence"]
+    assert [item["latency_ns"] for item in outliers["slowest"]] == [100, 100, 50]
+    assert by_outlier["slice"]["around"]["start_ns"] == 500
+
+    assert by_time["slice"]["total_events"] == 1 and not by_time["slice"]["truncated"]
+    assert by_time["slice"]["events"][0]["name"] == "cudaStreamSynchronize"
+    assert missing.returncode != 0 and "requires --measurement" in missing.stderr
 
 
 if __name__ == "__main__":

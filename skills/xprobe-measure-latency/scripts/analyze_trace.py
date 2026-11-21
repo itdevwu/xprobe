@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Summarize a bounded xprobe Event JSONL artifact."""
+"""Summarize a bounded xprobe Event JSONL artifact.
+
+Beyond aggregate GPU timing, the report ranks idle gaps, optionally ranks the
+slowest pairs of a measurement result, and can list every event inside a time
+window ("vertical slice") around a gap, an outlier, or explicit timestamps.
+Everything is descriptive: events inside a window are concurrent with it, not
+proven causes.
+"""
 
 import argparse
 import collections
@@ -228,6 +235,17 @@ def kernel_report(intervals: list[dict]) -> dict:
     }
 
 
+def bandwidth(group: list[dict]) -> dict:
+    """Achieved copy bandwidth over the summed copy time (bytes per ns = GB/s)."""
+    total_bytes = sum(item["bytes"] or 0 for item in group)
+    total_ns = sum(item["duration_ns"] for item in group)
+    return {
+        "total_bytes": total_bytes,
+        "avg_bytes": round(total_bytes / len(group), 1) if group else None,
+        "bandwidth_gbps": round(total_bytes / total_ns, 3) if total_ns else None,
+    }
+
+
 def memcpy_report(intervals: list[dict]) -> dict:
     copies = [interval for interval in intervals if interval["kind"] == "memcpy"]
     grouped = collections.defaultdict(list)
@@ -235,19 +253,50 @@ def memcpy_report(intervals: list[dict]) -> dict:
         grouped[interval["name"]].append(interval)
     return {
         "duration": duration_summary([item["duration_ns"] for item in copies]),
-        "total_bytes": sum(item["bytes"] or 0 for item in copies),
+        **bandwidth(copies),
         "by_kind": [
             {
                 "kind": kind,
                 "duration": duration_summary([item["duration_ns"] for item in group]),
-                "total_bytes": sum(item["bytes"] or 0 for item in group),
+                **bandwidth(group),
             }
             for kind, group in sorted(grouped.items())
         ],
     }
 
 
-def stream_report(intervals: list[dict]) -> list[dict]:
+def gap_entry(previous: dict, current: dict) -> dict:
+    return {
+        "start_ns": previous["end_ns"],
+        "end_ns": current["start_ns"],
+        "gap_ns": current["start_ns"] - previous["end_ns"],
+        "after": previous["name"],
+        "before": current["name"],
+    }
+
+
+def top(entries: list[dict], key: str, limit: int) -> list[dict]:
+    return sorted(entries, key=lambda item: (-item[key], item["start_ns"]))[:limit]
+
+
+def device_idle_gaps(intervals: list[dict], limit: int) -> list[dict]:
+    """Largest spans with no captured activity on a device: GPU bubbles."""
+    grouped = collections.defaultdict(list)
+    for interval in intervals:
+        grouped[(interval["pid"], interval["device_id"])].append(interval)
+    gaps = []
+    for (pid, device), group in grouped.items():
+        ordered = sorted(group, key=lambda item: (item["start_ns"], item["end_ns"]))
+        busy_until = ordered[0]
+        for current in ordered[1:]:
+            if current["start_ns"] > busy_until["end_ns"]:
+                gaps.append({"pid": pid, "device_id": device, **gap_entry(busy_until, current)})
+            if current["end_ns"] > busy_until["end_ns"]:
+                busy_until = current
+    return top(gaps, "gap_ns", limit)
+
+
+def stream_report(intervals: list[dict], top_gaps: int) -> list[dict]:
     grouped = collections.defaultdict(list)
     for interval in intervals:
         key = (
@@ -265,11 +314,13 @@ def stream_report(intervals: list[dict]) -> list[dict]:
             key=lambda item: (item["start_ns"], item["end_ns"]),
         )
         gaps = []
+        gap_entries = []
         overlaps = []
         for previous, current in zip(kernels, kernels[1:]):
             delta = current["start_ns"] - previous["end_ns"]
             if delta >= 0:
                 gaps.append(delta)
+                gap_entries.append(gap_entry(previous, current))
             else:
                 overlaps.append(-delta)
         reports.append(
@@ -287,6 +338,7 @@ def stream_report(intervals: list[dict]) -> list[dict]:
                 ),
                 "adjacent_kernel_gaps": duration_summary(gaps),
                 "adjacent_kernel_overlaps": duration_summary(overlaps),
+                "top_gaps": top(gap_entries, "gap_ns", top_gaps),
             }
         )
     reports.sort(
@@ -317,7 +369,108 @@ def load_events(path: pathlib.Path) -> list[dict]:
     return events
 
 
-def analyze(path: pathlib.Path) -> dict:
+def event_label(event: dict) -> str | None:
+    cuda = event.get("cuda") or {}
+    host = event.get("host") or {}
+    nvtx = event.get("nvtx") or {}
+    attributes = event.get("attributes") or {}
+    return (
+        cuda.get("kernel_name")
+        or attributes.get("cuda_api_name")
+        or nvtx.get("name")
+        or host.get("symbol_demangled")
+        or host.get("symbol")
+        or cuda.get("memcpy_kind")
+    )
+
+
+def slice_events(events: list[dict], start_ns: int, end_ns: int, limit: int) -> dict:
+    """Every event inside [start_ns, end_ns], in time order, bounded by limit."""
+    inside = sorted(
+        (event for event in events if start_ns <= event["timestamp_ns"] <= end_ns),
+        key=lambda event: (event["timestamp_ns"], event.get("sequence", 0)),
+    )
+    rows = []
+    for event in inside[:limit]:
+        cuda = event.get("cuda") or {}
+        rows.append(
+            {
+                "timestamp_ns": event["timestamp_ns"],
+                "offset_ns": event["timestamp_ns"] - start_ns,
+                "event_type": event["event_type"],
+                "name": event_label(event),
+                "pid": event.get("pid"),
+                "tid": event.get("tid"),
+                "stream_id": cuda.get("stream_id"),
+                "correlation_id": cuda.get("correlation_id"),
+                "event_id": event.get("event_id"),
+            }
+        )
+    return {
+        "start_ns": start_ns,
+        "end_ns": end_ns,
+        "events": rows,
+        "total_events": len(inside),
+        "truncated": len(inside) > limit,
+        "counts_by_type": dict(
+            sorted(collections.Counter(event["event_type"] for event in inside).items())
+        ),
+    }
+
+
+def measurement_outliers(path: pathlib.Path, limit: int) -> dict:
+    """Slowest pairs from a measure result; full evidence when available."""
+    result = json.loads(path.read_text())
+    if result.get("ok") is not True:
+        raise ValueError(f"{path}: not a successful measurement result")
+    edges = result.get("edges")
+    evidences = (
+        [(edge["name"], edge["evidence"]) for edge in edges]
+        if edges is not None
+        else [(None, result["evidence"])]
+    )
+    outliers = []
+    sources = set()
+    for edge, evidence in evidences:
+        if evidence.get("pairs") is not None:
+            pairs = evidence["pairs"]
+            sources.add("full_evidence")
+        else:
+            pairs = [exemplar["pair"] for exemplar in evidence.get("exemplars", [])]
+            sources.add("rank_exemplars")
+        for pair in pairs:
+            start, end = pair["start"], pair["end"]
+            outliers.append(
+                {
+                    "edge": edge,
+                    "latency_ns": pair["latency_ns"],
+                    "start_ns": start["timestamp_ns"],
+                    "end_ns": end["timestamp_ns"],
+                    "start_event": start.get("event_id"),
+                    "end_event": end.get("event_id"),
+                    "tid": start.get("tid"),
+                    "stream_id": (start.get("cuda") or {}).get("stream_id"),
+                    "correlation_id": (start.get("cuda") or {}).get("correlation_id"),
+                }
+            )
+    outliers.sort(key=lambda item: (-item["latency_ns"], item["start_ns"]))
+    return {
+        "input": str(path),
+        "source": sorted(sources),
+        "slowest": outliers[:limit],
+    }
+
+
+def analyze(
+    path: pathlib.Path,
+    *,
+    top_gaps: int = 5,
+    measurement: pathlib.Path | None = None,
+    outliers: int = 10,
+    window: tuple[str, object] | None = None,
+    window_ns: int = 0,
+    max_slice_events: int = 200,
+) -> dict:
     events = load_events(path)
     intervals, unmatched_starts, unmatched_ends = pair_activities(events)
     activity_ranges = [(item["start_ns"], item["end_ns"]) for item in intervals]
@@ -337,8 +490,44 @@ def analyze(path: pathlib.Path) -> dict:
                 "message": "activity metrics exclude unpaired start or end records",
             }
         )
+    idle_gaps = device_idle_gaps(intervals, top_gaps)
+    outlier_report = measurement_outliers(measurement, outliers) if measurement else None
+    window_report = None
+    if window is not None:
+        kind, value = window
+        if kind == "gap":
+            if not 1 <= value <= len(idle_gaps):
+                raise ValueError(f"--slice-gap {value}: only {len(idle_gaps)} idle gaps")
+            target = idle_gaps[value - 1]
+        elif kind == "outlier":
+            if outlier_report is None:
+                raise ValueError("--slice-outlier requires --measurement")
+            if not 1 <= value <= len(outlier_report["slowest"]):
+                raise ValueError(
+                    f"--slice-outlier {value}: only {len(outlier_report['slowest'])} outliers"
+                )
+            target = outlier_report["slowest"][value - 1]
+        else:
+            target = {"start_ns": value[0], "end_ns": value[1]}
+        window_report = {
+            "around": {"kind": kind, "start_ns": target["start_ns"], "end_ns": target["end_ns"]},
+            "window_ns": window_ns,
+            **slice_events(
+                events,
+                target["start_ns"] - window_ns,
+                target["end_ns"] + window_ns,
+                max_slice_events,
+            ),
+        }
+    if outlier_report and outlier_report["source"] == ["rank_exemplars"]:
+        warnings.append(
+            {
+                "code": "OUTLIERS_FROM_EXEMPLARS",
+                "message": "measurement has summary evidence; rerun with --evidence full to rank every pair",
+            }
+        )
     return {
-        "analysis_version": "1.0",
+        "analysis_version": "1.1",
         "input": str(path),
         "events": {
             "total": len(events),
@@ -355,6 +544,7 @@ def analyze(path: pathlib.Path) -> dict:
             "summed_activity_ns": summed,
             "overlap_factor": round(summed / busy, 6) if busy else None,
             "busy_fraction_of_span": round(busy / span, 6) if span else None,
+            "top_idle_gaps": idle_gaps,
         },
         "kernels": kernel_report(intervals),
         "memcpy": memcpy_report(intervals),
@@ -367,18 +557,71 @@ def analyze(path: pathlib.Path) -> dict:
                 ]
             )
         },
-        "streams": stream_report(intervals),
+        "streams": stream_report(intervals, top_gaps),
+        "outliers": outlier_report,
+        "slice": window_report,
         "warnings": warnings,
     }
 
 
+def parse_around(value: str) -> tuple[int, int]:
+    start, _, end = value.partition(":")
+    start_ns = int(start)
+    end_ns = int(end) if end else start_ns
+    if end_ns < start_ns:
+        raise argparse.ArgumentTypeError("--around END_NS must not precede START_NS")
+    return (start_ns, end_ns)
+
+
+def positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Summarize kernels, copies, overlap, streams, and gaps in xprobe Event JSONL"
+        description="Summarize kernels, copies, overlap, streams, gaps, outliers, "
+        "and time slices in xprobe Event JSONL"
     )
     parser.add_argument("trace", type=pathlib.Path)
+    parser.add_argument("--top-gaps", type=positive, default=5,
+                        help="idle gaps to rank per device and per stream")
+    parser.add_argument("--measurement", type=pathlib.Path,
+                        help="measure result JSON whose slowest pairs to rank")
+    parser.add_argument("--outliers", type=positive, default=10,
+                        help="slowest pairs to list from --measurement")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--slice-gap", type=positive, metavar="RANK",
+                        help="list events around the RANK-th largest device idle gap")
+    target.add_argument("--slice-outlier", type=positive, metavar="RANK",
+                        help="list events around the RANK-th slowest measured pair")
+    target.add_argument("--around", type=parse_around, metavar="START_NS[:END_NS]",
+                        help="list events around explicit timestamps")
+    parser.add_argument("--window-ms", type=float, default=0.0,
+                        help="padding before and after the slice target")
+    parser.add_argument("--max-slice-events", type=positive, default=200)
     args = parser.parse_args()
-    json.dump(analyze(args.trace), sys.stdout, indent=2, sort_keys=True)
+    if args.window_ms < 0:
+        parser.error("--window-ms must not be negative")
+    window = None
+    if args.slice_gap is not None:
+        window = ("gap", args.slice_gap)
+    elif args.slice_outlier is not None:
+        window = ("outlier", args.slice_outlier)
+    elif args.around is not None:
+        window = ("timestamps", args.around)
+    report = analyze(
+        args.trace,
+        top_gaps=args.top_gaps,
+        measurement=args.measurement,
+        outliers=args.outliers,
+        window=window,
+        window_ns=round(args.window_ms * 1_000_000),
+        max_slice_events=args.max_slice_events,
+    )
+    json.dump(report, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
 
 

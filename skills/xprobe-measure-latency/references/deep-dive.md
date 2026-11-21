@@ -61,16 +61,33 @@ Stop when a callee no longer carries most of the parent's time.
 
 ## Only the tail is slow
 
-1. Read the `p99` and `max` exemplars: their thread, stream, timestamps, and
-   CUDA correlation IDs identify concrete slow instances.
-2. Open the evidence artifact (`evidence.artifact.path`) and list events that
-   overlap those instances in time: GC lifecycles, syscalls, other kernels on
-   the same stream. Report them as concurrent, not causal.
-3. Re-correlate the same artifact with other selectors or policies through
-   `measure --input` before recapturing; a new capture is needed only for
-   endpoints the artifact does not contain.
-4. If the tail is rare, raise `samples` so p99 rests on at least a few hundred
-   pairs, and check the `FEW_SAMPLES` quality issue.
+Measure with `--evidence full`, then rank the slowest pairs and list
+everything that happened around the slowest one:
+
+```bash
+scripts/analyze_trace.py "$ARTIFACT" --measurement result.json \
+  --slice-outlier 1 --window-ms 2
+```
+
+`outliers.slowest` gives each slow pair's thread, stream, and correlation ID;
+`slice` lists GC lifecycles, syscalls, API calls, copies, and kernels inside
+the padded window. Report them as concurrent, not causal. Re-correlate the
+same artifact through `measure --input` before recapturing. If the tail is
+rare, raise `samples` so p99 rests on a few hundred pairs.
+
+## The GPU has bubbles
+
+`gpu.top_idle_gaps` ranks spans where a device ran no captured activity;
+`streams[].top_gaps` ranks gaps between consecutive kernels on one stream.
+Slice the largest bubble to see what the host did meanwhile:
+
+```bash
+scripts/analyze_trace.py "$ARTIFACT" --slice-gap 1 --window-ms 1
+```
+
+Gaps are between captured activities only: a narrow kernel selector hides the
+kernels it filtered out, so capture all kernels on the stream before calling a
+gap idle.
 
 ## Threads are blocked
 

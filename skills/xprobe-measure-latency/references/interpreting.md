@@ -69,9 +69,11 @@ scripts/analyze_trace.py capture.jsonl > capture-analysis.json
 Use `gpu.busy_union_ns` for wall-clock busy time and `overlap_factor` to see
 concurrency; summed activity is not wall time when the factor exceeds 1.
 `launch_variants` separates one kernel name by grid and block shape, and
-`streams` reports per-stream counts and adjacent gaps. The analyzer describes
-one capture window; it never relates distinct windows or assigns work to
-requests.
+`streams` reports per-stream counts and the largest adjacent gaps.
+`memcpy.by_kind` adds achieved `bandwidth_gbps` and `avg_bytes` per copy
+direction; compare them with the PCIe link reported by triage. The analyzer
+describes one capture window; it never relates distinct windows or assigns
+work to requests.
 
 ## Perturbation
 
