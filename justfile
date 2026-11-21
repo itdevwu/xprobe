@@ -34,7 +34,8 @@ test-skill-install:
 
 test-install:
     sh -n install.sh tests/install/test_install.sh
-    bash -n scripts/check-glibc-ceiling.sh scripts/verify-public-release.sh tests/install/test_glibc_ceiling.sh
+    bash -n scripts/check-glibc-ceiling.sh scripts/verify-public-release.sh tests/install/test_glibc_ceiling.sh tests/install/test_wheel.sh
+    python3 -I -m py_compile scripts/build-wheel.py
     python3 tests/install/test_release_sbom.py
     tests/install/test_glibc_ceiling.sh
     tests/install/test_install.sh

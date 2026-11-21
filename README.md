@@ -59,9 +59,16 @@ The installer detects Codex, Claude Code, Cursor, and other compatible agents.
 When invoked, the Skill checks for the matching `xprobe` CLI and installs or
 repairs it under a writable prefix before profiling. It can then diagnose and
 adjust path, permission, NVIDIA, CUDA, or CUPTI problems from live evidence.
-Node.js is only needed for Skill installation, not for xprobe itself. See
-[Installation](docs/installation.md) for direct CLI use, SPDX SBOMs, and
-GitHub-hosted build attestation verification.
+Node.js is only needed for Skill installation, not for xprobe itself.
+
+To install only the CLI, use pip or the release archive:
+
+```bash
+pip install xprobe
+```
+
+See [Installation](docs/installation.md) for the release archive, SPDX SBOMs,
+and GitHub-hosted build attestation verification.
 
 ## Measure
 

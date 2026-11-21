@@ -51,6 +51,12 @@ binary, verifies both Agents, and uninstalls. The tag workflow independently
 rebuilds both Agents, packages on Ubuntu 22.04, attests the archive and SBOM,
 and publishes them.
 
+The same job builds the PyPI wheel from the verified staging directory with
+`scripts/build-wheel.py` and installs it with `tests/install/test_wheel.sh`.
+After the GitHub release passes public verification, the `pypi` job publishes
+the wheel through PyPI trusted publishing (OIDC, environment `pypi`; no token is
+stored), then downloads it back from PyPI and repeats the installation test.
+
 ## 4. Verify the public release
 
 A release is complete only after the public artifact passes:
