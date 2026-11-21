@@ -60,7 +60,8 @@ impl Error for DoctorError {
 #[must_use = "doctor failures must be reported to the caller"]
 pub fn run() -> Result<CapabilityReport, DoctorError> {
     let proc_status = read_required("/proc/self/status")?;
-    let effective_uid = parse_status_u32(&proc_status, "Uid:", "/proc/self/status")?;
+    // Uid: lists real, effective, saved, and filesystem IDs.
+    let effective_uid = parse_status_field(&proc_status, "Uid:", 1, "/proc/self/status")?;
     let effective_capabilities = parse_status_hex(&proc_status, "CapEff:", "/proc/self/status")?;
     let kernel_release = read_required("/proc/sys/kernel/osrelease")?;
     let pid_namespace = fs::read_link("/proc/self/ns/pid")
@@ -72,7 +73,7 @@ pub fn run() -> Result<CapabilityReport, DoctorError> {
     let perf_event_paranoid = integer_setting_check("/proc/sys/kernel/perf_event_paranoid", 1)?;
     let ptrace_scope = integer_setting_check("/proc/sys/kernel/yama/ptrace_scope", 0)?;
     let kernel_lockdown = lockdown_check()?;
-    let ebpf_permissions = ebpf_permission_check(effective_uid, effective_capabilities);
+    let ebpf_permissions = ebpf_permission_check(effective_capabilities);
     let nvidia_driver = nvidia_driver_check()?;
     let cuda_driver = cuda_driver_check(&nvidia_driver)?;
     let cuda_toolkit = cuda_toolkit_check()?;
@@ -84,8 +85,7 @@ pub fn run() -> Result<CapabilityReport, DoctorError> {
         && cuda_driver.status == CheckStatus::Available
         && cupti.status == CheckStatus::Available;
     let runtime_injection = cfg!(all(target_os = "linux", target_arch = "x86_64"))
-        && (effective_uid == 0
-            || has_capability(effective_capabilities, CAP_SYS_PTRACE)
+        && (has_capability(effective_capabilities, CAP_SYS_PTRACE)
             || ptrace_scope.status == CheckStatus::Available);
 
     let checks = SystemChecks {
@@ -184,11 +184,16 @@ fn io_error(path: impl AsRef<Path>, source: io::Error) -> DoctorError {
     }
 }
 
-fn parse_status_u32(status: &str, field: &str, path: &str) -> Result<u32, DoctorError> {
+fn parse_status_field(
+    status: &str,
+    field: &str,
+    index: usize,
+    path: &str,
+) -> Result<u32, DoctorError> {
     let value = status
         .lines()
         .find_map(|line| line.strip_prefix(field))
-        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.split_whitespace().nth(index))
         .ok_or_else(|| invalid_value(path, field))?;
     value.parse().map_err(|_| invalid_value(path, value))
 }
@@ -213,16 +218,20 @@ fn has_capability(capabilities: u64, capability: u32) -> bool {
     capabilities & (1_u64 << capability) != 0
 }
 
-fn ebpf_permission_check(effective_uid: u32, capabilities: u64) -> CheckResult {
-    let allowed = effective_uid == 0
-        || (has_capability(capabilities, CAP_BPF) && has_capability(capabilities, CAP_PERFMON))
+/// Root in a container commonly runs without these capabilities, so only the
+/// effective capability set decides; uid 0 alone grants nothing here.
+fn ebpf_permission_check(capabilities: u64) -> CheckResult {
+    let allowed = (has_capability(capabilities, CAP_BPF)
+        && has_capability(capabilities, CAP_PERFMON))
         || has_capability(capabilities, CAP_SYS_ADMIN);
     if allowed {
         check(CheckStatus::Available, "effective BPF and perf privileges")
     } else {
         check(
             CheckStatus::Restricted,
-            "requires root, CAP_BPF + CAP_PERFMON, or CAP_SYS_ADMIN",
+            format!(
+                "requires CAP_BPF + CAP_PERFMON or CAP_SYS_ADMIN in CapEff (have {capabilities:#018x})"
+            ),
         )
     }
 }
@@ -410,15 +419,43 @@ fn check(status: CheckStatus, detail: impl Into<String>) -> CheckResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_capability, parse_status_hex, parse_status_u32};
+    use xprobe_protocol::CheckStatus;
+
+    use super::{
+        CAP_BPF, CAP_PERFMON, CAP_SYS_ADMIN, ebpf_permission_check, has_capability,
+        parse_status_field, parse_status_hex,
+    };
 
     #[test]
     fn parses_proc_status_fields() {
         let status = "Name:\txprobe\nUid:\t1000\t1001\t1002\t1003\nCapEff:\t000000c000000000";
-        assert_eq!(parse_status_u32(status, "Uid:", "fixture").unwrap(), 1000);
+        assert_eq!(
+            parse_status_field(status, "Uid:", 1, "fixture").unwrap(),
+            1001
+        );
         assert_eq!(
             parse_status_hex(status, "CapEff:", "fixture").unwrap(),
             0x0000_00c0_0000_0000
+        );
+    }
+
+    #[test]
+    fn ebpf_needs_capabilities_not_root() {
+        // Default Docker/Kubernetes root: CAP_CHOWN..CAP_AUDIT_WRITE without BPF.
+        let container_root = 0x0000_0000_a804_25fb;
+        assert_eq!(
+            ebpf_permission_check(container_root).status,
+            CheckStatus::Restricted
+        );
+        let bpf = (1_u64 << CAP_BPF) | (1_u64 << CAP_PERFMON);
+        assert_eq!(ebpf_permission_check(bpf).status, CheckStatus::Available);
+        assert_eq!(
+            ebpf_permission_check(1_u64 << CAP_SYS_ADMIN).status,
+            CheckStatus::Available
+        );
+        assert_eq!(
+            ebpf_permission_check(1_u64 << CAP_BPF).status,
+            CheckStatus::Restricted
         );
     }
 
