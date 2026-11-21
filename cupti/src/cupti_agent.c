@@ -1411,7 +1411,8 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
 }
 
 static int wait_for_activity_buffers(uint64_t completed_before_flush,
-                                     int allow_empty_flush)
+                                     int allow_empty_flush,
+                                     uint64_t empty_wait_ns)
 {
     struct timespec now;
     struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
@@ -1427,7 +1428,7 @@ static int wait_for_activity_buffers(uint64_t completed_before_flush,
     deadline_ns = (uint64_t)now.tv_sec * 1000000000U + (uint64_t)now.tv_nsec +
                   5000000000U;
     empty_deadline_ns = (uint64_t)now.tv_sec * 1000000000U +
-                        (uint64_t)now.tv_nsec + 100000000U;
+                        (uint64_t)now.tv_nsec + empty_wait_ns;
 
     for (;;) {
         uint64_t completed =
@@ -1767,7 +1768,10 @@ static int flush_activity_pass(int forced, int allow_empty_flush)
         report_cupti_error("cuptiActivityFlushAll", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
-    status = wait_for_activity_buffers(completed_before_flush, allow_empty_flush);
+    /* The final pass decides what the capture contains, so give slow buffer
+     * delivery time before concluding there is no activity. */
+    status = wait_for_activity_buffers(completed_before_flush, allow_empty_flush,
+                                       forced != 0 ? 1000000000U : 100000000U);
     atomic_store_explicit(&forced_flush_active, 0, memory_order_release);
     return status;
 }
