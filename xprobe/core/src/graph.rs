@@ -178,7 +178,7 @@ fn structural_issues(
     spec: &MeasurementGraphSpec,
 ) -> Vec<GraphValidationIssue> {
     let mut issues = Vec::new();
-    if spec.target != report.target {
+    if !spec.target.matches(&report.target) {
         issues.push(GraphValidationIssue {
             scope: GraphIssueScope::Graph,
             name: None,
@@ -339,7 +339,10 @@ mod tests {
         MeasurementGraphSpec {
             schema_version: SchemaVersion3::current(),
             name: None,
-            target: report.target,
+            target: xprobe_protocol::GraphTarget {
+                pid: report.target.pid,
+                process_start_time: Some(report.target.process_start_time),
+            },
             endpoints: BTreeMap::from([
                 ("a".to_owned(), "cuda:kernel_start".to_owned()),
                 ("b".to_owned(), "cuda:kernel_end".to_owned()),

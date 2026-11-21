@@ -257,3 +257,56 @@ fn reports_scoped_graph_issues_without_failing() {
             .any(|(_, _, message)| message.contains("bounded"))
     );
 }
+
+#[test]
+fn graph_target_may_omit_the_start_time() {
+    let mut spec = graph(
+        "pid_only",
+        &serde_json::json!([
+            {"name": "kernel", "from": "kernel_start", "to": "kernel_end", "match_policy": "exact", "samples": 5}
+        ]),
+    );
+    spec["endpoints"]
+        .as_object_mut()
+        .unwrap()
+        .remove("launch_exit");
+    spec["target"] = serde_json::json!({"pid": std::process::id()});
+    let output = validate_graph(&spec);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let result: xprobe_protocol::MeasurementGraphValidationResult =
+        serde_json::from_slice(&output.stdout).expect("stdout is graph validation JSON");
+    assert!(result.valid, "{:?}", result.issues);
+    assert_eq!(result.target.process_start_time, own_start_time());
+
+    spec["target"]["process_start_time"] = serde_json::json!(own_start_time() + 1);
+    let output = validate_graph(&spec);
+    let result: xprobe_protocol::MeasurementGraphValidationResult =
+        serde_json::from_slice(&output.stdout).expect("stdout is graph validation JSON");
+    assert!(!result.valid);
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|issue| issue.code == ErrorCode::TargetReused)
+    );
+}
+
+#[test]
+fn malformed_graph_specs_name_the_schema() {
+    let mut spec = graph("malformed", &serde_json::json!([]));
+    spec.as_object_mut().unwrap().remove("timeout_ms");
+    let output = validate_graph(&spec);
+    assert!(!output.status.success());
+    let error: ErrorResponse = serde_json::from_slice(&output.stdout).expect("error JSON");
+    assert!(
+        error
+            .error
+            .message
+            .contains("measurement-graph-spec.schema.json")
+    );
+    assert!(error.error.message.contains("timeout_ms"));
+}

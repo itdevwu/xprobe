@@ -45,7 +45,7 @@
       "$ref": "#/$defs/SchemaVersion3"
     },
     "target": {
-      "$ref": "#/$defs/TargetIdentity"
+      "$ref": "#/$defs/GraphTarget"
     },
     "timeout_ms": {
       "type": "integer",
@@ -94,6 +94,30 @@
         "match_policy"
       ]
     },
+    "GraphTarget": {
+      "description": "The process a graph measures. Omit `process_start_time` to accept the\nprocess currently holding `pid`; xprobe then reads its start time and\nverifies that identity around attach, as `measure --pid` does.",
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid"
+      ]
+    },
     "MatchPolicy": {
       "type": "string",
       "enum": [
@@ -109,26 +133,6 @@
       "type": "string",
       "enum": [
         "3.0"
-      ]
-    },
-    "TargetIdentity": {
-      "type": "object",
-      "properties": {
-        "pid": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "process_start_time": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "pid",
-        "process_start_time"
       ]
     }
   }

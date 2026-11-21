@@ -245,8 +245,10 @@ xprobe measure --pid 4242 \
 ```
 
 Exactly one source mode is used: `--pid`, one or more `--input`, or `--spec`.
-At least one positive `--samples` or `--duration-ms` bound is required in direct
-mode. `--timeout-ms` defaults to 30 seconds and `--max-events` to 100,000.
+Live measurement requires at least one positive `--samples` or `--duration-ms`
+bound; completed `--input` captures are already bounded and correlate every
+event when neither is set. `--timeout-ms` defaults to 30 seconds and
+`--max-events` to 100,000.
 
 `--cpu-sample` is live-only and requires `--duration-ms`. It opens bounded
 userspace callchain sampling events for the target's current threads. Defaults
@@ -403,7 +405,10 @@ A graph measures several edges from one bounded capture of one process:
 ```
 
 `measure --spec graph.json` accepts this `schemas/measurement-graph-spec.schema.json`
-document. A graph has 1–8 named endpoints and 1–8 edges; every edge sets
+document. `target.process_start_time` may be omitted: xprobe then reads
+the current start time of `pid` and verifies that identity around attach, as
+`measure --pid` does. A spec that does not match the schema fails with an error
+naming the schema and the offending field. A graph has 1–8 named endpoints and 1–8 edges; every edge sets
 `samples` or the graph sets `duration_ms`. Collectors attach once per unique
 endpoint: uprobes have no further limit, CUDA endpoints share up to eight Agent
 filters, and syscall, tracepoint, and USDT endpoints share two Linux collector
@@ -415,7 +420,9 @@ the single-edge rules. A graph never joins edges into per-request paths and
 never implies causality between edges. Results use
 `schemas/measurement-graph-result.schema.json` (schema `3.0`): per-edge
 statistics, quality verdict, correlation, clock quality, and evidence, one
-shared collection summary, and the shared event artifact. Any invalid edge or
+shared collection summary, and the shared event artifact. Each edge's
+`evidence.artifact` also points at that artifact, so single-edge and graph
+consumers read the path from the same place. Any invalid edge or
 edge correlation failure fails the whole command with the edge name in the
 message and `details.edge`; the captured events are still written to the
 artifact so the caller can re-correlate edges with `measure --input`.

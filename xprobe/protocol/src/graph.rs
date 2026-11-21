@@ -24,7 +24,7 @@ pub const GRAPH_MAX_LINUX_ENDPOINTS: usize = 2;
 pub struct MeasurementGraphSpec {
     pub schema_version: SchemaVersion3,
     pub name: Option<String>,
-    pub target: TargetIdentity,
+    pub target: GraphTarget,
     /// Endpoint name to event selector.
     pub endpoints: BTreeMap<String, String>,
     pub edges: Vec<GraphEdgeSpec>,
@@ -34,6 +34,28 @@ pub struct MeasurementGraphSpec {
     pub timeout_ms: u64,
     /// Record capacity of the whole shared capture.
     pub max_events: Option<u64>,
+}
+
+/// The process a graph measures. Omit `process_start_time` to accept the
+/// process currently holding `pid`; xprobe then reads its start time and
+/// verifies that identity around attach, as `measure --pid` does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GraphTarget {
+    pub pid: u32,
+    #[serde(default)]
+    pub process_start_time: Option<u64>,
+}
+
+impl GraphTarget {
+    /// Whether a live identity satisfies this target.
+    #[must_use]
+    pub fn matches(&self, identity: &TargetIdentity) -> bool {
+        self.pid == identity.pid
+            && self
+                .process_start_time
+                .is_none_or(|start| start == identity.process_start_time)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

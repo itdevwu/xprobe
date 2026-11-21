@@ -36,7 +36,7 @@ pub use event::{
 pub use export::{ExportFormat, TraceExportResult};
 pub use graph::{
     GRAPH_MAX_EDGES, GRAPH_MAX_ENDPOINTS, GRAPH_MAX_LINUX_ENDPOINTS, GraphEdgeResult,
-    GraphEdgeSpec, GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope,
+    GraphEdgeSpec, GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope, GraphTarget,
     GraphValidationIssue, MeasurementGraphResult, MeasurementGraphSpec,
     MeasurementGraphValidationResult,
 };

@@ -129,6 +129,7 @@ def main() -> None:
         assert edge["measurement"]["samples"]["matched"] >= 3, edge
         assert edge["measurement"]["latency_ns"]["min"] > 0, edge
         assert edge["evidence"]["exemplars"], edge
+        assert edge["evidence"]["artifact"] == graph_result["artifact"], edge
     assert edges["request_to_launch"]["correlation"]["confidence"] == "heuristic"
     assert edges["launch_to_kernel"]["correlation"]["confidence"] == "exact"
     assert edges["kernel_duration"]["correlation"]["confidence"] == "exact"

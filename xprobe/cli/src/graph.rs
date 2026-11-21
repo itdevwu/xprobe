@@ -13,7 +13,7 @@ use xprobe_protocol::{
     CollectionSummary, ErrorCode, Event, EvidenceArtifact, GraphEdgeResult, GraphIssueScope,
     HostCaptureResult, MeasurementGraphResult, MeasurementGraphSpec,
     MeasurementGraphValidationResult, MeasurementMode, MeasurementResult, SchemaVersion3,
-    SessionStatus, Warning,
+    SessionStatus, TargetIdentity, Warning,
 };
 
 use crate::{
@@ -35,9 +35,13 @@ pub(crate) fn parse_spec(
     serde_json::from_value(value).map_err(|error| {
         CommandFailure::new(
             ErrorCode::InvalidEventSelector,
-            format!("invalid MeasurementGraphSpec {}: {error}", path.display()),
+            format!(
+                "{} does not match schemas/measurement-graph-spec.schema.json: {error}",
+                path.display()
+            ),
             true,
         )
+        .with_detail("schema", "measurement-graph-spec.schema.json")
     })
 }
 
@@ -205,7 +209,7 @@ pub(crate) fn run_measure_graph(
     json: bool,
 ) -> ExitCode {
     match collect_graph(spec, cupti_socket, agent_path) {
-        Ok((execution, spec)) => finish_graph(execution, &spec, output, json),
+        Ok((execution, spec, target)) => finish_graph(execution, &spec, target, output, json),
         Err(error) => finish_measurement_failure(error, output, true, json),
     }
 }
@@ -214,7 +218,7 @@ fn collect_graph(
     spec: MeasurementGraphSpec,
     cupti_socket: Option<PathBuf>,
     agent_path: Option<PathBuf>,
-) -> Result<(GraphExecution, MeasurementGraphSpec), CommandFailure> {
+) -> Result<(GraphExecution, MeasurementGraphSpec, TargetIdentity), CommandFailure> {
     let validation = validate_graph(&spec)?;
     if let Some(issue) = validation.issues.first() {
         let scope = match (issue.scope, issue.name.as_deref()) {
@@ -231,6 +235,15 @@ fn collect_graph(
     let report = inspect::run(spec.target.pid).map_err(|error| {
         CommandFailure::new(error.code(), error.to_string(), error.recoverable())
     })?;
+    // Validation resolved the identity; pin it for the whole capture.
+    let target = validation.target.clone();
+    if report.target != target {
+        return Err(CommandFailure::new(
+            ErrorCode::TargetReused,
+            "graph target changed between validation and capture",
+            true,
+        ));
+    }
     let session_id = format!("xp_graph_{}", std::process::id());
     let limit = |value: u64, name: &str| {
         usize::try_from(value).map_err(|error| {
@@ -270,7 +283,7 @@ fn collect_graph(
     let all_sampled = edges.iter().all(|edge| edge.options.samples.is_some());
     let request = LiveMeasureRequest {
         pid: spec.target.pid,
-        expected_target: Some(spec.target.clone()),
+        expected_target: Some(target.clone()),
         cupti_socket,
         agent_path,
         timeout: Duration::from_millis(spec.timeout_ms),
@@ -296,12 +309,13 @@ fn collect_graph(
         requirements: validation.requirements,
     };
     let execution = collect_live(plan, &request, &GraphEdges { session_id, edges })?;
-    Ok((execution, spec))
+    Ok((execution, spec, target))
 }
 
 fn finish_graph(
     execution: GraphExecution,
     spec: &MeasurementGraphSpec,
+    target: TargetIdentity,
     output: EvidenceOutput<'_>,
     json: bool,
 ) -> ExitCode {
@@ -337,7 +351,10 @@ fn finish_graph(
                 quality: result.quality,
                 correlation: result.correlation,
                 clock: result.clock,
-                evidence: result.evidence,
+                evidence: xprobe_protocol::Evidence {
+                    artifact: artifact.clone(),
+                    ..result.evidence
+                },
                 warnings: result.warnings,
             }
         })
@@ -348,7 +365,7 @@ fn finish_graph(
         session_id: execution.session_id,
         status: execution.status,
         name: spec.name.clone(),
-        target: spec.target.clone(),
+        target,
         edges,
         collection: execution.collection,
         artifact,

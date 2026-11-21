@@ -1028,12 +1028,9 @@ fn correlate_nvtx_lifecycle<'a>(
     }
 }
 
+/// Completed captures are already bounded, so samples and duration are
+/// optional here; live collection requires one of them before capturing.
 fn validate_options(options: &MeasureOptions) -> Result<(), MeasureError> {
-    if options.samples.is_none() && options.duration.is_none() {
-        return Err(MeasureError::InvalidLimit(
-            "at least one of samples or duration must be set".to_owned(),
-        ));
-    }
     if options.samples == Some(0) {
         return Err(MeasureError::InvalidLimit(
             "samples must be greater than zero".to_owned(),

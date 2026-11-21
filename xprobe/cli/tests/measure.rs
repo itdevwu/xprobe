@@ -267,6 +267,44 @@ fn inlines_every_pair_with_full_evidence() {
 }
 
 #[test]
+fn completed_captures_need_no_sample_or_duration_bound() {
+    let path = capture_path("unbounded-offline");
+    write_capture(
+        &path,
+        &[
+            record(3, 100, 11, "test_kernel"),
+            record(4, 150, 11, "test_kernel"),
+            record(3, 200, 12, "test_kernel"),
+            record(4, 280, 12, "test_kernel"),
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
+        .args([
+            "measure",
+            "--input",
+            path.to_str().expect("temporary path must be UTF-8"),
+            "--from",
+            "cuda:kernel_start:name~test.*",
+            "--to",
+            "cuda:kernel_end:name~test.*",
+            "--match",
+            "exact",
+        ])
+        .output()
+        .expect("xprobe measure must run");
+    fs::remove_file(path).expect("capture fixture must be removed");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let result: MeasurementResult =
+        serde_json::from_slice(&output.stdout).expect("stdout must contain measurement JSON");
+    assert_eq!(result.measurement.samples.matched, 2);
+}
+
+#[test]
 fn rejects_a_capture_that_reached_the_agent_record_limit() {
     let path = capture_path("record-limit");
     write_capture(
@@ -577,20 +615,12 @@ fn measures_host_to_kernel_latency_from_merged_captures() {
 }
 
 #[test]
-fn requires_a_sample_or_duration_limit() {
-    let path = capture_path("unbounded");
-    write_capture(
-        &path,
-        &[
-            record(3, 100, 11, "test_kernel"),
-            record(4, 150, 11, "test_kernel"),
-        ],
-    );
+fn live_measurement_requires_a_sample_or_duration_limit() {
     let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
         .args([
             "measure",
-            "--input",
-            path.to_str().expect("temporary path must be UTF-8"),
+            "--pid",
+            &std::process::id().to_string(),
             "--from",
             "cuda:kernel_start",
             "--to",
@@ -601,7 +631,6 @@ fn requires_a_sample_or_duration_limit() {
         ])
         .output()
         .expect("xprobe measure must run");
-    fs::remove_file(path).expect("capture fixture must be removed");
 
     assert_eq!(output.status.code(), Some(1));
     let error: ErrorResponse =
