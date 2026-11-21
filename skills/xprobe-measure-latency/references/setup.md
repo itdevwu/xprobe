@@ -20,7 +20,9 @@ xprobe doctor
 ```
 
 The bootstrap verifies the archive and installs under `~/.local`; pass
-`--prefix DIR` for another root and export its `bin`. Surface PATH,
+`--prefix DIR` for another root and export its `bin`. Where pip is the natural
+installer, `pip install "xprobe==$VERSION"` installs the same CLI and Agents into
+the active environment. Surface PATH,
 permission, driver, CUDA, or CUPTI failures from `doctor` details; do not
 measure on an unverified installation. CUDA is needed only for GPU selectors.
 

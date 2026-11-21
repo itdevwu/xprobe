@@ -23,6 +23,22 @@ fails. It has the live context needed to adjust PATH, prefix, namespace,
 permission, NVIDIA, CUDA, and CUPTI issues. Node.js is required only for Skill
 installation.
 
+## Python package
+
+The same CLI and both CUPTI Agents are published on PyPI as a
+`manylinux_2_34_x86_64` wheel with no Python dependencies:
+
+```bash
+pip install xprobe
+xprobe --version
+```
+
+pip installs `xprobe` into the environment's `bin/` and the Agents into its
+`lib/xprobe/cuda12` and `lib/xprobe/cuda13`, the layout the CLI searches; this
+holds for virtual environments, conda, and `pip install --user`. The Skill and
+schemas are installed under `share/xprobe`. The wheel is built from the same
+verified files as the release archive.
+
 ## Direct CLI installation
 
 The versioned bootstrap installs to `~/.local` without root access:

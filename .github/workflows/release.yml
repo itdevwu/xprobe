@@ -112,6 +112,15 @@ jobs:
         with:
           subject-path: dist/${{ steps.package.outputs.name }}.tar.gz
           sbom-path: dist/${{ steps.package.outputs.name }}.spdx.json
+      - name: Build and test PyPI wheel
+        run: |
+          scripts/build-wheel.py "dist/${{ steps.package.outputs.name }}" dist/wheel
+          tests/install/test_wheel.sh dist/wheel/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: xprobe-wheel
+          path: dist/wheel/*.whl
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: xprobe-linux-x86_64
@@ -132,3 +141,36 @@ jobs:
           XPROBE_VERIFY_ATTESTATIONS: "1"
           XPROBE_RELEASE_REPOSITORY: ${{ github.repository }}
         run: scripts/verify-public-release.sh "${GITHUB_REF_NAME#v}"
+
+  # PyPI trusted publishing (OIDC): pypi.org trusts this workflow and the
+  # `pypi` environment, so no token is stored. Runs after the GitHub release
+  # and its public verification, so a broken archive never reaches PyPI.
+  pypi:
+    needs: linux-x86_64
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/project/xprobe/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: xprobe-wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Verify the public PyPI wheel
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          for attempt in $(seq 1 30); do
+            if python -m pip download --quiet --no-deps --only-binary :all: \
+                --dest public "xprobe==${version}"; then
+              break
+            fi
+            sleep 20
+          done
+          PYTHON=python tests/install/test_wheel.sh public/xprobe-"${version}"-*.whl
