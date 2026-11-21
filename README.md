@@ -86,7 +86,7 @@ capture with a [measurement graph](docs/cli-contract.md#measurement-graphs):
 
 ```bash
 xprobe measure --pid 4242 \
-  --from 'cuda:runtime_api:cudaLaunchKernel:exit' \
+  --from 'cuda:launch_api:exit' \
   --to 'cuda:kernel_start:name~flash.*' \
   --match exact --samples 100
 ```

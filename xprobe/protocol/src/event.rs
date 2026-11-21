@@ -189,3 +189,27 @@ pub enum MemoryKind {
     DeviceStatic,
     ManagedStatic,
 }
+
+/// CUDA API functions that launch kernels, as `(callback domain, name)`.
+///
+/// `cuda:launch_api:entry|exit` matches any of them, so `PyTorch` eager kernels
+/// launched through the Runtime API (`cuBLAS`, `cuDNN`, `ATen`) and Triton kernels
+/// launched through the Driver API pair with their kernels in one selector.
+pub const CUDA_LAUNCH_APIS: [(&str, &str); 6] = [
+    ("runtime_api", "cudaLaunchKernel"),
+    ("runtime_api", "cudaLaunchKernelExC"),
+    ("runtime_api", "cudaLaunchCooperativeKernel"),
+    ("driver_api", "cuLaunchKernel"),
+    ("driver_api", "cuLaunchKernelEx"),
+    ("driver_api", "cuLaunchCooperativeKernel"),
+];
+
+/// Whether a CUDA API call launches a kernel, including the `_ptsz`
+/// per-thread default stream variants.
+#[must_use]
+pub fn is_cuda_launch_api(domain: &str, name: &str) -> bool {
+    let name = name.strip_suffix("_ptsz").unwrap_or(name);
+    CUDA_LAUNCH_APIS
+        .iter()
+        .any(|(launch_domain, launch_name)| *launch_domain == domain && *launch_name == name)
+}

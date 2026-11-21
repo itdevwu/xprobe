@@ -596,6 +596,7 @@ fn parse_cuda_selector(
         "memset_start" | "memset_end" => parse_memset_selector(selector, &fields),
         "nvtx_range_start" | "nvtx_range_end" => parse_nvtx_selector(&fields),
         "runtime_api" | "driver_api" => parse_api_selector(selector),
+        "launch_api" => parse_launch_selector(selector),
         event => Err(ValidateError::InvalidSelector(format!(
             "unsupported CUDA event {event:?}"
         ))),
@@ -836,6 +837,36 @@ fn parse_api_selector(
     ))
 }
 
+/// `cuda:launch_api:<entry|exit>`: every Runtime and Driver kernel launch.
+fn parse_launch_selector(
+    selector: &str,
+) -> Result<(ResolvedCudaSelector, EndpointKind, bool), ValidateError> {
+    let event_type = match selector.split(':').collect::<Vec<_>>().as_slice() {
+        ["cuda", "launch_api", "entry"] => EventType::CudaApiEntry,
+        ["cuda", "launch_api", "exit"] => EventType::CudaApiExit,
+        _ => {
+            return Err(ValidateError::InvalidSelector(
+                "CUDA launch selector must be cuda:launch_api:<entry|exit>".to_owned(),
+            ));
+        }
+    };
+    Ok((
+        ResolvedCudaSelector {
+            event_type,
+            api_domain: Some("launch_api".to_owned()),
+            api_name: None,
+            kernel_name_regex: None,
+            nvtx_name_regex: None,
+            memcpy_kind: None,
+        },
+        EndpointKind::CudaApi {
+            domain: "launch_api".to_owned(),
+            name: "*".to_owned(),
+        },
+        true,
+    ))
+}
+
 fn parse_match_policy(policy: &str) -> Result<MatchPolicy, ValidateError> {
     match policy {
         "exact" => Ok(MatchPolicy::Exact),
@@ -1004,8 +1035,7 @@ fn supports_exact(start: &EndpointKind, end: &EndpointKind) -> bool {
         ) => start_name == end_name,
         (EndpointKind::CudaApi { domain, name }, EndpointKind::Kernel)
         | (EndpointKind::Kernel, EndpointKind::CudaApi { domain, name }) => {
-            (domain == "runtime_api" && name == "cudaLaunchKernel")
-                || (domain == "driver_api" && name == "cuLaunchKernel")
+            domain == "launch_api" || xprobe_protocol::is_cuda_launch_api(domain, name)
         }
         _ => false,
     }
@@ -1228,6 +1258,37 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.code == "TARGET_PROCESS_WILL_BE_MODIFIED")
+        );
+    }
+
+    #[test]
+    fn launch_api_selects_every_launch_api_and_pairs_exactly_with_kernels() {
+        let (launch, kind, collectable) = parse_cuda_selector("cuda:launch_api:exit").unwrap();
+        assert_eq!(launch.event_type, EventType::CudaApiExit);
+        assert_eq!(launch.api_domain.as_deref(), Some("launch_api"));
+        assert_eq!(launch.api_name, None);
+        assert!(collectable);
+        assert!(matches!(kind, EndpointKind::CudaApi { .. }));
+        for invalid in [
+            "cuda:launch_api:cuLaunchKernel:exit",
+            "cuda:launch_api:return",
+            "cuda:launch_api",
+        ] {
+            assert!(parse_cuda_selector(invalid).is_err(), "{invalid}");
+        }
+
+        let report = inspect::run(std::process::id()).unwrap();
+        let result = run(
+            &report,
+            "cuda:launch_api:exit",
+            "cuda:kernel_start:name~test.*",
+            "exact",
+        )
+        .unwrap();
+        assert!(result.valid, "{:?}", result.issues);
+        assert_eq!(
+            result.policy_recommendation.reason,
+            PolicyRecommendationReason::DeterministicCorrelationKey
         );
     }
 

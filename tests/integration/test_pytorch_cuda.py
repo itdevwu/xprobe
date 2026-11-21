@@ -112,6 +112,18 @@ def run_inner(xprobe: pathlib.Path) -> None:
                 mm_group["start_selector_hint"],
                 mm_group["end_selector_hint"],
             )
+            # Triton launches through the Driver API, eager kernels through
+            # the Runtime API; one launch_api endpoint covers both. Stay in
+            # the host clock: this CUDA 12 path may not align GPU timestamps.
+            compiled_launch = exact_measure(
+                xprobe,
+                agent,
+                pid,
+                mode,
+                "compiled",
+                "cuda:launch_api:entry",
+                "cuda:launch_api:exit",
+            )
             synchronization = exact_measure(
                 xprobe,
                 agent,
@@ -155,6 +167,19 @@ def run_inner(xprobe: pathlib.Path) -> None:
     assert ("HtoD", "pinned", "device") in host_sides, host_sides
     assert ("DtoH", "device", "pinned") in host_sides, host_sides
     assert_exact(exact_kernel)
+    assert_exact(compiled_launch)
+    launch_domains = {
+        pair["start"]["attributes"]["cuda_api_domain"]
+        for pair in compiled_launch["evidence"]["pairs"]
+    }
+    assert "driver_api" in launch_domains, launch_domains
+    # A Runtime launch and its nested Driver launch count once.
+    assert all(
+        pair["start"]["attributes"]["cuda_api_name"]
+        == pair["end"]["attributes"]["cuda_api_name"]
+        for pair in compiled_launch["evidence"]["pairs"]
+    ), compiled_launch["evidence"]["pairs"]
+    assert compiled_launch["correlation"]["confidence"] == "exact"
     assert_exact(synchronization)
     assert_exact(nvtx)
     assert nvtx["correlation"]["method"] == "exact_nvtx_range_id"
@@ -175,8 +200,10 @@ def run_inner(xprobe: pathlib.Path) -> None:
                 "exact_kernel_records": exact_kernel["collection"]["cupti"][
                     "retained_records"
                 ],
+                "launch_domains": sorted(launch_domains),
                 "measured": [
                     "kernel",
+                    "compiled_launch_api",
                     "memcpy_htod",
                     "memcpy_dtoh",
                     "stream_sync",

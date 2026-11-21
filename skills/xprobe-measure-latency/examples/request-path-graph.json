@@ -7,7 +7,7 @@
   },
   "endpoints": {
     "request": "uprobe:/srv/app/server:request_begin:entry",
-    "launch_exit": "cuda:runtime_api:cudaLaunchKernel:exit",
+    "launch_exit": "cuda:launch_api:exit",
     "kernel_start": "cuda:kernel_start:name~^vector_add",
     "kernel_end": "cuda:kernel_end:name~^vector_add"
   },

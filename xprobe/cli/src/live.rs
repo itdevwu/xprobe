@@ -651,11 +651,14 @@ pub(crate) fn cupti_arm_config(
         .iter()
         .filter_map(|endpoint| endpoint.cuda.as_ref())
         .map(|selector| {
-            cupti::event_filter(selector).map_err(|error| {
+            cupti::event_filters(selector).map_err(|error| {
                 CommandFailure::new(ErrorCode::InvalidEventSelector, error.to_string(), false)
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     if mode == MeasurementMode::Exact {
         let mut unique = Vec::with_capacity(filters.len());
         for filter in filters {
@@ -664,6 +667,17 @@ pub(crate) fn cupti_arm_config(
             }
         }
         filters = unique;
+    }
+    if filters.len() > cupti::CUPTI_FILTER_COUNT {
+        return Err(CommandFailure::new(
+            ErrorCode::SessionLimitExceeded,
+            format!(
+                "CUDA endpoints need {} Agent filters; at most {} fit in one capture",
+                filters.len(),
+                cupti::CUPTI_FILTER_COUNT
+            ),
+            true,
+        ));
     }
     let record_capacity = u64::try_from(max_events).map_err(|error| {
         CommandFailure::new(

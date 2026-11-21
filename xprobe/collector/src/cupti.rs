@@ -18,7 +18,7 @@ use xprobe_protocol::{
 
 mod filter;
 
-pub use filter::{CuptiFilterError, bounded_name_filter, event_filter};
+pub use filter::{CuptiFilterError, bounded_name_filter, event_filter, event_filters};
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";

@@ -1,6 +1,11 @@
 //! Cross-domain event correlation and latency statistics.
 
-use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+    time::Duration,
+};
 
 use regex::Regex;
 use xprobe_protocol::{
@@ -118,6 +123,9 @@ enum Selector {
         domain: String,
         name: String,
     },
+    LaunchApi {
+        event_type: EventType,
+    },
     Kernel {
         event_type: EventType,
         name: Option<Regex>,
@@ -165,6 +173,7 @@ impl Selector {
         }
         match fields[1] {
             "runtime_api" | "driver_api" => Self::parse_api(text),
+            "launch_api" => Self::parse_launch(&fields),
             "kernel_start" | "kernel_end" => Self::parse_kernel(&fields),
             "memcpy_start" | "memcpy_end" => Self::parse_memcpy(&fields),
             "memset_start" | "memset_end" => Self::parse_memset(text, &fields),
@@ -249,6 +258,19 @@ impl Selector {
             domain: fields[1].to_owned(),
             name: fields[2].to_owned(),
         })
+    }
+
+    fn parse_launch(fields: &[&str]) -> Result<Self, MeasureError> {
+        let event_type = match fields {
+            ["cuda", "launch_api", "entry"] => EventType::CudaApiEntry,
+            ["cuda", "launch_api", "exit"] => EventType::CudaApiExit,
+            _ => {
+                return Err(MeasureError::InvalidSelector(
+                    "CUDA launch selector must be cuda:launch_api:<entry|exit>".to_owned(),
+                ));
+            }
+        };
+        Ok(Self::LaunchApi { event_type })
     }
 
     fn parse_syscall(text: &str) -> Result<Self, MeasureError> {
@@ -447,16 +469,13 @@ impl Selector {
                 name,
             } => {
                 event.event_type == *event_type
-                    && event
-                        .attributes
-                        .get("cuda_api_name")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(name)
-                    && event
-                        .attributes
-                        .get("cuda_api_domain")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(domain)
+                    && cuda_api(event) == Some((domain.as_str(), name.as_str()))
+            }
+            Self::LaunchApi { event_type } => {
+                event.event_type == *event_type
+                    && cuda_api(event).is_some_and(|(domain, name)| {
+                        xprobe_protocol::is_cuda_launch_api(domain, name)
+                    })
             }
             Self::Kernel { event_type, name } => {
                 event.event_type == *event_type
@@ -652,6 +671,39 @@ impl Selector {
     }
 }
 
+/// Count a Runtime launch and the Driver launch it makes once, as the Runtime
+/// call. The Agent gives the nested Driver callback the Runtime correlation ID,
+/// so both share a thread and correlation key; a Driver launch without an
+/// enclosing Runtime launch (Triton, for example) is kept.
+fn drop_nested_driver_launches(events: &mut Vec<&Event>) {
+    let launch_key = |event: &Event, wanted: &str| {
+        cuda_api(event)
+            .is_some_and(|(domain, _)| domain == wanted)
+            .then(|| correlation_key(event).map(|key| (event.tid, key)))
+            .flatten()
+    };
+    let runtime = events
+        .iter()
+        .filter_map(|event| launch_key(event, "runtime_api"))
+        .collect::<BTreeSet<_>>();
+    if runtime.is_empty() {
+        return;
+    }
+    events
+        .retain(|event| launch_key(event, "driver_api").is_none_or(|key| !runtime.contains(&key)));
+}
+
+/// The `(domain, name)` of a CUDA API callback event.
+fn cuda_api(event: &Event) -> Option<(&str, &str)> {
+    let attribute = |key: &str| {
+        event
+            .attributes
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+    };
+    attribute("cuda_api_domain").zip(attribute("cuda_api_name"))
+}
+
 fn is_bounded_name_regex(pattern: &str) -> bool {
     const CANDIDATES: [(&str, &str); 8] = [
         ("^", "$"),
@@ -753,6 +805,11 @@ pub fn measure(
         .iter()
         .filter(|event| end_selector.matches(event))
         .collect();
+    for (selector, events) in [(&start_selector, &mut starts), (&end_selector, &mut ends)] {
+        if matches!(selector, Selector::LaunchApi { .. }) {
+            drop_nested_driver_launches(events);
+        }
+    }
     starts.sort_by_key(|event| event.timestamp_ns);
     ends.sort_by_key(|event| event.timestamp_ns);
     let clock_domain = common_clock_domain(&starts, &ends)?;
@@ -1856,6 +1913,62 @@ mod tests {
         assert_eq!(result.measurement.samples.matched, 2);
         assert_eq!(result.measurement.latency_ns.min, 50);
         assert_eq!(result.measurement.latency_ns.max, 80);
+    }
+
+    #[test]
+    fn launch_api_pairs_runtime_and_driver_launches_with_their_kernels() {
+        let api = |timestamp, correlation_id, domain: &str, name: &str| {
+            let mut event = event(EventType::CudaApiExit, timestamp, correlation_id);
+            event.source = EventSource::CuptiCallback;
+            event.clock_domain = ClockDomain::HostMonotonic;
+            event.attributes.insert(
+                "cuda_api_domain".to_owned(),
+                serde_json::Value::String(domain.to_owned()),
+            );
+            event.attributes.insert(
+                "cuda_api_name".to_owned(),
+                serde_json::Value::String(name.to_owned()),
+            );
+            event
+        };
+        let kernel = |timestamp, correlation_id| {
+            let mut event = event(EventType::GpuKernelStart, timestamp, correlation_id);
+            event.clock_domain = ClockDomain::CuptiNormalizedToHostMonotonic;
+            event
+        };
+        let events = vec![
+            api(95, 1, "driver_api", "cuLaunchKernel"),
+            api(100, 1, "runtime_api", "cudaLaunchKernel"),
+            kernel(130, 1),
+            api(200, 2, "driver_api", "cuLaunchKernelEx"),
+            kernel(260, 2),
+            api(300, 3, "driver_api", "cuLaunchKernel_ptsz"),
+            kernel(390, 3),
+            api(400, 4, "driver_api", "cuLaunchHostFunc"),
+            api(410, 4, "runtime_api", "cuLaunchKernel"),
+            kernel(450, 4),
+        ];
+        let mut options = options(MatchPolicy::Exact);
+        options.start_selector = "cuda:launch_api:exit".to_owned();
+        options.samples = None;
+        options.duration = Some(Duration::from_secs(1));
+        options.end_selector = "cuda:kernel_start:name~test.*".to_owned();
+
+        let result = measure(&events, &options).unwrap();
+        assert_eq!(result.measurement.samples.matched, 3);
+        assert_eq!(result.measurement.samples.ambiguous, 0);
+        assert_eq!(result.measurement.latency_ns.min, 30);
+        assert_eq!(result.measurement.latency_ns.max, 90);
+        assert_eq!(
+            result.evidence.pairs.as_ref().unwrap()[0].start.attributes["cuda_api_name"],
+            "cudaLaunchKernel"
+        );
+
+        options.start_selector = "cuda:launch_api:cuLaunchKernel:exit".to_owned();
+        assert!(matches!(
+            measure(&events, &options),
+            Err(MeasureError::InvalidSelector(_))
+        ));
     }
 
     #[test]

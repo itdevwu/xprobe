@@ -3,10 +3,10 @@
 use std::{collections::BTreeSet, error::Error, fmt};
 
 use xprobe_protocol::{
-    AgentActivation, ErrorCode, GRAPH_MAX_EDGES, GRAPH_MAX_ENDPOINTS, GRAPH_MAX_LINUX_ENDPOINTS,
-    GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope, GraphValidationIssue,
-    MatchPolicy, MeasurementGraphSpec, MeasurementGraphValidationResult, ProcessReport,
-    SchemaVersion3, ValidatedEndpoint, ValidationRequirements,
+    AgentActivation, ErrorCode, GRAPH_MAX_CUDA_FILTERS, GRAPH_MAX_EDGES, GRAPH_MAX_ENDPOINTS,
+    GRAPH_MAX_LINUX_ENDPOINTS, GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope,
+    GraphValidationIssue, MatchPolicy, MeasurementGraphSpec, MeasurementGraphValidationResult,
+    ProcessReport, SchemaVersion3, ValidatedEndpoint, ValidationRequirements,
 };
 
 use crate::{
@@ -259,23 +259,41 @@ fn structural_issues(
 
 /// Syscall, tracepoint, and USDT endpoints share the Linux collector's slots.
 fn slot_issues(endpoints: &[&ValidatedEndpoint]) -> Vec<GraphValidationIssue> {
+    let slot_issue = |message| GraphValidationIssue {
+        scope: GraphIssueScope::Graph,
+        name: None,
+        code: ErrorCode::SessionLimitExceeded,
+        message,
+    };
+    let mut issues = Vec::new();
     let linux = endpoints
         .iter()
         .filter(|endpoint| endpoint.linux.is_some())
         .map(|endpoint| endpoint.selector.as_str())
         .collect::<BTreeSet<_>>();
-    if linux.len() <= GRAPH_MAX_LINUX_ENDPOINTS {
-        return Vec::new();
-    }
-    vec![GraphValidationIssue {
-        scope: GraphIssueScope::Graph,
-        name: None,
-        code: ErrorCode::SessionLimitExceeded,
-        message: format!(
+    if linux.len() > GRAPH_MAX_LINUX_ENDPOINTS {
+        issues.push(slot_issue(format!(
             "a graph supports at most {GRAPH_MAX_LINUX_ENDPOINTS} syscall, tracepoint, or USDT endpoints, found {}",
             linux.len()
-        ),
-    }]
+        )));
+    }
+    let cuda_filters = endpoints
+        .iter()
+        .filter_map(|endpoint| endpoint.cuda.as_ref())
+        .map(|cuda| {
+            if cuda.api_domain.as_deref() == Some("launch_api") {
+                2
+            } else {
+                1
+            }
+        })
+        .sum::<usize>();
+    if cuda_filters > GRAPH_MAX_CUDA_FILTERS {
+        issues.push(slot_issue(format!(
+            "CUDA endpoints need {cuda_filters} Agent filters; a graph supports at most {GRAPH_MAX_CUDA_FILTERS} (cuda:launch_api uses two)"
+        )));
+    }
+    issues
 }
 
 const fn activation_rank(activation: AgentActivation) -> u8 {
@@ -331,7 +349,7 @@ mod tests {
         SchemaVersion3,
     };
 
-    use super::{merge_requirements, structural_issues};
+    use super::{merge_requirements, run, structural_issues};
     use crate::inspect;
 
     fn spec(edges: &[(&str, &str, &str, Option<u64>)]) -> MeasurementGraphSpec {
@@ -370,6 +388,37 @@ mod tests {
             structural_issues(&report, &spec(&[("k", "a", "b", Some(10))])),
             []
         );
+    }
+
+    #[test]
+    fn reports_cuda_endpoints_that_exceed_agent_filters() {
+        let report = inspect::run(std::process::id()).unwrap();
+        let mut graph = spec(&[
+            ("launch", "le", "lx", Some(1)),
+            ("a", "a0", "a1", Some(1)),
+            ("b", "b0", "b1", Some(1)),
+            ("c", "c0", "c1", Some(1)),
+        ]);
+        graph.endpoints = BTreeMap::from(
+            [
+                ("le", "cuda:launch_api:entry"),
+                ("lx", "cuda:launch_api:exit"),
+                ("a0", "cuda:kernel_start:name~^a"),
+                ("a1", "cuda:kernel_end:name~^a"),
+                ("b0", "cuda:kernel_start:name~^b"),
+                ("b1", "cuda:kernel_end:name~^b"),
+                ("c0", "cuda:kernel_start:name~^c"),
+                ("c1", "cuda:kernel_end:name~^c"),
+            ]
+            .map(|(name, selector)| (name.to_owned(), selector.to_owned())),
+        );
+        let result = run(&report, &graph).unwrap();
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|issue| {
+            issue.scope == GraphIssueScope::Graph
+                && issue.code == xprobe_protocol::ErrorCode::SessionLimitExceeded
+                && issue.message.contains("need 10 Agent filters")
+        }));
     }
 
     #[test]

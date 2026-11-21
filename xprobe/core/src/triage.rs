@@ -418,7 +418,7 @@ fn gpu_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
                 Some(measure(
                     evidence.target,
                     "launch_to_kernel",
-                    "cuda:runtime_api:cudaLaunchKernel:exit",
+                    "cuda:launch_api:exit",
                     "cuda:kernel_start",
                     MatchPolicy::Exact,
                     sized_capacity(launches, evidence.collection_window_ns),
