@@ -145,7 +145,7 @@ pub fn run(report: &ProcessReport, limit: usize) -> Result<DiscoveryResult, Disc
         total_candidates: total_candidates as u64,
         truncated: total_candidates > candidates.len(),
         candidates,
-        warnings: unavailable_warning(&unavailable).into_iter().collect(),
+        warnings: discovery_warnings(&unavailable, total_candidates),
     })
 }
 
@@ -197,6 +197,26 @@ fn walk_ancestry(
         }
         pid = parent_of(pid)?;
     }
+}
+
+fn discovery_warnings(unavailable: &[u32], candidates: usize) -> Vec<Warning> {
+    let mut warnings = unavailable_warning(unavailable)
+        .into_iter()
+        .collect::<Vec<_>>();
+    if candidates == 0 && !unavailable.is_empty() {
+        warnings.push(Warning {
+            code: "NVML_PID_NAMESPACE_MISMATCH".to_owned(),
+            message: "NVML reports CUDA processes by host PID, and none are visible here; \
+                      inside a container, find the worker with ps or the application's own \
+                      records and pass its namespace-local PID to validate and measure, or \
+                      run discover in the host PID namespace"
+                .to_owned(),
+            details: [("nvml_pids".to_owned(), serde_json::json!(unavailable))]
+                .into_iter()
+                .collect(),
+        });
+    }
+    warnings
 }
 
 fn unavailable_warning(pids: &[u32]) -> Option<Warning> {
@@ -290,6 +310,22 @@ mod tests {
                 InspectError::PermissionDenied { .. }
             ))
         ));
+    }
+
+    #[test]
+    fn guides_containers_when_no_nvml_process_is_visible() {
+        let codes = |unavailable: &[u32], candidates| {
+            super::discovery_warnings(unavailable, candidates)
+                .into_iter()
+                .map(|warning| warning.code)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            codes(&[446], 0),
+            ["NVML_PROCESS_UNAVAILABLE", "NVML_PID_NAMESPACE_MISMATCH"]
+        );
+        assert_eq!(codes(&[446], 1), ["NVML_PROCESS_UNAVAILABLE"]);
+        assert_eq!(codes(&[], 0), Vec::<String>::new());
     }
 
     #[test]

@@ -61,7 +61,9 @@ NVML lists compute processes from every container sharing the GPU. A listed PID
 that is not visible in the caller's PID namespace, or that exits before
 inspection, cannot be a candidate; it is reported in a
 `NVML_PROCESS_UNAVAILABLE` warning with its `nvml_pids` instead of failing the
-command. Root exit and other inspection failures remain errors.
+command. When none of them is visible, a `NVML_PID_NAMESPACE_MISMATCH`
+warning explains that NVML reported host PIDs: inside a container, pass the
+worker's namespace-local PID directly to `validate` and `measure`. Root exit and other inspection failures remain errors.
 
 This process-candidate response is discovery schema `2.0`. xprobe does not emit
 or maintain the pre-0.3 event-discovery shape.
