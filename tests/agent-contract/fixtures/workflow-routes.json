@@ -55,9 +55,10 @@
       "required": [
         "dig deeper",
         "split it with a measurement graph",
-        "p99 and max exemplars",
+        "rank the slowest pairs",
         "not covered by this release",
-        "stop escalating"
+        "stop escalating",
+        "--slice-gap"
       ]
     },
     {

@@ -65,9 +65,9 @@ Escalate one step at a time, each driven by the previous result; details are in
    omits (memcpy/memset activity, larger CPU sample, `-X perf` for Python).
 2. **A span is slow but unexplained**: split it with a measurement graph into
    sub-edges, and follow sampled stacks down to a callee boundary.
-3. **Only the tail is slow**: read the p99 and max exemplars, then inspect the
-   artifact around them; re-correlate it offline with `measure --input` before
-   recapturing.
+3. **Only the tail is slow, or the GPU has bubbles**: rank the slowest pairs or
+   idle gaps and list what ran around them with `scripts/analyze_trace.py`;
+   re-correlate offline with `measure --input` before recapturing.
 4. **Threads are blocked**: measure the dominant syscall exactly, check Python
    GC lifecycles, and treat lock or I/O attribution as not yet covered.
 5. **It is a regression**: run the same spec on the baseline and compare
