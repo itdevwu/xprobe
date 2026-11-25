@@ -123,7 +123,12 @@ struct xprobe_nvtx_range_slot {
 };
 
 static struct xprobe_cupti_record *records;
-static _Atomic unsigned char *record_ready;
+/* Per slot: the logical record index plus one once the record is written,
+ * zero while it is empty or being rewritten. Ring snapshots read slots as a
+ * sequence lock against this value. */
+static _Atomic uint64_t *record_sequence;
+/* Ring mode: verified copies of the records a snapshot returns. */
+static struct xprobe_cupti_record *ring_snapshot;
 static struct xprobe_cupti_aggregate_slot *aggregate_slots;
 static struct xprobe_nvtx_range_slot *nvtx_range_slots;
 static uint64_t nvtx_range_capacity;
@@ -199,17 +204,19 @@ static int activate_capture(void);
 static int allocate_capture(uint64_t capacity, int needs_nvtx)
 {
     struct xprobe_cupti_record *new_records;
-    _Atomic unsigned char *new_ready;
+    struct xprobe_cupti_record *new_ring_snapshot;
+    _Atomic uint64_t *new_ready;
     struct xprobe_cupti_aggregate_slot *new_aggregate_slots;
     struct xprobe_nvtx_range_slot *new_nvtx_range_slots;
 
     if (capacity == 0U || capacity > SIZE_MAX / sizeof(*records) ||
-        capacity > SIZE_MAX / sizeof(*record_ready)) {
+        capacity > SIZE_MAX / sizeof(*record_sequence)) {
         fprintf(stderr, "xprobe CUPTI: invalid record capacity %llu\n",
                 (unsigned long long)capacity);
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
     }
     new_records = NULL;
+    new_ring_snapshot = NULL;
     new_ready = NULL;
     new_aggregate_slots = NULL;
     new_nvtx_range_slots = NULL;
@@ -222,11 +229,15 @@ static int allocate_capture(uint64_t capacity, int needs_nvtx)
     } else {
         new_records = calloc((size_t)capacity, sizeof(*new_records));
         new_ready = malloc((size_t)capacity * sizeof(*new_ready));
+        if (capture_mode == XPROBE_CUPTI_CAPTURE_RING) {
+            new_ring_snapshot = calloc((size_t)capacity, sizeof(*new_ring_snapshot));
+        }
     }
     if (needs_nvtx != 0) {
         if (capacity > SIZE_MAX / sizeof(*nvtx_range_slots)) {
             fprintf(stderr, "xprobe CUPTI: NVTX range capacity exceeds size_t\n");
             free(new_records);
+            free(new_ring_snapshot);
             free(new_ready);
             free(new_aggregate_slots);
             return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;
@@ -236,12 +247,14 @@ static int allocate_capture(uint64_t capacity, int needs_nvtx)
     }
     if ((capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
          new_aggregate_slots == NULL) ||
-        (capture_mode == XPROBE_CUPTI_CAPTURE_EXACT &&
+        (capture_mode != XPROBE_CUPTI_CAPTURE_AGGREGATE &&
          (new_records == NULL || new_ready == NULL)) ||
+        (capture_mode == XPROBE_CUPTI_CAPTURE_RING && new_ring_snapshot == NULL) ||
         (needs_nvtx != 0 && new_nvtx_range_slots == NULL)) {
         fprintf(stderr, "xprobe CUPTI: failed to allocate %llu capture records\n",
                 (unsigned long long)capacity);
         free(new_records);
+        free(new_ring_snapshot);
         free(new_ready);
         free(new_aggregate_slots);
         free(new_nvtx_range_slots);
@@ -253,11 +266,13 @@ static int allocate_capture(uint64_t capacity, int needs_nvtx)
         }
     }
     free(records);
-    free(record_ready);
+    free(ring_snapshot);
+    free(record_sequence);
     free(aggregate_slots);
     free(nvtx_range_slots);
     records = new_records;
-    record_ready = new_ready;
+    ring_snapshot = new_ring_snapshot;
+    record_sequence = new_ready;
     aggregate_slots = new_aggregate_slots;
     nvtx_range_slots = new_nvtx_range_slots;
     nvtx_range_capacity = needs_nvtx != 0 ? capacity : 0U;
@@ -276,7 +291,7 @@ static void reset_capture(void)
         }
     } else {
         for (index = 0U; index < record_capacity; ++index) {
-            atomic_store_explicit(&record_ready[index], 0U, memory_order_relaxed);
+            atomic_store_explicit(&record_sequence[index], 0U, memory_order_relaxed);
         }
     }
     for (index = 0U; index < nvtx_range_capacity; ++index) {
@@ -615,10 +630,12 @@ static int capture_filter_matches(const struct xprobe_cupti_record *record)
     return 0;
 }
 
+static void advance_committed_records(void);
+
 static void enqueue_record(const struct xprobe_cupti_record *record)
 {
     uint64_t index;
-    uint64_t committed;
+    uint64_t slot;
 
     if (atomic_load_explicit(&capture_state, memory_order_relaxed) !=
         XPROBE_CUPTI_CAPTURE_ACTIVE) {
@@ -628,20 +645,45 @@ static void enqueue_record(const struct xprobe_cupti_record *record)
         return;
     }
     index = atomic_fetch_add_explicit(&record_count, 1U, memory_order_relaxed);
-    if (index >= record_capacity) {
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_RING) {
+        slot = index % record_capacity;
+        /* Sequence-lock writer: invalidate, write, then publish the index. */
+        atomic_store_explicit(&record_sequence[slot], 0U, memory_order_relaxed);
+        atomic_thread_fence(memory_order_release);
+    } else if (index >= record_capacity) {
         atomic_store_explicit(&stop_reason, XPROBE_CUPTI_STOP_RECORD_LIMIT,
                               memory_order_relaxed);
         atomic_store_explicit(&capture_state,
                               XPROBE_CUPTI_CAPTURE_LIMIT_REACHED,
                               memory_order_release);
         return;
+    } else {
+        slot = index;
     }
-    records[index] = *record;
-    atomic_store_explicit(&record_ready[index], 1U, memory_order_release);
+    records[slot] = *record;
+    atomic_store_explicit(&record_sequence[slot], index + 1U, memory_order_release);
+    advance_committed_records();
+}
 
-    committed = atomic_load_explicit(&committed_record_count, memory_order_acquire);
-    while (committed < record_capacity &&
-           atomic_load_explicit(&record_ready[committed], memory_order_acquire) != 0U) {
+/* Advance the committed count over every record written in order. In ring
+ * mode a slot already reused by a later record is skipped: its record is
+ * gone, and snapshots report the gap. */
+static void advance_committed_records(void)
+{
+    uint64_t committed =
+        atomic_load_explicit(&committed_record_count, memory_order_acquire);
+
+    for (;;) {
+        uint64_t sequence;
+
+        if (capture_mode != XPROBE_CUPTI_CAPTURE_RING && committed >= record_capacity) {
+            return;
+        }
+        sequence = atomic_load_explicit(
+            &record_sequence[committed % record_capacity], memory_order_acquire);
+        if (sequence == 0U || sequence <= committed) {
+            return;
+        }
         if (atomic_compare_exchange_weak_explicit(
                 &committed_record_count, &committed, committed + 1U,
                 memory_order_release, memory_order_acquire)) {
@@ -1596,7 +1638,8 @@ static int receive_all(int descriptor, void *data, size_t size)
     return 0;
 }
 
-static int activity_timestamps_are_host_monotonic(uint64_t available)
+static int activity_timestamps_are_host_monotonic(
+    const struct xprobe_cupti_record *checked, uint64_t available)
 {
     uint64_t capture_end_timestamp_ns;
     const struct xprobe_cupti_record *first_kernel = NULL;
@@ -1606,7 +1649,7 @@ static int activity_timestamps_are_host_monotonic(uint64_t available)
         return 0;
     }
     for (uint64_t index = 0U; index < available; ++index) {
-        const struct xprobe_cupti_record *record = &records[index];
+        const struct xprobe_cupti_record *record = &checked[index];
         uint64_t timestamp_ns = record->timestamp_ns;
         int is_activity = record->kind >= XPROBE_CUPTI_GPU_KERNEL_START &&
                           record->kind <= XPROBE_CUPTI_GPU_MEMSET_END;
@@ -1629,7 +1672,7 @@ static int activity_timestamps_are_host_monotonic(uint64_t available)
     }
     if (first_kernel != NULL) {
         for (uint64_t index = 0U; index < available; ++index) {
-            const struct xprobe_cupti_record *record = &records[index];
+            const struct xprobe_cupti_record *record = &checked[index];
 
             if (record->kind == XPROBE_CUPTI_CUDA_API_ENTRY &&
                 record->correlation_id == first_kernel->correlation_id) {
@@ -1685,7 +1728,9 @@ static uint64_t aggregate_observed_records(void)
 }
 
 static void initialize_output_header(struct xprobe_cupti_output_header *header,
-                                     uint64_t available, uint64_t record_offset)
+                                     uint64_t available, uint64_t record_offset,
+                                     const struct xprobe_cupti_record *checked,
+                                     uint64_t checked_count)
 {
     uint64_t observed =
         capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE
@@ -1704,10 +1749,13 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
     if (atomic_load_explicit(&capture_peer_memcpy, memory_order_relaxed) != 0) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_PEER_MEMCPY;
     }
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_RING) {
+        header->feature_flags |= XPROBE_CUPTI_FEATURE_RING_RECORDS;
+    }
     if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS |
                                 XPROBE_CUPTI_FEATURE_MEMORY_KINDS;
-    } else if (activity_timestamps_are_host_monotonic(available) != 0) {
+    } else if (activity_timestamps_are_host_monotonic(checked, checked_count) != 0) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_HOST_MONOTONIC_TIMESTAMPS;
     }
     header->capture_state =
@@ -1760,6 +1808,36 @@ static int write_aggregate_records(int descriptor,
     return 0;
 }
 
+/* Copy ring records [requested, available) that are still intact into
+ * ring_snapshot and return the index of the first one. A slot rewritten
+ * before or while it is read loses that record and every older one, so the
+ * copy stays contiguous and the caller sees the gap in record_offset. */
+static uint64_t copy_ring_records(uint64_t requested, uint64_t available)
+{
+    uint64_t oldest = available > record_capacity ? available - record_capacity : 0U;
+    uint64_t first = requested > oldest ? requested : oldest;
+    uint64_t count = 0U;
+
+    for (uint64_t index = first; index < available; ++index) {
+        uint64_t slot = index % record_capacity;
+        uint64_t before =
+            atomic_load_explicit(&record_sequence[slot], memory_order_acquire);
+        struct xprobe_cupti_record copy = records[slot];
+        uint64_t after;
+
+        atomic_thread_fence(memory_order_acquire);
+        after = atomic_load_explicit(&record_sequence[slot], memory_order_relaxed);
+        if (before != index + 1U || after != index + 1U) {
+            first = index + 1U;
+            count = 0U;
+            continue;
+        }
+        ring_snapshot[count] = copy;
+        ++count;
+    }
+    return first;
+}
+
 static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
 {
     struct xprobe_cupti_output_header header;
@@ -1779,7 +1857,19 @@ static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
                 (unsigned long long)available);
         return -1;
     }
-    initialize_output_header(&header, available, record_offset);
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_RING) {
+        uint64_t first = copy_ring_records(record_offset, available);
+
+        initialize_output_header(&header, available, first, ring_snapshot,
+                                 available - first);
+        result = write_function(descriptor, &header, sizeof(header));
+        if (result == 0) {
+            result = write_function(descriptor, ring_snapshot,
+                                    (available - first) * sizeof(records[0]));
+        }
+        return result;
+    }
+    initialize_output_header(&header, available, record_offset, records, available);
     result = write_function(descriptor, &header, sizeof(header));
     if (result == 0 && capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
         result = write_aggregate_records(descriptor, write_function);
@@ -2038,7 +2128,7 @@ static void *serve_snapshots(void *unused)
             request.version != XPROBE_CUPTI_CONTROL_VERSION ||
             (request.command < XPROBE_CUPTI_CONTROL_ARM ||
              request.command > XPROBE_CUPTI_CONTROL_CLOSE) ||
-            request.capture_mode > XPROBE_CUPTI_CAPTURE_AGGREGATE ||
+            request.capture_mode > XPROBE_CUPTI_CAPTURE_RING ||
             (request.command != XPROBE_CUPTI_CONTROL_ARM &&
              request.filter_count != 0U)) {
             fprintf(stderr, "xprobe CUPTI: invalid snapshot control request\n");

@@ -10,7 +10,7 @@ extern "C" {
 #define XPROBE_CUPTI_AGENT_ABI_VERSION 4U
 #define XPROBE_CUPTI_OUTPUT_MAGIC "XPCUPTI"
 #define XPROBE_CUPTI_CONTROL_MAGIC "XPCTRL\0"
-#define XPROBE_CUPTI_CONTROL_VERSION 5U
+#define XPROBE_CUPTI_CONTROL_VERSION 6U
 #define XPROBE_CUPTI_NAME_LENGTH 128U
 #define XPROBE_CUPTI_FILTER_COUNT 8U
 #define XPROBE_CUPTI_VALUE_UNKNOWN UINT32_MAX
@@ -22,12 +22,20 @@ enum xprobe_cupti_feature {
     XPROBE_CUPTI_FEATURE_NVTX_RECORDS = 1U << 3,
     XPROBE_CUPTI_FEATURE_MEMORY_KINDS = 1U << 4,
     /* Peer-to-peer copies (CUPTI MEMCPY2) are captured with other copies. */
-    XPROBE_CUPTI_FEATURE_PEER_MEMCPY = 1U << 5
+    XPROBE_CUPTI_FEATURE_PEER_MEMCPY = 1U << 5,
+    /* Records come from a ring: record_offset plus record_count may exceed
+     * record_capacity. */
+    XPROBE_CUPTI_FEATURE_RING_RECORDS = 1U << 6
 };
 
 enum xprobe_cupti_capture_mode {
     XPROBE_CUPTI_CAPTURE_EXACT = 0,
-    XPROBE_CUPTI_CAPTURE_AGGREGATE = 1
+    XPROBE_CUPTI_CAPTURE_AGGREGATE = 1,
+    /* Exact records in a ring: the newest record_capacity records are kept
+     * and capture never stops at the limit. A snapshot's record_offset is the
+     * first record it returns; a larger value than requested means the
+     * records in between were overwritten before they were read. */
+    XPROBE_CUPTI_CAPTURE_RING = 2
 };
 
 enum xprobe_cupti_agent_status {

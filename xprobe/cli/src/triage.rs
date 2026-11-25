@@ -425,6 +425,7 @@ fn gpu_request(request: &TriageRequest) -> LiveMeasureRequest {
         timeout: Duration::from_millis(request.timeout_ms),
         match_policy_text: "exact",
         mode: MeasurementMode::Aggregate,
+        ring: false,
         options: MeasureOptions {
             session_id: format!("xp_triage_gpu_{}", std::process::id()),
             name: Some("triage".to_owned()),

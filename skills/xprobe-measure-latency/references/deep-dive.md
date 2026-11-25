@@ -75,6 +75,22 @@ the padded window. Report them as concurrent, not causal. Re-correlate the
 same artifact through `measure --input` before recapturing. If the tail is
 rare, raise `samples` so p99 rests on a few hundred pairs.
 
+## The spike is rare
+
+When a slow span appears once a minute, a bounded window misses it. Wait for
+it with a triggered capture, which keeps a ring of recent GPU activity and
+writes only the window around the span that crossed the threshold:
+
+```bash
+xprobe measure --pid "$PID" --trigger-gap-ms 10 --timeout-ms 300000 \
+  --events-out spikes
+```
+
+Use `--trigger-duration-ms` for one slow kernel or copy, and
+`--trigger-latency-ms` with `--from`, `--to`, and `--match` for one slow CUDA
+edge. `TRIGGER_NOT_OBSERVED` is a result: its `longest_ns` bounds every span
+seen. Analyze each `windows[].artifact.path` like any artifact.
+
 ## The GPU has bubbles
 
 `gpu.top_idle_gaps` ranks spans where a device ran no captured activity;

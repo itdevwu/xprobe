@@ -398,6 +398,38 @@ capacity failures still write it and identify its path, format, and event count
 in the JSON error. Artifact failure returns `TRACE_EXPORT_FAILED` and preserves
 the original measurement error code in `details`.
 
+### Triggered capture
+
+```bash
+xprobe measure --pid 4242 --trigger-gap-ms 10 --pre-ms 50 --post-ms 50 \
+  --timeout-ms 300000 --max-events 400000 --events-out /tmp/spikes
+```
+
+A triggered capture waits for one rare slow span instead of recording a fixed
+window. `--trigger-gap-ms` fires on idle time between an activity's end and
+the next kernel, copy, or memset on its stream, `--trigger-duration-ms` on a
+kernel, copy, or memset that lasts at least the threshold, and
+`--trigger-latency-ms` on a `--from`/`--to` pair under `--match`; latency
+triggers accept CUDA endpoints only. Gap and duration triggers, and latency
+triggers under `stream-order`, record every GPU activity.
+
+The CUPTI Agent keeps the newest `--max-events` records in a ring, and xprobe
+evaluates every new span on each snapshot with the same pairing rules as
+`measure`. When a span crosses the threshold, xprobe waits for the post-roll,
+writes the events from `--pre-ms` before the span to `--post-ms` after it as
+`window-N.events.jsonl` with its capture manifest, and continues until
+`--windows` windows (default one) are written; each window starts after the
+previous one ends. `--events-out` names the directory for the windows.
+Results conform to `schemas/trigger-result.schema.json` (schema `3.0`): the
+condition, every span evaluated and the longest seen, each window's firing
+span and longest spans, and ring capacity, overwrites, and drops.
+
+Records overwritten before a snapshot read them or dropped by CUPTI invalidate
+any window they may overlap; such windows are counted in `lost_windows` and
+never written. Without a written window, a timeout returns
+`TRIGGER_NOT_OBSERVED` with the longest span seen as the observed bound, and
+fired windows that all lost records return `EVENTS_DROPPED`.
+
 No matched pairs return `NO_MATCHED_SAMPLES`. Cross-clock subtraction without
 declared alignment returns `CLOCK_ALIGNMENT_FAILED`. Drops and unknown clock
 error are never silently converted to high-quality results. Error `details` and

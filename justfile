@@ -80,6 +80,9 @@ test-cupti-burst-live-cuda12: build
 test-multisource-live: build
     python3 tests/integration/test_multisource.py "{{cuda13_devel_image}}" target/debug/xprobe
 
+test-trigger-live: build
+    python3 tests/integration/test_trigger.py "{{cuda13_devel_image}}" target/debug/xprobe
+
 test-multisource-live-cuda12: build
     python3 tests/integration/test_multisource.py "{{cuda12_devel_image}}" target/debug/xprobe
 
@@ -116,6 +119,7 @@ test-release-live:
     just test-nvtx-live
     just test-injection-live
     just test-multisource-live
+    just test-trigger-live
     just test-pytorch-live
     just test-pytorch-cuda-live
     just test-triage-live

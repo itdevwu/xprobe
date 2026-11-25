@@ -18,6 +18,7 @@ use xprobe_protocol::{
 };
 
 mod quality;
+pub mod spans;
 
 pub use quality::{apply_coverage, assess as assess_quality, finalize};
 
@@ -776,7 +777,8 @@ struct Selected<'s, 'a> {
     events: &'a [Event],
     starts: &'s [&'a Event],
     ends: &'s [&'a Event],
-    end_selector: &'s Selector,
+    /// The end selector, when names in the ends came from one.
+    end_selector: Option<&'s Selector>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -824,7 +826,7 @@ pub fn measure(
             events,
             starts: &starts,
             ends: &ends,
-            end_selector: &end_selector,
+            end_selector: Some(&end_selector),
         },
         options.match_policy,
         options.samples,
@@ -1521,11 +1523,11 @@ fn stream_successor<'a>(timeline: &[&'a Event], index: usize, alone: bool) -> Su
 
 /// Whether a kernel's name may have been truncated past what the selector's
 /// regex needs, so a non-match does not prove the kernel is not selected.
-fn name_undecidable(selector: &Selector, event: &Event) -> bool {
-    let Selector::Kernel {
+fn name_undecidable(selector: Option<&Selector>, event: &Event) -> bool {
+    let Some(Selector::Kernel {
         event_type,
         name: Some(pattern),
-    } = selector
+    }) = selector
     else {
         return false;
     };

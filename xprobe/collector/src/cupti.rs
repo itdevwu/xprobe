@@ -24,7 +24,7 @@ pub use filter::{
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
-const CONTROL_VERSION: u32 = 5;
+const CONTROL_VERSION: u32 = 6;
 const ABI_VERSION: u32 = 4;
 const HEADER_SIZE: usize = 88;
 const HEADER_SIZE_U32: u32 = 88;
@@ -42,12 +42,14 @@ const FEATURE_AGGREGATE_RECORDS: u32 = 1 << 2;
 const FEATURE_NVTX_RECORDS: u32 = 1 << 3;
 const FEATURE_MEMORY_KINDS: u32 = 1 << 4;
 const FEATURE_PEER_MEMCPY: u32 = 1 << 5;
+const FEATURE_RING_RECORDS: u32 = 1 << 6;
 const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS
     | FEATURE_TRANSFER_RECORDS
     | FEATURE_AGGREGATE_RECORDS
     | FEATURE_NVTX_RECORDS
     | FEATURE_MEMORY_KINDS
-    | FEATURE_PEER_MEMCPY;
+    | FEATURE_PEER_MEMCPY
+    | FEATURE_RING_RECORDS;
 const UNKNOWN_U32: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +107,8 @@ pub enum CuptiMemcpyKind {
 pub enum CuptiCaptureMode {
     Exact = 0,
     Aggregate = 1,
+    /// Exact records kept in a ring of the newest `record_capacity`.
+    Ring = 2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +163,9 @@ pub struct CuptiCapture {
     pub nvtx_callbacks_active: bool,
     /// Peer-to-peer copies (CUPTI `MEMCPY2`) were captured with other copies.
     pub peer_memcpy_captured: bool,
+    /// Records came from a ring; a larger `record_offset` than requested
+    /// means the records in between were overwritten unread.
+    pub ring: bool,
     pub record_offset: u64,
     pub state: CuptiCaptureState,
     pub stop_reason: CuptiStopReason,
@@ -581,17 +588,14 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     let record_capacity = read_u64(bytes, 40);
     let observed_records = read_u64(bytes, 48);
     let record_offset = read_u64(bytes, 80);
-    let committed_records = record_offset
-        .checked_add(record_count_raw)
-        .ok_or(CuptiDecodeError::CounterOverflow)?;
-    if committed_records > record_capacity || observed_records < committed_records {
-        return Err(CuptiDecodeError::InvalidCounters {
-            offset: record_offset,
-            records: record_count_raw,
-            capacity: record_capacity,
-            observed: observed_records,
-        });
-    }
+    let ring = feature_flags & FEATURE_RING_RECORDS != 0;
+    check_record_counters(
+        record_offset,
+        record_count_raw,
+        record_capacity,
+        observed_records,
+        ring,
+    )?;
     let record_count =
         usize::try_from(record_count_raw).map_err(|_| CuptiDecodeError::CaptureLengthOverflow)?;
     let payload_size = record_count
@@ -632,6 +636,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
     Ok(CuptiCapture {
         nvtx_callbacks_active: feature_flags & FEATURE_NVTX_RECORDS != 0,
         peer_memcpy_captured: feature_flags & FEATURE_PEER_MEMCPY != 0,
+        ring,
         record_offset,
         state,
         stop_reason,
@@ -644,6 +649,30 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         events,
         aggregate_groups,
     })
+}
+
+/// Retained records fit the capacity and never exceed what was observed. A
+/// ring returns at most its capacity, from any logical offset.
+fn check_record_counters(
+    offset: u64,
+    records: u64,
+    capacity: u64,
+    observed: u64,
+    ring: bool,
+) -> Result<(), CuptiDecodeError> {
+    let committed = offset
+        .checked_add(records)
+        .ok_or(CuptiDecodeError::CounterOverflow)?;
+    let retained = if ring { records } else { committed };
+    if retained > capacity || observed < committed {
+        return Err(CuptiDecodeError::InvalidCounters {
+            offset,
+            records,
+            capacity,
+            observed,
+        });
+    }
+    Ok(())
 }
 
 fn decode_payload(
@@ -1352,10 +1381,10 @@ mod tests {
     #[test]
     fn rejects_unknown_feature_flags() {
         let mut bytes = capture(&[]);
-        bytes[20..24].copy_from_slice(&64_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&128_u32.to_le_bytes());
         assert_eq!(
             decode_capture(&bytes, "xp_test"),
-            Err(CuptiDecodeError::UnsupportedFeatureFlags(64))
+            Err(CuptiDecodeError::UnsupportedFeatureFlags(128))
         );
     }
 
@@ -1405,6 +1434,26 @@ mod tests {
         assert_eq!(decoded.events.len(), 1);
         assert_eq!(decoded.events[0].session_id, "xp_live");
         assert_eq!(decoded.events[0].event_type, EventType::GpuKernelStart);
+    }
+
+    #[test]
+    fn ring_captures_may_start_past_their_capacity() {
+        // Record 100 of a 4-record ring: only a ring header may say so.
+        let mut bytes = normalized_capture(&[record(3, 100, 7, "test_kernel")]);
+        bytes[40..48].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[48..56].copy_from_slice(&101_u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&100_u64.to_le_bytes());
+        assert!(matches!(
+            decode_capture(&bytes, "xp_ring"),
+            Err(CuptiDecodeError::InvalidCounters { .. })
+        ));
+
+        let features = super::FEATURE_HOST_MONOTONIC_TIMESTAMPS | super::FEATURE_RING_RECORDS;
+        bytes[20..24].copy_from_slice(&features.to_le_bytes());
+        let decoded = decode_capture(&bytes, "xp_ring").expect("ring capture must decode");
+        assert!(decoded.ring);
+        assert_eq!(decoded.record_offset, 100);
+        assert_eq!(decoded.events[0].sequence, 100);
     }
 
     #[test]

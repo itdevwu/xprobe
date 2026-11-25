@@ -93,6 +93,7 @@
 - Run `just test-nvtx-live` for NVTX callback, filtering, or lifecycle changes.
 - Run `just test-injection-live` for injection or agent lifecycle changes.
 - Run `just test-multisource-live` for host/GPU orchestration changes.
+- Run `just test-trigger-live` for triggered capture or CUPTI ring changes.
 - Run `just test-agent-contract` for CLI, schema, docs, or Skill changes.
 - Test bundled Skill scripts with deterministic fixtures and include them in
   `just test-agent-contract`.

@@ -6,11 +6,11 @@ use crate::{
     HostCaptureResult, MeasurementGraphResult, MeasurementGraphSpec,
     MeasurementGraphValidationResult, MeasurementResult, MeasurementSpec, ProcessReport,
     ResolvedProbe, SyscallAggregateResult, SyscallAggregateSpec, SyscallAggregateValidationResult,
-    TraceExportResult, TriageResult, ValidationResult,
+    TraceExportResult, TriageResult, TriggerResult, ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 23] {
+pub fn generated_schemas() -> [(&'static str, Schema); 24] {
     [
         ("event.schema.json", schema_for!(Event)),
         ("capture-manifest.schema.json", schema_for!(CaptureManifest)),
@@ -56,6 +56,7 @@ pub fn generated_schemas() -> [(&'static str, Schema); 23] {
         ("validate.schema.json", schema_for!(ValidationResult)),
         ("trace-export.schema.json", schema_for!(TraceExportResult)),
         ("triage-result.schema.json", schema_for!(TriageResult)),
+        ("trigger-result.schema.json", schema_for!(TriggerResult)),
         (
             "measurement-graph-spec.schema.json",
             schema_for!(MeasurementGraphSpec),

@@ -296,6 +296,7 @@ fn collect_graph(
         timeout: Duration::from_millis(spec.timeout_ms),
         match_policy_text: graph::policy_text(first.match_policy),
         mode: MeasurementMode::Exact,
+        ring: false,
         options: MeasureOptions {
             session_id: session_id.clone(),
             name: spec.name.clone(),

@@ -131,6 +131,7 @@ pub(crate) fn run_trace(args: TraceArgs) -> ExitCode {
         timeout: Duration::from_millis(spec.timeout_ms),
         match_policy_text: match_policy_name(spec.match_policy),
         mode: MeasurementMode::Exact,
+        ring: false,
         options: MeasureOptions {
             session_id: format!("xp_trace_{}", std::process::id()),
             name: spec.name,

@@ -53,6 +53,9 @@ pub(crate) struct LiveMeasureRequest {
     pub(crate) timeout: Duration,
     pub(crate) match_policy_text: &'static str,
     pub(crate) mode: MeasurementMode,
+    /// Keep the newest `max_events` CUPTI records in a ring instead of
+    /// stopping at the limit (triggered capture).
+    pub(crate) ring: bool,
     pub(crate) options: MeasureOptions,
 }
 
@@ -186,6 +189,10 @@ pub(crate) struct LiveCollection {
     pub(crate) agent_path: Option<PathBuf>,
     pub(crate) cupti_path: Option<PathBuf>,
     pub(crate) capture_plan: CapturePlan,
+    /// Ring records overwritten before a snapshot read them.
+    pub(crate) ring_overwritten: u64,
+    /// The part of `ring_overwritten` a triggered capture has accounted for.
+    pub(crate) ring_overwritten_seen: u64,
 }
 
 /// What the collectors were armed to record, kept for the capture manifest.
@@ -417,7 +424,7 @@ pub(crate) fn prepare_live_collection(
 }
 
 /// Validate the request's start/end pair into a capture plan.
-fn single_edge_plan(request: &LiveMeasureRequest) -> Result<LivePlan, CommandFailure> {
+pub(crate) fn single_edge_plan(request: &LiveMeasureRequest) -> Result<LivePlan, CommandFailure> {
     let report = inspect::run(request.pid).map_err(|error| {
         CommandFailure::new(error.code(), error.to_string(), error.recoverable())
     })?;
@@ -481,7 +488,14 @@ pub(crate) fn start_live_collection(
         &endpoints,
         &requirements,
         request.options.max_events,
-        request.mode,
+        if request.ring {
+            cupti::CuptiCaptureMode::Ring
+        } else {
+            match request.mode {
+                MeasurementMode::Exact => cupti::CuptiCaptureMode::Exact,
+                MeasurementMode::Aggregate => cupti::CuptiCaptureMode::Aggregate,
+            }
+        },
         stream_order,
     )?;
     let baseline = arm_cupti_capture(
@@ -547,6 +561,8 @@ pub(crate) fn start_live_collection(
             selectors,
             stream_order,
         },
+        ring_overwritten: 0,
+        ring_overwritten_seen: 0,
     })
 }
 
@@ -680,7 +696,7 @@ pub(crate) fn cupti_arm_config(
     endpoints: &[ValidatedEndpoint],
     requirements: &ValidationRequirements,
     max_events: usize,
-    mode: MeasurementMode,
+    capture_mode: cupti::CuptiCaptureMode,
     stream_order: bool,
 ) -> Result<Option<cupti::CuptiArmConfig>, CommandFailure> {
     if !requirements.needs_cupti {
@@ -706,7 +722,7 @@ pub(crate) fn cupti_arm_config(
         filters.retain(|filter| !filter.record_kind.is_activity());
         filters.extend(cupti::all_activity_filters());
     }
-    if mode == MeasurementMode::Exact {
+    if capture_mode != cupti::CuptiCaptureMode::Aggregate {
         let mut unique = Vec::with_capacity(filters.len());
         for filter in filters {
             if !unique.contains(&filter) {
@@ -735,10 +751,7 @@ pub(crate) fn cupti_arm_config(
     })?;
     Ok(Some(cupti::CuptiArmConfig {
         record_capacity,
-        capture_mode: match mode {
-            MeasurementMode::Exact => cupti::CuptiCaptureMode::Exact,
-            MeasurementMode::Aggregate => cupti::CuptiCaptureMode::Aggregate,
-        },
+        capture_mode,
         filters,
     }))
 }
@@ -1143,10 +1156,17 @@ pub(crate) fn refresh_live_sources(
     Ok(())
 }
 
+/// Append an incremental CUPTI capture. A ring capture may start past the
+/// requested offset; the records in between were overwritten unread and are
+/// counted in `ring_overwritten`.
 pub(crate) fn append_cuda_capture(
     collection: &mut LiveCollection,
     mut capture: cupti::CuptiCapture,
 ) -> Result<(), CommandFailure> {
+    if capture.ring && capture.record_offset > collection.cuda_record_offset {
+        collection.ring_overwritten += capture.record_offset - collection.cuda_record_offset;
+        collection.cuda_record_offset = capture.record_offset;
+    }
     if capture.record_offset != collection.cuda_record_offset {
         return Err(CommandFailure::new(
             ErrorCode::TraceExportFailed,
@@ -1645,7 +1665,6 @@ pub(crate) const fn match_policy_name(policy: MatchPolicy) -> &'static str {
 #[cfg(test)]
 mod tests {
     use xprobe_core::{graph, inspect, validate};
-    use xprobe_protocol::MeasurementMode;
 
     use super::{cupti, cupti_arm_config};
 
@@ -1682,7 +1701,7 @@ mod tests {
                 &endpoints,
                 &validation.requirements,
                 100,
-                MeasurementMode::Exact,
+                cupti::CuptiCaptureMode::Exact,
                 stream_order,
             )
             .expect("arm config")

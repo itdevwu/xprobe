@@ -1,0 +1,853 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TriggerResult",
+  "description": "Result of `measure --trigger-*`, schema `3.0`.",
+  "type": "object",
+  "properties": {
+    "collection": {
+      "$ref": "#/$defs/TriggerCollection"
+    },
+    "observed": {
+      "$ref": "#/$defs/TriggerObservation"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion3"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "description": "`completed` after every requested window; `timed_out` with fewer.",
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "trigger": {
+      "$ref": "#/$defs/TriggerCondition"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TriggerWindow"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "session_id",
+    "status",
+    "target",
+    "trigger",
+    "observed",
+    "windows",
+    "collection",
+    "warnings"
+  ],
+  "$defs": {
+    "ArgumentValue": {
+      "type": "object",
+      "properties": {
+        "abi_type": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "read_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "abi_type"
+      ]
+    },
+    "ClockDomain": {
+      "type": "string",
+      "enum": [
+        "host_monotonic",
+        "cupti",
+        "cupti_normalized_to_host_monotonic"
+      ]
+    },
+    "CudaEvent": {
+      "type": "object",
+      "properties": {
+        "block": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dim3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "callback_domain": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "callback_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "context_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "correlation_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "device_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "grid": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dim3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kernel_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kernel_name_mangled": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memcpy_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemcpyKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime_correlation_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stream_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Dim3": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "z": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "attributes": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "clock_domain": {
+          "$ref": "#/$defs/ClockDomain"
+        },
+        "cpu": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cuda": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CudaEvent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HostEvent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nvtx": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NvtxEvent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/EventSource"
+        },
+        "tid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "timestamp_error_ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timestamp_raw": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "session_id",
+        "event_id",
+        "sequence",
+        "source",
+        "event_type",
+        "pid",
+        "tid",
+        "timestamp_raw",
+        "timestamp_ns",
+        "clock_domain"
+      ]
+    },
+    "EventSource": {
+      "type": "string",
+      "enum": [
+        "ebpf",
+        "cupti_callback",
+        "cupti_activity",
+        "marker"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "host_function_entry",
+        "host_function_exit",
+        "kernel_function_entry",
+        "kernel_function_exit",
+        "tracepoint",
+        "syscall_entry",
+        "syscall_exit",
+        "cuda_api_entry",
+        "cuda_api_exit",
+        "gpu_kernel_start",
+        "gpu_kernel_end",
+        "gpu_memcpy_start",
+        "gpu_memcpy_end",
+        "gpu_memset_start",
+        "gpu_memset_end",
+        "nvtx_range_start",
+        "nvtx_range_end",
+        "python_gc_start",
+        "python_gc_end",
+        "marker"
+      ]
+    },
+    "EvidenceArtifact": {
+      "description": "Bounded capture written by `measure`; re-correlate it with `measure --input`.",
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "format": {
+          "$ref": "#/$defs/ExportFormat"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "format",
+        "events"
+      ]
+    },
+    "ExportFormat": {
+      "type": "string",
+      "enum": [
+        "jsonl",
+        "chrome"
+      ]
+    },
+    "HostEvent": {
+      "type": "object",
+      "properties": {
+        "arguments": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArgumentValue"
+          }
+        },
+        "binary_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "probe_kind": {
+          "$ref": "#/$defs/HostProbeKind"
+        },
+        "return_value": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol_demangled": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "probe_kind"
+      ]
+    },
+    "HostProbeKind": {
+      "type": "string",
+      "enum": [
+        "uprobe",
+        "uretprobe",
+        "kprobe",
+        "kretprobe",
+        "tracepoint",
+        "syscall",
+        "usdt"
+      ]
+    },
+    "MatchPolicy": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "first_after",
+        "nearest",
+        "stack_nested",
+        "stream_order"
+      ]
+    },
+    "MatchedEventPair": {
+      "type": "object",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/Event"
+        },
+        "latency_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start": {
+          "$ref": "#/$defs/Event"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "latency_ns"
+      ]
+    },
+    "MemcpyKind": {
+      "type": "string",
+      "enum": [
+        "HtoD",
+        "DtoH",
+        "DtoD",
+        "HtoH",
+        "PtoP",
+        "unknown"
+      ]
+    },
+    "NvtxEvent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "name_complete": {
+          "type": "boolean"
+        },
+        "range_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "range_kind": {
+          "$ref": "#/$defs/NvtxRangeKind"
+        },
+        "start_tid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "name_complete",
+        "range_kind",
+        "range_id",
+        "start_tid"
+      ]
+    },
+    "NvtxRangeKind": {
+      "type": "string",
+      "enum": [
+        "thread",
+        "process"
+      ]
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "enum": [
+        "2.0"
+      ]
+    },
+    "SchemaVersion3": {
+      "description": "Version of records whose shape changed in xprobe 0.6.\n\nRecords keep their own version so unchanged contracts, such as Event JSONL\nartifacts, remain readable at `2.0`.",
+      "type": "string",
+      "enum": [
+        "3.0"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "timed_out",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "TriggerCollection": {
+      "type": "object",
+      "properties": {
+        "dropped_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lost_windows": {
+          "description": "Windows discarded because records inside them were lost.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "observed_records": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "overwritten_records": {
+          "description": "Records the ring overwrote before they were read.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ring_capacity": {
+          "description": "Agent ring and CLI retention bound, in records.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ring_capacity",
+        "observed_records",
+        "overwritten_records",
+        "dropped_records",
+        "lost_windows"
+      ]
+    },
+    "TriggerCondition": {
+      "type": "object",
+      "properties": {
+        "end_selector": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/TriggerKind"
+        },
+        "match_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MatchPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "post_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pre_ns": {
+          "description": "Context kept before the firing span's start and after its end.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start_selector": {
+          "description": "Edge selectors and policy of a latency trigger.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threshold_ns": {
+          "description": "A span fires when it lasts at least this long.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "windows": {
+          "description": "Windows to write before stopping; later windows start after the\nprevious one ends.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "threshold_ns",
+        "pre_ns",
+        "post_ns",
+        "windows"
+      ]
+    },
+    "TriggerKind": {
+      "description": "What a trigger measures on each span it evaluates.",
+      "oneOf": [
+        {
+          "description": "Idle time on a stream: an activity end to the next kernel, copy, or\nmemset start on that stream.",
+          "type": "string",
+          "const": "gap"
+        },
+        {
+          "description": "One kernel, copy, or memset from start to end.",
+          "type": "string",
+          "const": "duration"
+        },
+        {
+          "description": "One edge between two selectors under a correlation policy.",
+          "type": "string",
+          "const": "latency"
+        }
+      ]
+    },
+    "TriggerObservation": {
+      "description": "Every span evaluated while waiting, fired or not.",
+      "type": "object",
+      "properties": {
+        "longest": {
+          "description": "The longest span seen, whether or not its window could be written.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MatchedEventPair"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "over_threshold": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "spans": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "spans",
+        "over_threshold"
+      ]
+    },
+    "TriggerWindow": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/EvidenceArtifact"
+        },
+        "clock_domain": {
+          "$ref": "#/$defs/ClockDomain"
+        },
+        "end_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "fired": {
+          "description": "The span that crossed the threshold.",
+          "$ref": "#/$defs/MatchedEventPair"
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "longest": {
+          "description": "The longest spans of the trigger's kind inside the window.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MatchedEventPair"
+          }
+        },
+        "start_ns": {
+          "description": "Window bounds in the events' clock.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "fired",
+        "start_ns",
+        "end_ns",
+        "clock_domain",
+        "longest",
+        "artifact"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

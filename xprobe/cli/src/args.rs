@@ -448,7 +448,65 @@ pub(crate) struct MeasureArgs {
     pub(crate) name: Option<String>,
 
     #[command(flatten)]
+    pub(crate) trigger: TriggerArgs,
+
+    #[command(flatten)]
+    pub(crate) trigger_window: TriggerWindowArgs,
+
+    #[command(flatten)]
     pub(crate) output: CommonOutputArgs,
+}
+
+/// Wait for one rare slow span and write the GPU activity around it. CUPTI
+/// keeps the newest --max-events records in a ring until a span crosses the
+/// threshold or --timeout-ms passes; --events-out names a directory for the
+/// window artifacts.
+#[derive(Debug, Clone, Args)]
+#[group(
+    id = "trigger",
+    multiple = false,
+    requires = "pid",
+    conflicts_with_all = [
+        "spec", "input", "samples", "duration_ms", "triage", "cpu_sample",
+        "syscall_aggregate", "aggregate", "format"
+    ]
+)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names are the --trigger-* flags and avoid clashing with --duration-ms"
+)]
+pub(crate) struct TriggerArgs {
+    /// Fire on an idle gap of at least this many milliseconds between one
+    /// activity's end and the next kernel, copy, or memset on its stream.
+    #[arg(long)]
+    pub(crate) trigger_gap_ms: Option<f64>,
+
+    /// Fire on a kernel, copy, or memset lasting at least this many
+    /// milliseconds.
+    #[arg(long)]
+    pub(crate) trigger_duration_ms: Option<f64>,
+
+    /// Fire on a --from/--to pair under --match lasting at least this many
+    /// milliseconds; CUDA endpoints only.
+    #[arg(long, requires_all = ["from", "to", "match_policy"])]
+    pub(crate) trigger_latency_ms: Option<f64>,
+}
+
+/// The window a trigger writes; outside the trigger group so they combine
+/// with any one trigger.
+#[derive(Debug, Clone, Args)]
+pub(crate) struct TriggerWindowArgs {
+    /// Context written before the firing span starts.
+    #[arg(long, requires = "trigger", default_value_t = 50.0)]
+    pub(crate) pre_ms: f64,
+
+    /// Context written after the firing span ends.
+    #[arg(long, requires = "trigger", default_value_t = 50.0)]
+    pub(crate) post_ms: f64,
+
+    /// Windows to write before stopping; each starts after the previous ends.
+    #[arg(long, requires = "trigger", default_value_t = 1)]
+    pub(crate) windows: u32,
 }
 
 #[derive(Debug, Clone, Copy, Args)]

@@ -62,13 +62,21 @@ paths.
 
 ## Control and capture ABI
 
-Control version 5 uses one fixed 1192-byte native-endian request defined by
+Control version 6 uses one fixed 1192-byte native-endian request defined by
 `cupti/include/xprobe/cupti_agent.h`. It contains magic, version, command,
 capacity, record offset, capture mode, a filter count, and up to eight fixed
 endpoint filters. Commands
 are `ARM`, `SNAPSHOT`, `STOP`, and `CLOSE`. Exact ARM requires offset zero;
 later exact commands return records at or after the requested offset followed
 by EOF. Aggregate mode requires offset zero for every command.
+
+Ring mode keeps exact records in a ring of the newest `capacity` records and
+never stops at the limit. Each slot carries its record's logical index, and a
+snapshot copies slots under a sequence lock, so a slot rewritten while it is
+read is discarded with every older record. The returned header's record
+offset is the first record actually returned; a larger value than requested
+counts records overwritten before they were read. Ring captures set the
+ring-records feature flag, which lets the offset plus count exceed capacity.
 
 Capture ABI v4 starts with an 88-byte header and zero or more 200-byte records.
 The header reports capture state and stop reason, configured capacity, observed

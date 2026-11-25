@@ -18,7 +18,8 @@ use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
     AggregateInventoryResult, ClockDomain, CpuSamplingValidationResult, ErrorCode, Event,
     EvidenceArtifact, EvidenceMode, ExportFormat, ManifestArtifact, MatchPolicy, MeasurementMode,
-    MeasurementResult, MeasurementSpec, SyscallAggregateValidationResult,
+    MeasurementResult, MeasurementSpec, SyscallAggregateValidationResult, TriggerCondition,
+    TriggerKind,
 };
 
 use crate::coverage::CaptureRecord;
@@ -32,6 +33,7 @@ mod inventory;
 mod live;
 mod render;
 mod triage;
+mod trigger;
 
 use args::{
     Cli, Command, CommonOutputArgs, DiscoverArgs, DoctorArgs, ExportFormatArg, MeasureArgs,
@@ -101,6 +103,8 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         aggregate,
         max_groups,
         name,
+        trigger,
+        trigger_window,
         output:
             CommonOutputArgs {
                 json,
@@ -190,6 +194,29 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             json,
         );
     }
+    if let Some(condition) = match trigger_condition(
+        &trigger,
+        &trigger_window,
+        from.as_deref(),
+        to.as_deref(),
+        match_policy.as_deref(),
+    ) {
+        Ok(condition) => condition,
+        Err(error) => return emit_command_failure(error, json),
+    } {
+        let pid = pid.expect("clap requires --pid with a trigger");
+        let request = trigger::trigger_request(
+            pid,
+            cupti_socket,
+            agent,
+            timeout_ms,
+            max_events,
+            format!("xp_trigger_{}", std::process::id()),
+            condition,
+            events_out.as_deref(),
+        );
+        return trigger::run_trigger(&request, json);
+    }
     if max_groups.is_some() && !aggregate {
         return emit_error(
             ErrorCode::InvalidEventSelector,
@@ -247,6 +274,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
             timeout: Duration::from_millis(timeout_ms),
             match_policy_text: match_policy_name(match_policy),
             mode: MeasurementMode::Exact,
+            ring: false,
             options,
         };
         return match collect_live_measurement(&request) {
@@ -262,6 +290,53 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         output,
         json,
     )
+}
+
+/// The trigger requested by `--trigger-*`, if any.
+fn trigger_condition(
+    args: &args::TriggerArgs,
+    window: &args::TriggerWindowArgs,
+    from: Option<&str>,
+    to: Option<&str>,
+    policy: Option<&str>,
+) -> Result<Option<TriggerCondition>, CommandFailure> {
+    let (kind, threshold, flag) = match (
+        args.trigger_gap_ms,
+        args.trigger_duration_ms,
+        args.trigger_latency_ms,
+    ) {
+        (Some(ms), None, None) => (TriggerKind::Gap, ms, "trigger-gap-ms"),
+        (None, Some(ms), None) => (TriggerKind::Duration, ms, "trigger-duration-ms"),
+        (None, None, Some(ms)) => (TriggerKind::Latency, ms, "trigger-latency-ms"),
+        _ => return Ok(None),
+    };
+    let latency = kind == TriggerKind::Latency;
+    if !latency && (from.is_some() || to.is_some() || policy.is_some()) {
+        return Err(CommandFailure::new(
+            ErrorCode::InvalidEventSelector,
+            format!("--{flag} watches all GPU activity and takes no --from, --to, or --match"),
+            true,
+        ));
+    }
+    let match_policy = policy.map(parse_match_policy_text).transpose()?;
+    Ok(Some(TriggerCondition {
+        kind,
+        threshold_ns: trigger::milliseconds_ns(flag, threshold, false)?,
+        start_selector: from.filter(|_| latency).map(str::to_owned),
+        end_selector: to.filter(|_| latency).map(str::to_owned),
+        match_policy: match_policy.filter(|_| latency),
+        pre_ns: trigger::milliseconds_ns("pre-ms", window.pre_ms, true)?,
+        post_ns: trigger::milliseconds_ns("post-ms", window.post_ms, true)?,
+        windows: if window.windows == 0 {
+            return Err(CommandFailure::new(
+                ErrorCode::SessionLimitExceeded,
+                "--windows must be positive",
+                true,
+            ));
+        } else {
+            window.windows
+        },
+    }))
 }
 
 fn validate_measure_source(pid: Option<u32>, input: &[PathBuf]) -> Result<(), CommandFailure> {
@@ -306,6 +381,7 @@ fn direct_aggregate_request(
         timeout: Duration::from_millis(timeout_ms),
         match_policy_text: match_policy_name(options.match_policy),
         mode: MeasurementMode::Aggregate,
+        ring: false,
         options: MeasureOptions {
             duration: Some(Duration::from_millis(duration_ms)),
             max_events: max_groups.expect("clap supplies aggregate group capacity"),
@@ -340,21 +416,22 @@ fn parse_measure_selection(
             true,
         ));
     };
-    let policy = match policy.as_str() {
-        "exact" => MatchPolicy::Exact,
-        "first-after" | "first_after" => MatchPolicy::FirstAfter,
-        "nearest" => MatchPolicy::Nearest,
-        "stack-nested" | "stack_nested" => MatchPolicy::StackNested,
-        "stream-order" | "stream_order" => MatchPolicy::StreamOrder,
-        _ => {
-            return Err(CommandFailure::new(
-                ErrorCode::InvalidCorrelationPolicy,
-                "unsupported measurement correlation policy",
-                true,
-            ));
-        }
-    };
-    Ok((from, to, policy))
+    Ok((from, to, parse_match_policy_text(&policy)?))
+}
+
+fn parse_match_policy_text(policy: &str) -> Result<MatchPolicy, CommandFailure> {
+    match policy {
+        "exact" => Ok(MatchPolicy::Exact),
+        "first-after" | "first_after" => Ok(MatchPolicy::FirstAfter),
+        "nearest" => Ok(MatchPolicy::Nearest),
+        "stack-nested" | "stack_nested" => Ok(MatchPolicy::StackNested),
+        "stream-order" | "stream_order" => Ok(MatchPolicy::StreamOrder),
+        _ => Err(CommandFailure::new(
+            ErrorCode::InvalidCorrelationPolicy,
+            "unsupported measurement correlation policy",
+            true,
+        )),
+    }
 }
 
 fn run_completed_measurement(
@@ -477,6 +554,7 @@ fn run_measure_spec(
         timeout: Duration::from_millis(spec.timeout_ms),
         match_policy_text: match_policy_name(spec.match_policy),
         mode: spec.measurement_mode,
+        ring: false,
         options: MeasureOptions {
             session_id: format!("xp_measure_{}", std::process::id()),
             name: spec.name,
