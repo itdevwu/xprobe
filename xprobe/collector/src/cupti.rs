@@ -38,11 +38,13 @@ const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
 const FEATURE_AGGREGATE_RECORDS: u32 = 1 << 2;
 const FEATURE_NVTX_RECORDS: u32 = 1 << 3;
 const FEATURE_MEMORY_KINDS: u32 = 1 << 4;
+const FEATURE_PEER_MEMCPY: u32 = 1 << 5;
 const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS
     | FEATURE_TRANSFER_RECORDS
     | FEATURE_AGGREGATE_RECORDS
     | FEATURE_NVTX_RECORDS
-    | FEATURE_MEMORY_KINDS;
+    | FEATURE_MEMORY_KINDS
+    | FEATURE_PEER_MEMCPY;
 const UNKNOWN_U32: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +138,8 @@ pub struct CuptiAggregateGroup {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CuptiCapture {
     pub nvtx_callbacks_active: bool,
+    /// Peer-to-peer copies (CUPTI `MEMCPY2`) were captured with other copies.
+    pub peer_memcpy_captured: bool,
     pub record_offset: u64,
     pub state: CuptiCaptureState,
     pub stop_reason: CuptiStopReason,
@@ -608,6 +612,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
         .ok_or(CuptiDecodeError::CounterOverflow)?;
     Ok(CuptiCapture {
         nvtx_callbacks_active: feature_flags & FEATURE_NVTX_RECORDS != 0,
+        peer_memcpy_captured: feature_flags & FEATURE_PEER_MEMCPY != 0,
         record_offset,
         state,
         stop_reason,
@@ -1305,12 +1310,33 @@ mod tests {
     }
 
     #[test]
+    fn decodes_peer_copies_reported_with_the_peer_feature() {
+        // A MEMCPY2 record carries CUPTI copy kind PTOP and no runtime
+        // correlation ID.
+        let peer = transfer_record(5, 10_500, 45, 1 << 20, 10);
+        let mut bytes = transfer_capture(&[peer]);
+        let features = super::FEATURE_TRANSFER_RECORDS | super::FEATURE_PEER_MEMCPY;
+        bytes[20..24].copy_from_slice(&features.to_le_bytes());
+        let decoded = decode_capture(&bytes, "xp_test").expect("peer capture must decode");
+
+        assert!(decoded.peer_memcpy_captured);
+        let payload = decoded.events[0].cuda.as_ref().expect("CUDA payload");
+        assert_eq!(payload.memcpy_kind, Some(MemcpyKind::PeerToPeer));
+        assert_eq!(payload.runtime_correlation_id, None);
+        assert!(
+            !decode_capture(&transfer_capture(&[peer]), "xp_test")
+                .expect("capture must decode")
+                .peer_memcpy_captured
+        );
+    }
+
+    #[test]
     fn rejects_unknown_feature_flags() {
         let mut bytes = capture(&[]);
-        bytes[20..24].copy_from_slice(&32_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&64_u32.to_le_bytes());
         assert_eq!(
             decode_capture(&bytes, "xp_test"),
-            Err(CuptiDecodeError::UnsupportedFeatureFlags(32))
+            Err(CuptiDecodeError::UnsupportedFeatureFlags(64))
         );
     }
 

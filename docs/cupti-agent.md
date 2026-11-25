@@ -62,9 +62,10 @@ paths.
 
 ## Control and capture ABI
 
-Control version 4 uses one fixed 328-byte native-endian request defined by
+Control version 5 uses one fixed 1192-byte native-endian request defined by
 `cupti/include/xprobe/cupti_agent.h`. It contains magic, version, command,
-capacity, record offset, capture mode, and two fixed endpoint filters. Commands
+capacity, record offset, capture mode, a filter count, and up to eight fixed
+endpoint filters. Commands
 are `ARM`, `SNAPSHOT`, `STOP`, and `CLOSE`. Exact ARM requires offset zero;
 later exact commands return records at or after the requested offset followed
 by EOF. Aggregate mode requires offset zero for every command.
@@ -80,6 +81,9 @@ measurement to fail explicitly instead of returning partial success.
 
 Exact records preserve process/thread, device/context/stream, correlation IDs,
 callback domain/ID, dimensions or transfer metadata, and one bounded name.
+Copy activity includes peer-to-peer copies, which CUPTI reports only as
+`MEMCPY2` records; they carry the stream they run on and no runtime
+correlation ID. A capture that collects copies sets the peer-copy feature flag.
 NVTX records reuse the fixed layout for a 64-bit range ID, thread/process kind,
 start thread, and explicit name completeness flag. Their exact correlation is
 range identity, including a synthesized TID plus nesting level for thread

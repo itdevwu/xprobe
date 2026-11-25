@@ -168,12 +168,30 @@ static struct xprobe_cupti_filter capture_filters[XPROBE_CUPTI_FILTER_COUNT];
 /* Written only while capture is inactive; hot paths scan just these slots. */
 static size_t capture_filter_count;
 static _Atomic int capture_filter_enabled;
+static _Atomic int capture_peer_memcpy;
 static _Atomic int nvtx_injection_active;
 static pthread_once_t injection_agent_once = PTHREAD_ONCE_INIT;
 static int injection_agent_status = XPROBE_CUPTI_AGENT_UNAVAILABLE;
 #define XPROBE_CUPTI_ACTIVITY_KERNEL (1U << 0)
 #define XPROBE_CUPTI_ACTIVITY_MEMCPY (1U << 1)
 #define XPROBE_CUPTI_ACTIVITY_MEMSET (1U << 2)
+#define XPROBE_CUPTI_ACTIVITY_MEMCPY_PEER (1U << 3)
+
+/* CUPTI reports peer-to-peer copies only as MEMCPY2 records. The Agent is
+ * built against one CUPTI header and runs against CUDA 12.0 through 13.x,
+ * whose CUpti_ActivityMemcpyPtoP4 layouts are identical; pin the fields it
+ * reads so a header change fails the build instead of misreading records. */
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, copyKind) == 4U, "PtoP4 copyKind");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, srcKind) == 5U, "PtoP4 srcKind");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, dstKind) == 6U, "PtoP4 dstKind");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, bytes) == 8U, "PtoP4 bytes");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, start) == 16U, "PtoP4 start");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, end) == 24U, "PtoP4 end");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, deviceId) == 32U, "PtoP4 deviceId");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, contextId) == 36U, "PtoP4 contextId");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, streamId) == 40U, "PtoP4 streamId");
+_Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, correlationId) == 60U,
+               "PtoP4 correlationId");
 
 static int shutdown_agent(void);
 static int activate_capture(void);
@@ -270,6 +288,7 @@ static void reset_capture(void)
     atomic_store_explicit(&agent_dropped_records, 0U, memory_order_relaxed);
     atomic_store_explicit(&cupti_dropped_records, 0U, memory_order_relaxed);
     atomic_store_explicit(&capture_has_timed_activity, 0, memory_order_relaxed);
+    atomic_store_explicit(&capture_peer_memcpy, 0, memory_order_relaxed);
     atomic_store_explicit(&unknown_records, 0U, memory_order_relaxed);
     atomic_store_explicit(&requested_buffers, 0U, memory_order_relaxed);
     atomic_store_explicit(&completed_buffers, 0U, memory_order_relaxed);
@@ -1280,20 +1299,62 @@ static void set_transfer_bytes(struct xprobe_cupti_record *record, uint64_t byte
     record->grid_y = (uint32_t)(bytes >> 32U);
 }
 
-static void enqueue_memcpy_record(const CUpti_ActivityMemcpy6 *memcpy_record,
+/* The fields xprobe reads from a MEMCPY or MEMCPY2 (peer-to-peer) record. */
+struct xprobe_memcpy_activity {
+    uint32_t copy_kind;
+    uint32_t src_kind;
+    uint32_t dst_kind;
+    uint64_t bytes;
+    uint64_t start;
+    uint64_t end;
+    uint32_t device_id;
+    uint32_t context_id;
+    uint32_t stream_id;
+    uint32_t correlation_id;
+    uint32_t runtime_correlation_id;
+};
+
+static void enqueue_memcpy_record(const struct xprobe_memcpy_activity *memcpy_record,
                                   uint32_t kind, uint64_t timestamp_ns)
 {
     struct xprobe_cupti_record record;
 
     initialize_record(&record, kind, normalize_activity_timestamp(timestamp_ns));
-    record.device_id = memcpy_record->deviceId;
-    record.context_id = memcpy_record->contextId;
-    record.stream_id = memcpy_record->streamId;
-    record.correlation_id = memcpy_record->correlationId;
-    record.runtime_correlation_id = memcpy_record->runtimeCorrelationId;
+    record.device_id = memcpy_record->device_id;
+    record.context_id = memcpy_record->context_id;
+    record.stream_id = memcpy_record->stream_id;
+    record.correlation_id = memcpy_record->correlation_id;
+    record.runtime_correlation_id = memcpy_record->runtime_correlation_id;
     set_transfer_bytes(&record, memcpy_record->bytes);
-    record.grid_z = (uint32_t)memcpy_record->copyKind;
+    record.grid_z = memcpy_record->copy_kind;
     enqueue_record(&record);
+}
+
+static void handle_memcpy_activity(const struct xprobe_memcpy_activity *memcpy_record)
+{
+    uint32_t semantic_kind = semantic_memcpy_kind(memcpy_record->copy_kind);
+
+    if (values_match_capture(XPROBE_CUPTI_GPU_MEMCPY_START,
+                             XPROBE_CUPTI_GPU_MEMCPY_END, 0U, semantic_kind,
+                             NULL) == 0) {
+        return;
+    }
+    if (activity_in_capture(memcpy_record->start, memcpy_record->end) == 0) {
+        return;
+    }
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
+        aggregate_activity(XPROBE_CUPTI_GPU_MEMCPY_START, memcpy_record->device_id,
+                           semantic_kind, memcpy_record->src_kind,
+                           memcpy_record->dst_kind, NULL,
+                           normalize_activity_timestamp(memcpy_record->start),
+                           normalize_activity_timestamp(memcpy_record->end),
+                           memcpy_record->bytes);
+        return;
+    }
+    enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_START,
+                          memcpy_record->start);
+    enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_END,
+                          memcpy_record->end);
 }
 
 static void enqueue_memset_record(const CUpti_ActivityMemset4 *memset_record,
@@ -1335,34 +1396,41 @@ static void CUPTIAPI activity_buffer_completed(CUcontext context, uint32_t strea
         if (activity->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
             enqueue_kernel_activity(activity);
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
-            const CUpti_ActivityMemcpy6 *memcpy_record =
+            const CUpti_ActivityMemcpy6 *copy =
                 (const CUpti_ActivityMemcpy6 *)activity;
-            if (values_match_capture(
-                    XPROBE_CUPTI_GPU_MEMCPY_START,
-                    XPROBE_CUPTI_GPU_MEMCPY_END, 0U,
-                    semantic_memcpy_kind((uint32_t)memcpy_record->copyKind),
-                    NULL) == 0) {
-                continue;
-            }
-            if (activity_in_capture(memcpy_record->start, memcpy_record->end) ==
-                0) {
-                continue;
-            }
-            if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
-                aggregate_activity(
-                    XPROBE_CUPTI_GPU_MEMCPY_START, memcpy_record->deviceId,
-                    semantic_memcpy_kind((uint32_t)memcpy_record->copyKind),
-                    (uint32_t)memcpy_record->srcKind,
-                    (uint32_t)memcpy_record->dstKind, NULL,
-                    normalize_activity_timestamp(memcpy_record->start),
-                    normalize_activity_timestamp(memcpy_record->end),
-                    memcpy_record->bytes);
-                continue;
-            }
-            enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_START,
-                                  memcpy_record->start);
-            enqueue_memcpy_record(memcpy_record, XPROBE_CUPTI_GPU_MEMCPY_END,
-                                  memcpy_record->end);
+            const struct xprobe_memcpy_activity memcpy_record = {
+                .copy_kind = (uint32_t)copy->copyKind,
+                .src_kind = (uint32_t)copy->srcKind,
+                .dst_kind = (uint32_t)copy->dstKind,
+                .bytes = copy->bytes,
+                .start = copy->start,
+                .end = copy->end,
+                .device_id = copy->deviceId,
+                .context_id = copy->contextId,
+                .stream_id = copy->streamId,
+                .correlation_id = copy->correlationId,
+                .runtime_correlation_id = copy->runtimeCorrelationId,
+            };
+            handle_memcpy_activity(&memcpy_record);
+        } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMCPY2) {
+            /* A peer copy has no runtime correlation ID; deviceId, contextId,
+             * and streamId name the stream it runs on. */
+            const CUpti_ActivityMemcpyPtoP4 *copy =
+                (const CUpti_ActivityMemcpyPtoP4 *)activity;
+            const struct xprobe_memcpy_activity memcpy_record = {
+                .copy_kind = (uint32_t)copy->copyKind,
+                .src_kind = (uint32_t)copy->srcKind,
+                .dst_kind = (uint32_t)copy->dstKind,
+                .bytes = copy->bytes,
+                .start = copy->start,
+                .end = copy->end,
+                .device_id = copy->deviceId,
+                .context_id = copy->contextId,
+                .stream_id = copy->streamId,
+                .correlation_id = copy->correlationId,
+                .runtime_correlation_id = 0U,
+            };
+            handle_memcpy_activity(&memcpy_record);
         } else if (activity->kind == CUPTI_ACTIVITY_KIND_MEMSET) {
             const CUpti_ActivityMemset4 *memset_record =
                 (const CUpti_ActivityMemset4 *)activity;
@@ -1632,6 +1700,9 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
     header->feature_flags = XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS;
     if (atomic_load_explicit(&nvtx_injection_active, memory_order_acquire) != 0) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_NVTX_RECORDS;
+    }
+    if (atomic_load_explicit(&capture_peer_memcpy, memory_order_relaxed) != 0) {
+        header->feature_flags |= XPROBE_CUPTI_FEATURE_PEER_MEMCPY;
     }
     if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS |
@@ -2101,6 +2172,7 @@ static int disable_activities(void)
     } activities[] = {
         {XPROBE_CUPTI_ACTIVITY_MEMSET, CUPTI_ACTIVITY_KIND_MEMSET},
         {XPROBE_CUPTI_ACTIVITY_MEMCPY, CUPTI_ACTIVITY_KIND_MEMCPY},
+        {XPROBE_CUPTI_ACTIVITY_MEMCPY_PEER, CUPTI_ACTIVITY_KIND_MEMCPY2},
         {XPROBE_CUPTI_ACTIVITY_KERNEL, CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL},
     };
 
@@ -2417,11 +2489,17 @@ static int activate_capture(void)
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
     if (needs_memcpy != 0 &&
-        enable_activity(XPROBE_CUPTI_ACTIVITY_MEMCPY,
-                        CUPTI_ACTIVITY_KIND_MEMCPY) !=
-            XPROBE_CUPTI_AGENT_READY) {
+        (enable_activity(XPROBE_CUPTI_ACTIVITY_MEMCPY,
+                         CUPTI_ACTIVITY_KIND_MEMCPY) !=
+             XPROBE_CUPTI_AGENT_READY ||
+         enable_activity(XPROBE_CUPTI_ACTIVITY_MEMCPY_PEER,
+                         CUPTI_ACTIVITY_KIND_MEMCPY2) !=
+             XPROBE_CUPTI_AGENT_READY)) {
         shutdown_agent();
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+    }
+    if (needs_memcpy != 0) {
+        atomic_store_explicit(&capture_peer_memcpy, 1, memory_order_relaxed);
     }
     if (needs_memset != 0 &&
         enable_activity(XPROBE_CUPTI_ACTIVITY_MEMSET,

@@ -70,7 +70,9 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
     assert header["abi_version"] == 4
     assert header["header_size"] == HEADER.size
     assert header["record_size"] == RECORD.size
-    assert header["feature_flags"] in {2, 3}
+    # Transfer records are always present; host-monotonic time (1) and peer
+    # copies (32) depend on the capture.
+    assert header["feature_flags"] & ~(1 | 32) == 2
     assert len(data) == header["header_size"] + header["record_count"] * RECORD.size
     records = [
         decode_record(data[offset : offset + RECORD.size])
@@ -286,6 +288,8 @@ def main() -> None:
     assert header["unknown_records"] == 0
     assert header["record_offset"] == 0
     assert bool(header["feature_flags"] & 1) is expect_aligned
+    # Copies were requested, so peer copies (CUPTI MEMCPY2) are covered too.
+    assert header["feature_flags"] & 32, header
     assert all(record["timestamp_ns"] > 0 for record in records)
     assert all(record["pid"] > 0 and record["tid"] > 0 for record in records)
 

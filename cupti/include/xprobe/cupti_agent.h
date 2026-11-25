@@ -20,7 +20,9 @@ enum xprobe_cupti_feature {
     XPROBE_CUPTI_FEATURE_TRANSFER_RECORDS = 1U << 1,
     XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS = 1U << 2,
     XPROBE_CUPTI_FEATURE_NVTX_RECORDS = 1U << 3,
-    XPROBE_CUPTI_FEATURE_MEMORY_KINDS = 1U << 4
+    XPROBE_CUPTI_FEATURE_MEMORY_KINDS = 1U << 4,
+    /* Peer-to-peer copies (CUPTI MEMCPY2) are captured with other copies. */
+    XPROBE_CUPTI_FEATURE_PEER_MEMCPY = 1U << 5
 };
 
 enum xprobe_cupti_capture_mode {
