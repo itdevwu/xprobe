@@ -21,6 +21,7 @@ spec_measurement="$1/spec-measure.json"
 graph="${build_dir}/measurement-graph.json"
 graph_validation="$1/graph-validate.json"
 graph_measurement="$1/graph-measure.json"
+stream_order_measurement="$1/stream-order-measure.json"
 gpu_info="$1/gpu.txt"
 compute_capability=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed -n '1p')
 compute_arch=${compute_capability//./}
@@ -92,15 +93,18 @@ printf '{"schema_version":"2.0","name":"spec_host_to_kernel","target":{"pid":%s,
 
 kernel='cuda:kernel_start:name~xprobe_multisource_kernel.*'
 kernel_end='cuda:kernel_end:name~xprobe_multisource_kernel.*'
+auxiliary_start='cuda:kernel_start:name~xprobe_auxiliary_kernel.*'
 cat >"${graph}" <<GRAPH
 {"schema_version":"3.0","name":"request_path",
  "target":{"pid":${target_pid},"process_start_time":${process_start_time}},
  "endpoints":{"request":"uprobe:${fixture}:xprobe_request_marker:entry",
               "launch_exit":"cuda:launch_api:exit",
-              "kernel_start":"${kernel}","kernel_end":"${kernel_end}"},
+              "kernel_start":"${kernel}","kernel_end":"${kernel_end}",
+              "auxiliary_start":"${auxiliary_start}"},
  "edges":[{"name":"request_to_launch","from":"request","to":"launch_exit","match_policy":"first_after","samples":3},
           {"name":"launch_to_kernel","from":"launch_exit","to":"kernel_start","match_policy":"exact","samples":3},
-          {"name":"kernel_duration","from":"kernel_start","to":"kernel_end","match_policy":"exact","samples":3}],
+          {"name":"kernel_duration","from":"kernel_start","to":"kernel_end","match_policy":"exact","samples":3},
+          {"name":"kernel_to_auxiliary","from":"kernel_end","to":"auxiliary_start","match_policy":"stream_order","samples":3}],
  "duration_ms":null,"timeout_ms":10000,"max_events":100000}
 GRAPH
 /workspace/target/debug/xprobe validate --spec "${graph}" >"${graph_validation}"
@@ -108,6 +112,20 @@ GRAPH
   --spec "${graph}" \
   --cupti-socket "${snapshot_socket}" \
   --events-out "$1/graph-events.jsonl" >"${graph_measurement}"
+
+# The auxiliary kernel always follows the measured kernel, so stream order
+# must not pair one measured kernel with the next iteration's: only a capture
+# of every activity on the stream can see the kernel in between.
+if /workspace/target/debug/xprobe measure \
+  --pid "${target_pid}" \
+  --cupti-socket "${snapshot_socket}" \
+  --from "${kernel_end}" --to "${kernel}" \
+  --match stream-order --samples 3 --duration-ms 1000 --timeout-ms 5000 \
+  --json --non-interactive --no-color >"${stream_order_measurement}"; then
+  echo "stream order paired kernels that another kernel separates" >&2
+  cat "${stream_order_measurement}" >&2
+  exit 1
+fi
 
 if [[ $(stat -c '%a' "${snapshot_socket}") != 600 ]]; then
   echo "CUPTI snapshot socket is not mode 0600" >&2
@@ -123,4 +141,5 @@ wait "${target_pid}"
 trap - EXIT
 chmod 0644 "${live_capture}" \
   "${live_measurement}" "${spec_measurement}" "${gpu_info}" \
-  "${graph_validation}" "${graph_measurement}" "$1/graph-events.jsonl"
+  "${graph_validation}" "${graph_measurement}" "$1/graph-events.jsonl" \
+  "${stream_order_measurement}"

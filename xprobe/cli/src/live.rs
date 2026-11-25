@@ -60,6 +60,8 @@ pub(crate) struct LivePlan {
     pub(crate) report: ProcessReport,
     pub(crate) endpoints: Vec<ValidatedEndpoint>,
     pub(crate) requirements: ValidationRequirements,
+    /// Some edge uses stream order, so every GPU activity is captured.
+    pub(crate) stream_order: bool,
 }
 
 /// A correlated view of the capture that the live loop can finish with.
@@ -445,6 +447,7 @@ fn single_edge_plan(request: &LiveMeasureRequest) -> Result<LivePlan, CommandFai
         report,
         endpoints: vec![validation.start, validation.end],
         requirements: validation.requirements,
+        stream_order: request.options.match_policy == MatchPolicy::StreamOrder,
     })
 }
 
@@ -457,6 +460,7 @@ pub(crate) fn start_live_collection(
         report,
         endpoints,
         requirements,
+        stream_order,
     } = plan;
 
     let activation = prepare_cupti_activation(&report, &requirements, request)?;
@@ -465,6 +469,7 @@ pub(crate) fn start_live_collection(
         &requirements,
         request.options.max_events,
         request.mode,
+        stream_order,
     )?;
     let baseline = arm_cupti_capture(
         &activation,
@@ -643,6 +648,7 @@ pub(crate) fn cupti_arm_config(
     requirements: &ValidationRequirements,
     max_events: usize,
     mode: MeasurementMode,
+    stream_order: bool,
 ) -> Result<Option<cupti::CuptiArmConfig>, CommandFailure> {
     if !requirements.needs_cupti {
         return Ok(None);
@@ -659,6 +665,14 @@ pub(crate) fn cupti_arm_config(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    if stream_order {
+        // Stream order needs every activity on the stream to find successors.
+        // Unfiltered start and end filters for every family record both
+        // boundaries of every kernel, copy, and memset and cover the
+        // endpoints' own filters.
+        filters.retain(|filter| !filter.record_kind.is_activity());
+        filters.extend(cupti::all_activity_filters());
+    }
     if mode == MeasurementMode::Exact {
         let mut unique = Vec::with_capacity(filters.len());
         for filter in filters {
@@ -1518,7 +1532,9 @@ pub(crate) fn reject_incomplete_capture(
             true,
         )
         .with_detail("record_capacity", capacity)
-        .with_hint("narrow the selectors or explicitly increase max-events");
+        .with_hint(
+            "narrow the selectors, or shorten the capture or explicitly increase max-events; stream-order records every GPU activity, so narrowing its selectors does not help",
+        );
         if let Some(cupti) = capture.cupti.as_ref() {
             failure = failure
                 .with_detail("observed_records", cupti.observed_records)
@@ -1576,5 +1592,65 @@ pub(crate) const fn match_policy_name(policy: MatchPolicy) -> &'static str {
         MatchPolicy::Nearest => "nearest",
         MatchPolicy::StackNested => "stack-nested",
         MatchPolicy::StreamOrder => "stream-order",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use xprobe_core::{graph, inspect, validate};
+    use xprobe_protocol::MeasurementMode;
+
+    use super::{cupti, cupti_arm_config};
+
+    /// Graph validation predicts the filter count ARM lowers to.
+    #[test]
+    fn validation_filter_slots_match_the_armed_filters() {
+        let report = inspect::run(std::process::id()).expect("inspect self");
+        for (from, to, policy, expected) in [
+            (
+                "cuda:kernel_start:name~^a",
+                "cuda:kernel_end:name~^a",
+                "exact",
+                2,
+            ),
+            ("cuda:launch_api:exit", "cuda:kernel_start", "exact", 3),
+            (
+                "cuda:kernel_end:name~^a",
+                "cuda:kernel_start:name~^b",
+                "stream-order",
+                xprobe_core::graph::STREAM_ORDER_FILTERS,
+            ),
+            (
+                "cuda:memcpy_end:kind=HtoD",
+                "cuda:kernel_start",
+                "stream-order",
+                xprobe_core::graph::STREAM_ORDER_FILTERS,
+            ),
+        ] {
+            let validation = validate::run(&report, from, to, policy).expect("validate");
+            assert!(validation.valid, "{from} -> {to}: {:?}", validation.issues);
+            let endpoints = [validation.start, validation.end];
+            let stream_order = policy == "stream-order";
+            let armed = cupti_arm_config(
+                &endpoints,
+                &validation.requirements,
+                100,
+                MeasurementMode::Exact,
+                stream_order,
+            )
+            .expect("arm config")
+            .expect("CUDA endpoints need CUPTI");
+            let predicted =
+                graph::cuda_filter_slots(&endpoints.iter().collect::<Vec<_>>(), stream_order);
+            assert_eq!(armed.filters.len(), expected, "{from} -> {to}");
+            assert_eq!(predicted, expected, "{from} -> {to}");
+            if stream_order {
+                assert!(
+                    cupti::all_activity_filters()
+                        .iter()
+                        .all(|filter| armed.filters.contains(filter))
+                );
+            }
+        }
     }
 }

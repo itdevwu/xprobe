@@ -213,3 +213,28 @@ pub fn is_cuda_launch_api(domain: &str, name: &str) -> bool {
         .iter()
         .any(|(launch_domain, launch_name)| *launch_domain == domain && *launch_name == name)
 }
+
+/// Which end of a GPU activity (kernel, copy, or memset) an event marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityBoundary {
+    Start,
+    End,
+}
+
+/// The activity boundary an event type marks, if it is GPU activity.
+#[must_use]
+pub const fn activity_boundary(event_type: &EventType) -> Option<ActivityBoundary> {
+    match event_type {
+        EventType::GpuKernelStart | EventType::GpuMemcpyStart | EventType::GpuMemsetStart => {
+            Some(ActivityBoundary::Start)
+        }
+        EventType::GpuKernelEnd | EventType::GpuMemcpyEnd | EventType::GpuMemsetEnd => {
+            Some(ActivityBoundary::End)
+        }
+        _ => None,
+    }
+}
+
+/// Longest CUDA kernel name a CUPTI Agent record holds, in bytes. A name of
+/// this length may have been truncated.
+pub const CUDA_RECORD_NAME_MAX_BYTES: usize = 127;

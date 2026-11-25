@@ -30,8 +30,9 @@ pub use cpu_sampling::{
 pub use discover::{CudaProcessCandidate, DiscoveryResult};
 pub use error::{ErrorCode, ErrorResponse, XprobeError};
 pub use event::{
-    ArgumentValue, CUDA_LAUNCH_APIS, ClockDomain, CudaEvent, Dim3, Event, EventSource, EventType,
-    HostEvent, HostProbeKind, MemcpyKind, MemoryKind, NvtxEvent, NvtxRangeKind, is_cuda_launch_api,
+    ActivityBoundary, ArgumentValue, CUDA_LAUNCH_APIS, CUDA_RECORD_NAME_MAX_BYTES, ClockDomain,
+    CudaEvent, Dim3, Event, EventSource, EventType, HostEvent, HostProbeKind, MemcpyKind,
+    MemoryKind, NvtxEvent, NvtxRangeKind, activity_boundary, is_cuda_launch_api,
 };
 pub use export::{ExportFormat, TraceExportResult};
 pub use graph::{

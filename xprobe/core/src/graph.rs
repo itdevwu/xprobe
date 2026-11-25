@@ -1,12 +1,16 @@
 //! Read-only validation of multi-edge measurement graphs.
 
-use std::{collections::BTreeSet, error::Error, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+};
 
 use xprobe_protocol::{
     AgentActivation, ErrorCode, GRAPH_MAX_CUDA_FILTERS, GRAPH_MAX_EDGES, GRAPH_MAX_ENDPOINTS,
     GRAPH_MAX_LINUX_ENDPOINTS, GraphEdgeValidation, GraphEndpointValidation, GraphIssueScope,
     GraphValidationIssue, MatchPolicy, MeasurementGraphSpec, MeasurementGraphValidationResult,
-    ProcessReport, SchemaVersion3, ValidatedEndpoint, ValidationRequirements,
+    ProcessReport, SchemaVersion3, ValidatedEndpoint, ValidationRequirements, activity_boundary,
 };
 
 use crate::{
@@ -148,7 +152,11 @@ pub fn run(
         .iter()
         .map(|endpoint| &endpoint.endpoint)
         .collect::<Vec<_>>();
-    issues.extend(slot_issues(&public));
+    let stream_order = spec
+        .edges
+        .iter()
+        .any(|edge| edge.match_policy == MatchPolicy::StreamOrder);
+    issues.extend(slot_issues(&public, stream_order));
     warnings.dedup_by(|left, right| left.code == right.code && left.message == right.message);
     inspect::verify_target(&report.target)?;
     Ok(MeasurementGraphValidationResult {
@@ -258,7 +266,44 @@ fn structural_issues(
 }
 
 /// Syscall, tracepoint, and USDT endpoints share the Linux collector's slots.
-fn slot_issues(endpoints: &[&ValidatedEndpoint]) -> Vec<GraphValidationIssue> {
+/// Agent filters stream order uses to record every kernel, copy, and memset.
+pub const STREAM_ORDER_FILTERS: usize = 6;
+
+/// Agent filters a capture of these endpoints needs. Identical selectors share
+/// a filter, `cuda:launch_api` needs two, and stream order replaces every
+/// activity endpoint with unfiltered start and end filters for each of the
+/// three activity families.
+#[must_use]
+pub fn cuda_filter_slots(endpoints: &[&ValidatedEndpoint], stream_order: bool) -> usize {
+    let selectors = endpoints
+        .iter()
+        .filter_map(|endpoint| {
+            endpoint
+                .cuda
+                .as_ref()
+                .map(|cuda| (endpoint.selector.as_str(), cuda))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let endpoint_filters = selectors
+        .values()
+        .filter(|cuda| !stream_order || activity_boundary(&cuda.event_type).is_none())
+        .map(|cuda| {
+            if cuda.api_domain.as_deref() == Some("launch_api") {
+                2
+            } else {
+                1
+            }
+        })
+        .sum::<usize>();
+    endpoint_filters
+        + if stream_order {
+            STREAM_ORDER_FILTERS
+        } else {
+            0
+        }
+}
+
+fn slot_issues(endpoints: &[&ValidatedEndpoint], stream_order: bool) -> Vec<GraphValidationIssue> {
     let slot_issue = |message| GraphValidationIssue {
         scope: GraphIssueScope::Graph,
         name: None,
@@ -277,20 +322,10 @@ fn slot_issues(endpoints: &[&ValidatedEndpoint]) -> Vec<GraphValidationIssue> {
             linux.len()
         )));
     }
-    let cuda_filters = endpoints
-        .iter()
-        .filter_map(|endpoint| endpoint.cuda.as_ref())
-        .map(|cuda| {
-            if cuda.api_domain.as_deref() == Some("launch_api") {
-                2
-            } else {
-                1
-            }
-        })
-        .sum::<usize>();
+    let cuda_filters = cuda_filter_slots(endpoints, stream_order);
     if cuda_filters > GRAPH_MAX_CUDA_FILTERS {
         issues.push(slot_issue(format!(
-            "CUDA endpoints need {cuda_filters} Agent filters; a graph supports at most {GRAPH_MAX_CUDA_FILTERS} (cuda:launch_api uses two)"
+            "CUDA endpoints need {cuda_filters} Agent filters; a graph supports at most {GRAPH_MAX_CUDA_FILTERS} (cuda:launch_api uses two, and stream order uses {STREAM_ORDER_FILTERS} for all activity)"
         )));
     }
     issues

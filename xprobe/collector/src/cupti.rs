@@ -18,7 +18,9 @@ use xprobe_protocol::{
 
 mod filter;
 
-pub use filter::{CuptiFilterError, bounded_name_filter, event_filter, event_filters};
+pub use filter::{
+    CuptiFilterError, all_activity_filters, bounded_name_filter, event_filter, event_filters,
+};
 
 const OUTPUT_MAGIC: &[u8; 8] = b"XPCUPTI\0";
 const CONTROL_MAGIC: &[u8; 8] = b"XPCTRL\0\0";
@@ -33,6 +35,7 @@ const FILTER_SIZE: usize = 144;
 /// Endpoint filters one ARM can carry; matches `XPROBE_CUPTI_FILTER_COUNT`.
 pub const CUPTI_FILTER_COUNT: usize = 8;
 pub const CUPTI_NAME_CAPACITY: usize = 128;
+const _: () = assert!(CUPTI_NAME_CAPACITY == xprobe_protocol::CUDA_RECORD_NAME_MAX_BYTES + 1);
 const FEATURE_HOST_MONOTONIC_TIMESTAMPS: u32 = 1 << 0;
 const FEATURE_TRANSFER_RECORDS: u32 = 1 << 1;
 const FEATURE_AGGREGATE_RECORDS: u32 = 1 << 2;
@@ -60,6 +63,22 @@ pub enum CuptiRecordKind {
     GpuMemsetEnd = 8,
     NvtxRangeStart = 9,
     NvtxRangeEnd = 10,
+}
+
+impl CuptiRecordKind {
+    /// Whether the kind is a kernel, copy, or memset boundary.
+    #[must_use]
+    pub const fn is_activity(self) -> bool {
+        matches!(
+            self,
+            Self::GpuKernelStart
+                | Self::GpuKernelEnd
+                | Self::GpuMemcpyStart
+                | Self::GpuMemcpyEnd
+                | Self::GpuMemsetStart
+                | Self::GpuMemsetEnd
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

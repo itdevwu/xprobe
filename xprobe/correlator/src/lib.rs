@@ -3,16 +3,17 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt,
+    fmt, ptr,
     time::Duration,
 };
 
 use regex::Regex;
 use xprobe_protocol::{
-    CaptureCompleteness, ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence,
-    CorrelationSummary, ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics,
-    MatchPolicy, MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, NvtxRangeKind,
-    QualityVerdict, ResultQuality, SampleSummary, SchemaVersion3, SessionStatus, Warning,
+    ActivityBoundary, CUDA_RECORD_NAME_MAX_BYTES, CaptureCompleteness, ClockDomain, ClockQuality,
+    CollectionSummary, CorrelationConfidence, CorrelationSummary, ErrorCode, Event, EventSource,
+    EventType, HostProbeKind, LatencyStatistics, MatchPolicy, MatchedEventPair, Measurement,
+    MeasurementResult, MemcpyKind, NvtxRangeKind, QualityVerdict, ResultQuality, SampleSummary,
+    SchemaVersion3, SessionStatus, Warning, activity_boundary,
 };
 
 mod quality;
@@ -663,11 +664,13 @@ impl Selector {
         }
     }
 
-    const fn is_gpu_activity(&self) -> bool {
-        matches!(
-            self,
-            Self::Kernel { .. } | Self::Memcpy { .. } | Self::Memset { .. }
-        )
+    const fn activity_boundary(&self) -> Option<ActivityBoundary> {
+        match self {
+            Self::Kernel { event_type, .. }
+            | Self::Memcpy { event_type, .. }
+            | Self::Memset { event_type } => activity_boundary(event_type),
+            _ => None,
+        }
     }
 }
 
@@ -763,6 +766,16 @@ struct Outcome<'a> {
     unmatched_start: u64,
     unmatched_end: u64,
     ambiguous: u64,
+    /// Matched pairs beyond the samples limit; counted in the score only.
+    beyond_limit: u64,
+}
+
+/// The capture and the endpoints selected from it.
+struct Selected<'s, 'a> {
+    events: &'a [Event],
+    starts: &'s [&'a Event],
+    ends: &'s [&'a Event],
+    end_selector: &'s Selector,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -797,23 +810,8 @@ pub fn measure(
     let start_selector = Selector::parse(&options.start_selector)?;
     let end_selector = Selector::parse(&options.end_selector)?;
     validate_policy(&start_selector, &end_selector, options.match_policy)?;
-    let mut starts: Vec<&Event> = events
-        .iter()
-        .filter(|event| start_selector.matches(event))
-        .collect();
-    let mut ends: Vec<&Event> = events
-        .iter()
-        .filter(|event| end_selector.matches(event))
-        .collect();
-    for (selector, events) in [(&start_selector, &mut starts), (&end_selector, &mut ends)] {
-        if matches!(selector, Selector::LaunchApi { .. }) {
-            drop_nested_driver_launches(events);
-        }
-    }
-    starts.sort_by_key(|event| event.timestamp_ns);
-    ends.sort_by_key(|event| event.timestamp_ns);
-    let clock_domain = common_clock_domain(&starts, &ends)?;
-    apply_duration_window(&mut starts, &mut ends, options.duration)?;
+    let (starts, ends, clock_domain) =
+        select_endpoints(events, &start_selector, &end_selector, options.duration)?;
 
     let lifecycles = LifecycleKinds {
         syscall: start_selector.is_syscall_lifecycle(&end_selector),
@@ -821,8 +819,12 @@ pub fn measure(
         python_gc: start_selector.is_python_gc_lifecycle(&end_selector),
     };
     let outcome = correlate_selected(
-        &starts,
-        &ends,
+        &Selected {
+            events,
+            starts: &starts,
+            ends: &ends,
+            end_selector: &end_selector,
+        },
         options.match_policy,
         options.samples,
         lifecycles,
@@ -837,7 +839,11 @@ pub fn measure(
         .iter()
         .map(|pair| pair.latency_ns)
         .collect::<Vec<_>>();
-    let denominator = matched + outcome.unmatched_start + outcome.unmatched_end + outcome.ambiguous;
+    let denominator = matched
+        + outcome.beyond_limit
+        + outcome.unmatched_start
+        + outcome.unmatched_end
+        + outcome.ambiguous;
     let (method, confidence) = correlation_metadata(options.match_policy, lifecycles);
     let warnings = measurement_warnings(options, &starts, &ends);
 
@@ -867,7 +873,7 @@ pub fn measure(
         correlation: CorrelationSummary {
             method: method.to_owned(),
             confidence,
-            score: ratio(matched, denominator),
+            score: ratio(matched + outcome.beyond_limit, denominator),
         },
         clock: ClockQuality {
             alignment: clock_alignment(&clock_domain).to_owned(),
@@ -885,6 +891,32 @@ pub fn measure(
     };
     result.quality = assess_quality(&result);
     Ok(result)
+}
+
+/// The start and end events each selector picks, in time order and within
+/// the duration window, with the clock domain they share.
+fn select_endpoints<'a>(
+    events: &'a [Event],
+    start_selector: &Selector,
+    end_selector: &Selector,
+    duration: Option<Duration>,
+) -> Result<(Vec<&'a Event>, Vec<&'a Event>, ClockDomain), MeasureError> {
+    let select = |selector: &Selector| {
+        let mut selected = events
+            .iter()
+            .filter(|event| selector.matches(event))
+            .collect::<Vec<_>>();
+        if matches!(selector, Selector::LaunchApi { .. }) {
+            drop_nested_driver_launches(&mut selected);
+        }
+        selected.sort_by_key(|event| event.timestamp_ns);
+        selected
+    };
+    let mut starts = select(start_selector);
+    let mut ends = select(end_selector);
+    let clock_domain = common_clock_domain(&starts, &ends)?;
+    apply_duration_window(&mut starts, &mut ends, duration)?;
+    Ok((starts, ends, clock_domain))
 }
 
 fn matched_pairs(pairs: Vec<Pair<'_>>) -> Vec<MatchedEventPair> {
@@ -914,24 +946,32 @@ fn collection_event_counts(events: &[Event]) -> (u64, u64) {
     (host, events.len() as u64 - host)
 }
 
+/// Correlate the whole window, then keep the earliest `limit` pairs so the
+/// unmatched counts and the score describe the same window for every policy.
 fn correlate_selected<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
+    selected: &Selected<'_, 'a>,
     policy: MatchPolicy,
     limit: Option<usize>,
     lifecycles: LifecycleKinds,
 ) -> Outcome<'a> {
-    match policy {
+    let (starts, ends) = (selected.starts, selected.ends);
+    let mut outcome = match policy {
         MatchPolicy::Exact if lifecycles.syscall || lifecycles.python_gc => {
-            correlate_thread_lifecycle(starts, ends, limit)
+            correlate_thread_lifecycle(starts, ends)
         }
-        MatchPolicy::Exact if lifecycles.nvtx => correlate_nvtx_lifecycle(starts, ends, limit),
-        MatchPolicy::Exact => correlate_exact(starts, ends, limit),
-        MatchPolicy::FirstAfter => correlate_first_after(starts, ends, limit),
-        MatchPolicy::Nearest => correlate_nearest(starts, ends, limit),
-        MatchPolicy::StackNested => correlate_stack_nested(starts, ends, limit),
-        MatchPolicy::StreamOrder => correlate_stream_order(starts, ends, limit),
+        MatchPolicy::Exact if lifecycles.nvtx => correlate_nvtx_lifecycle(starts, ends),
+        MatchPolicy::Exact => correlate_exact(starts, ends),
+        MatchPolicy::FirstAfter => correlate_first_after(starts, ends),
+        MatchPolicy::Nearest => correlate_nearest(starts, ends),
+        MatchPolicy::StackNested => correlate_stack_nested(starts, ends),
+        MatchPolicy::StreamOrder => correlate_stream_order(selected),
+    };
+    outcome.pairs.sort_by_key(|pair| pair.start.timestamp_ns);
+    if let Some(limit) = limit.filter(|limit| outcome.pairs.len() > *limit) {
+        outcome.beyond_limit = (outcome.pairs.len() - limit) as u64;
+        outcome.pairs.truncate(limit);
     }
+    outcome
 }
 
 fn validate_policy(
@@ -946,8 +986,13 @@ fn validate_policy(
         MatchPolicy::StackNested if !start.supports_stack_nested(end) => {
             Some("stack-nested requires entry and return selectors for the same host function")
         }
-        MatchPolicy::StreamOrder if !start.is_gpu_activity() || !end.is_gpu_activity() => {
-            Some("stream-order requires two GPU activity selectors")
+        MatchPolicy::StreamOrder
+            if start.activity_boundary() != Some(ActivityBoundary::End)
+                || end.activity_boundary() != Some(ActivityBoundary::Start) =>
+        {
+            Some(
+                "stream-order pairs a GPU activity end with the next activity start on its stream; use exact for an activity's own duration",
+            )
         }
         _ => None,
     };
@@ -980,11 +1025,7 @@ const fn correlation_metadata(
     }
 }
 
-fn correlate_thread_lifecycle<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
-    limit: Option<usize>,
-) -> Outcome<'a> {
+fn correlate_thread_lifecycle<'a>(starts: &[&'a Event], ends: &[&'a Event]) -> Outcome<'a> {
     let mut timeline = starts
         .iter()
         .map(|event| (event.timestamp_ns, 0_u8, *event))
@@ -1017,22 +1058,16 @@ fn correlate_thread_lifecycle<'a>(
         }
     }
     pairs.sort_by_key(|pair| pair.start.timestamp_ns);
-    if let Some(limit) = limit {
-        pairs.truncate(limit);
-    }
     Outcome {
         pairs,
         unmatched_start: pending.len() as u64,
         unmatched_end,
         ambiguous,
+        beyond_limit: 0,
     }
 }
 
-fn correlate_nvtx_lifecycle<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
-    limit: Option<usize>,
-) -> Outcome<'a> {
+fn correlate_nvtx_lifecycle<'a>(starts: &[&'a Event], ends: &[&'a Event]) -> Outcome<'a> {
     let mut timeline = starts
         .iter()
         .map(|event| (event.timestamp_ns, 0_u8, *event))
@@ -1074,14 +1109,12 @@ fn correlate_nvtx_lifecycle<'a>(
     }
     unmatched_start += pending.len() as u64;
     pairs.sort_by_key(|pair| pair.start.timestamp_ns);
-    if let Some(limit) = limit {
-        pairs.truncate(limit);
-    }
     Outcome {
         pairs,
         unmatched_start,
         unmatched_end,
         ambiguous,
+        beyond_limit: 0,
     }
 }
 
@@ -1198,11 +1231,7 @@ const fn clock_group(domain: &ClockDomain) -> u8 {
     }
 }
 
-fn correlate_exact<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
-    limit: Option<usize>,
-) -> Outcome<'a> {
+fn correlate_exact<'a>(starts: &[&'a Event], ends: &[&'a Event]) -> Outcome<'a> {
     let mut start_groups: BTreeMap<CorrelationKey, Vec<&Event>> = BTreeMap::new();
     let mut end_groups: BTreeMap<CorrelationKey, Vec<&Event>> = BTreeMap::new();
     let mut unmatched_start = 0_u64;
@@ -1248,31 +1277,21 @@ fn correlate_exact<'a>(
     }
     unmatched_end += end_groups.values().map(Vec::len).sum::<usize>() as u64;
     pairs.sort_by_key(|pair| pair.start.timestamp_ns);
-    if let Some(limit) = limit {
-        pairs.truncate(limit);
-    }
     Outcome {
         pairs,
         unmatched_start,
         unmatched_end,
         ambiguous,
+        beyond_limit: 0,
     }
 }
 
-fn correlate_first_after<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
-    limit: Option<usize>,
-) -> Outcome<'a> {
-    let limit = limit.unwrap_or(usize::MAX);
+fn correlate_first_after<'a>(starts: &[&'a Event], ends: &[&'a Event]) -> Outcome<'a> {
     let mut pairs = Vec::new();
     let mut unmatched_start = 0_u64;
     let mut unmatched_end = 0_u64;
     let mut end_index = 0;
     for (start_index, start) in starts.iter().enumerate() {
-        if pairs.len() == limit {
-            break;
-        }
         while end_index < ends.len() && ends[end_index].timestamp_ns < start.timestamp_ns {
             unmatched_end += 1;
             end_index += 1;
@@ -1289,35 +1308,24 @@ fn correlate_first_after<'a>(
             break;
         }
     }
-    if pairs.len() < limit {
-        unmatched_end += (ends.len() - end_index) as u64;
-    }
+    unmatched_end += (ends.len() - end_index) as u64;
     Outcome {
         pairs,
         unmatched_start,
         unmatched_end,
         ambiguous: 0,
+        beyond_limit: 0,
     }
 }
 
-fn correlate_nearest<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
-    limit: Option<usize>,
-) -> Outcome<'a> {
-    let limit = limit.unwrap_or(usize::MAX);
+fn correlate_nearest<'a>(starts: &[&'a Event], ends: &[&'a Event]) -> Outcome<'a> {
     let mut available = BTreeMap::<u64, Vec<&Event>>::new();
     for end in ends {
         available.entry(end.timestamp_ns).or_default().push(end);
     }
     let mut pairs = Vec::new();
     let mut unmatched_start = 0_u64;
-    let mut reached_limit = false;
     for (index, start) in starts.iter().enumerate() {
-        if pairs.len() == limit {
-            reached_limit = true;
-            break;
-        }
         let before = available
             .range(..=start.timestamp_ns)
             .next_back()
@@ -1356,21 +1364,13 @@ fn correlate_nearest<'a>(
     Outcome {
         pairs,
         unmatched_start,
-        unmatched_end: if reached_limit {
-            0
-        } else {
-            available.values().map(Vec::len).sum::<usize>() as u64
-        },
+        unmatched_end: available.values().map(Vec::len).sum::<usize>() as u64,
         ambiguous: 0,
+        beyond_limit: 0,
     }
 }
 
-fn correlate_stack_nested<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
-    limit: Option<usize>,
-) -> Outcome<'a> {
-    let limit = limit.unwrap_or(usize::MAX);
+fn correlate_stack_nested<'a>(starts: &[&'a Event], ends: &[&'a Event]) -> Outcome<'a> {
     let mut timeline = starts
         .iter()
         .map(|event| (event.timestamp_ns, 0_u8, *event))
@@ -1385,13 +1385,11 @@ fn correlate_stack_nested<'a>(
         if boundary == 0 {
             stacks.entry(key).or_default().push(event);
         } else if let Some(start) = stacks.get_mut(&key).and_then(Vec::pop) {
-            if pairs.len() < limit {
-                pairs.push(Pair {
-                    start,
-                    end: event,
-                    latency_ns: event.timestamp_ns - start.timestamp_ns,
-                });
-            }
+            pairs.push(Pair {
+                start,
+                end: event,
+                latency_ns: event.timestamp_ns - start.timestamp_ns,
+            });
         } else {
             unmatched_end += 1;
         }
@@ -1402,82 +1400,145 @@ fn correlate_stack_nested<'a>(
         unmatched_start: stacks.values().map(Vec::len).sum::<usize>() as u64,
         unmatched_end,
         ambiguous: 0,
+        beyond_limit: 0,
     }
 }
 
 type StreamKey = (u32, u32, u32, u64);
 
-fn correlate_stream_order<'a>(
-    starts: &[&'a Event],
-    ends: &[&'a Event],
-    limit: Option<usize>,
-) -> Outcome<'a> {
-    let mut start_groups = BTreeMap::<StreamKey, Vec<&Event>>::new();
-    let mut end_groups = BTreeMap::<StreamKey, Vec<&Event>>::new();
-    let mut unmatched_start = group_by_stream(starts, &mut start_groups);
-    let mut unmatched_end = group_by_stream(ends, &mut end_groups);
+/// Pair an activity end with the start of the next activity on its stream.
+///
+/// Successors come from every kernel, copy, and memset on the stream in the
+/// capture, not only the selected endpoints, so a narrower end selector never
+/// skips over activity that ran in between. An end that overlaps other
+/// activity on its stream (CUDA Graph nodes or programmatic dependent launch),
+/// whose successor ties with another start, or whose successor's truncated
+/// kernel name cannot decide the end selector is ambiguous. An end whose
+/// successor is not selected, or that has no successor in the capture, is an
+/// unmatched start.
+fn correlate_stream_order<'a>(selected: &Selected<'_, 'a>) -> Outcome<'a> {
+    let chosen = |events: &[&Event]| {
+        events
+            .iter()
+            .map(|event| ptr::from_ref(*event))
+            .collect::<BTreeSet<_>>()
+    };
+    let from = chosen(selected.starts);
+    let to = chosen(selected.ends);
+    let mut timelines = BTreeMap::<StreamKey, Vec<&Event>>::new();
+    for event in selected.events {
+        if activity_boundary(&event.event_type).is_some()
+            && let Some(key) = stream_key(event)
+        {
+            timelines.entry(key).or_default().push(event);
+        }
+    }
     let mut pairs = Vec::new();
-    for (key, group) in start_groups {
-        let Some(end_group) = end_groups.remove(&key) else {
-            unmatched_start += group.len() as u64;
-            continue;
-        };
-        let mut end_index = 0;
-        for start in group {
-            while end_index < end_group.len()
-                && end_group[end_index].timestamp_ns < start.timestamp_ns
-            {
-                unmatched_end += 1;
-                end_index += 1;
+    let mut unmatched_start = selected
+        .starts
+        .iter()
+        .filter(|event| stream_key(event).is_none())
+        .count() as u64;
+    let mut ambiguous = 0_u64;
+    for timeline in timelines.values_mut() {
+        // Ends sort before starts at one timestamp: A.end == B.start is a
+        // valid zero gap, not an overlap.
+        timeline.sort_by_key(|event| {
+            (
+                event.timestamp_ns,
+                activity_boundary(&event.event_type) == Some(ActivityBoundary::Start),
+            )
+        });
+        let mut in_flight = 0_u64;
+        for (index, event) in timeline.iter().enumerate() {
+            if activity_boundary(&event.event_type) == Some(ActivityBoundary::Start) {
+                in_flight += 1;
+                continue;
             }
-            if let Some(end) = end_group.get(end_index) {
-                pairs.push(Pair {
-                    start,
-                    end,
-                    latency_ns: end.timestamp_ns - start.timestamp_ns,
-                });
-                end_index += 1;
-            } else {
-                unmatched_start += 1;
+            let balanced = in_flight > 0;
+            in_flight = in_flight.saturating_sub(1);
+            if !from.contains(&ptr::from_ref(*event)) {
+                continue;
+            }
+            match stream_successor(timeline, index, balanced && in_flight == 0) {
+                Successor::Next(next) if to.contains(&ptr::from_ref(next)) => pairs.push(Pair {
+                    start: event,
+                    end: next,
+                    latency_ns: next.timestamp_ns - event.timestamp_ns,
+                }),
+                Successor::Next(next) if name_undecidable(selected.end_selector, next) => {
+                    ambiguous += 1;
+                }
+                Successor::Next(_) | Successor::None => unmatched_start += 1,
+                Successor::Ambiguous => ambiguous += 1,
             }
         }
-        unmatched_end += (end_group.len() - end_index) as u64;
     }
-    unmatched_end += end_groups.values().map(Vec::len).sum::<usize>() as u64;
-    pairs.sort_by_key(|pair| pair.start.timestamp_ns);
-    if let Some(limit) = limit {
-        pairs.truncate(limit);
-    }
+    let paired = pairs
+        .iter()
+        .map(|pair| ptr::from_ref(pair.end))
+        .collect::<BTreeSet<_>>();
     Outcome {
+        unmatched_end: to.difference(&paired).count() as u64,
         pairs,
         unmatched_start,
-        unmatched_end,
-        ambiguous: 0,
+        ambiguous,
+        beyond_limit: 0,
     }
 }
 
-fn group_by_stream<'a>(
-    events: &[&'a Event],
-    groups: &mut BTreeMap<StreamKey, Vec<&'a Event>>,
-) -> u64 {
-    let mut unmatched = 0;
-    for event in events {
-        let Some(cuda) = event.cuda.as_ref() else {
-            unmatched += 1;
-            continue;
-        };
-        let (Some(device), Some(context), Some(stream)) =
-            (cuda.device_id, cuda.context_id, cuda.stream_id)
-        else {
-            unmatched += 1;
-            continue;
-        };
-        groups
-            .entry((event.pid, device, context, stream))
-            .or_default()
-            .push(event);
+enum Successor<'a> {
+    Next(&'a Event),
+    None,
+    Ambiguous,
+}
+
+/// The activity start that follows the end at `index` on one stream timeline.
+fn stream_successor<'a>(timeline: &[&'a Event], index: usize, alone: bool) -> Successor<'a> {
+    if !alone {
+        return Successor::Ambiguous;
     }
-    unmatched
+    let Some(next) = timeline.get(index + 1) else {
+        return Successor::None;
+    };
+    let is_start =
+        |event: &Event| activity_boundary(&event.event_type) == Some(ActivityBoundary::Start);
+    if !is_start(next)
+        || timeline
+            .get(index + 2)
+            .is_some_and(|after| is_start(after) && after.timestamp_ns == next.timestamp_ns)
+    {
+        return Successor::Ambiguous;
+    }
+    Successor::Next(next)
+}
+
+/// Whether a kernel's name may have been truncated past what the selector's
+/// regex needs, so a non-match does not prove the kernel is not selected.
+fn name_undecidable(selector: &Selector, event: &Event) -> bool {
+    let Selector::Kernel {
+        event_type,
+        name: Some(pattern),
+    } = selector
+    else {
+        return false;
+    };
+    event.event_type == *event_type
+        && event
+            .cuda
+            .as_ref()
+            .and_then(|cuda| cuda.kernel_name.as_deref())
+            .is_some_and(|name| name.len() >= CUDA_RECORD_NAME_MAX_BYTES && !pattern.is_match(name))
+}
+
+fn stream_key(event: &Event) -> Option<StreamKey> {
+    let cuda = event.cuda.as_ref()?;
+    Some((
+        event.pid,
+        cuda.device_id?,
+        cuda.context_id?,
+        cuda.stream_id?,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -2158,22 +2219,205 @@ mod tests {
         assert_eq!(result.measurement.latency_ns.min, 60);
     }
 
-    #[test]
-    fn stream_order_never_pairs_across_cuda_streams() {
-        let mut events = vec![
-            event(EventType::GpuKernelStart, 100, 1),
-            event(EventType::GpuKernelStart, 110, 2),
-            event(EventType::GpuKernelEnd, 150, 9),
-            event(EventType::GpuKernelEnd, 170, 8),
-        ];
-        events[1].cuda.as_mut().expect("CUDA payload").stream_id = Some(3);
-        events[2].cuda.as_mut().expect("CUDA payload").stream_id = Some(3);
+    /// One activity's start and end on `stream`, as the Agent records them.
+    fn activity(
+        kinds: (EventType, EventType),
+        span: (u64, u64),
+        stream: u64,
+        name: &str,
+        correlation_id: u32,
+    ) -> [Event; 2] {
+        [(kinds.0, span.0), (kinds.1, span.1)].map(|(kind, timestamp)| {
+            let mut event = event(kind, timestamp, correlation_id);
+            let cuda = event.cuda.as_mut().expect("CUDA payload");
+            cuda.stream_id = Some(stream);
+            cuda.kernel_name = Some(name.to_owned());
+            event
+        })
+    }
 
-        let result = measure(&events, &options(MatchPolicy::StreamOrder)).unwrap();
-        assert_eq!(result.measurement.samples.matched, 2);
-        assert_eq!(result.measurement.latency_ns.min, 40);
-        assert_eq!(result.measurement.latency_ns.max, 70);
+    fn kernel(start: u64, end: u64, stream: u64, name: &str, correlation_id: u32) -> [Event; 2] {
+        activity(
+            (EventType::GpuKernelStart, EventType::GpuKernelEnd),
+            (start, end),
+            stream,
+            name,
+            correlation_id,
+        )
+    }
+
+    fn stream_order(from: &str, to: &str) -> MeasureOptions {
+        let mut options = options(MatchPolicy::StreamOrder);
+        options.start_selector = from.to_owned();
+        options.end_selector = to.to_owned();
+        options.samples = None;
+        options.duration = Some(Duration::from_secs(1));
+        options
+    }
+
+    fn gaps(result: &xprobe_protocol::MeasurementResult) -> Vec<(String, String, u64)> {
+        let name = |event: &Event| {
+            event
+                .cuda
+                .as_ref()
+                .and_then(|cuda| cuda.kernel_name.clone())
+                .unwrap_or_default()
+        };
+        result
+            .evidence
+            .pairs
+            .as_ref()
+            .expect("full evidence")
+            .iter()
+            .map(|pair| (name(&pair.start), name(&pair.end), pair.latency_ns))
+            .collect()
+    }
+
+    #[test]
+    fn stream_order_pairs_each_end_with_the_next_activity_on_its_stream() {
+        // A B flash1 C D flash2 on one stream, 2 ns apart: a narrower end
+        // selector must not skip over the kernels in between.
+        let events = [
+            kernel(0, 10, 2, "A", 1),
+            kernel(12, 20, 2, "B", 2),
+            kernel(22, 30, 2, "flash1", 3),
+            kernel(32, 40, 2, "C", 4),
+            kernel(42, 50, 2, "D", 5),
+            kernel(52, 60, 2, "flash2", 6),
+        ]
+        .concat();
+        let result = measure(
+            &events,
+            &stream_order("cuda:kernel_end", "cuda:kernel_start:name~^flash"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gaps(&result),
+            [
+                ("B".to_owned(), "flash1".to_owned(), 2),
+                ("D".to_owned(), "flash2".to_owned(), 2)
+            ]
+        );
+        assert_eq!(result.measurement.samples.unmatched_start, 4);
+        assert_eq!(result.measurement.samples.unmatched_end, 0);
         assert_eq!(result.correlation.method, "cuda_stream_order");
         assert_eq!(result.correlation.confidence, CorrelationConfidence::High);
+    }
+
+    #[test]
+    fn stream_order_successors_include_unselected_copies_but_not_other_streams() {
+        let mut events = [
+            kernel(0, 10, 2, "A", 1),
+            activity(
+                (EventType::GpuMemcpyStart, EventType::GpuMemcpyEnd),
+                (12, 20),
+                2,
+                "",
+                2,
+            ),
+            kernel(22, 30, 2, "B", 3),
+            // A kernel on another stream between A and the copy is not A's
+            // successor.
+            kernel(11, 11, 3, "other", 4),
+        ]
+        .concat();
+        events.sort_by_key(|event| event.timestamp_ns);
+
+        // A is followed by the copy, not by B.
+        assert!(matches!(
+            measure(
+                &events,
+                &stream_order("cuda:kernel_end", "cuda:kernel_start")
+            ),
+            Err(MeasureError::NoMatchedSamples)
+        ));
+        let to_copy = measure(
+            &events,
+            &stream_order("cuda:kernel_end", "cuda:memcpy_start"),
+        )
+        .unwrap();
+        assert_eq!(to_copy.measurement.samples.matched, 1);
+        assert_eq!(to_copy.measurement.latency_ns.min, 2);
+        let from_copy = measure(
+            &events,
+            &stream_order("cuda:memcpy_end", "cuda:kernel_start"),
+        )
+        .unwrap();
+        assert_eq!(gaps(&from_copy), [(String::new(), "B".to_owned(), 2)]);
+    }
+
+    #[test]
+    fn stream_order_counts_overlap_ties_and_truncated_names() {
+        let long = "k".repeat(xprobe_protocol::CUDA_RECORD_NAME_MAX_BYTES);
+        let events = [
+            kernel(0, 10, 2, "A", 1),
+            kernel(5, 15, 2, "B", 2),
+            kernel(20, 30, 2, "C", 3),
+            kernel(20, 25, 2, "D", 4),
+            kernel(40, 50, 2, "E", 5),
+            kernel(50, 60, 2, "flash", 6),
+            kernel(70, 80, 2, "F", 7),
+            kernel(85, 90, 2, &long, 8),
+        ]
+        .concat();
+        let result = measure(
+            &events,
+            &stream_order("cuda:kernel_end", "cuda:kernel_start:name~flash$"),
+        )
+        .unwrap();
+        // E.end == flash.start is a valid zero gap.
+        assert_eq!(gaps(&result), [("E".to_owned(), "flash".to_owned(), 0)]);
+        let samples = &result.measurement.samples;
+        // A and D end while another kernel runs, B is followed by tied C and
+        // D, and F's successor name is truncated and may still end in "flash".
+        assert_eq!(samples.ambiguous, 4);
+        // C and flash are followed by unselected kernels; the long kernel
+        // ends the capture.
+        assert_eq!(samples.unmatched_start, 3);
+    }
+
+    #[test]
+    fn stream_order_rejects_anything_but_an_end_followed_by_a_start() {
+        let events = kernel(0, 10, 2, "A", 1);
+        for (from, to) in [
+            ("cuda:kernel_start", "cuda:kernel_end"),
+            ("cuda:kernel_start", "cuda:kernel_start"),
+            ("cuda:kernel_end", "cuda:kernel_end"),
+        ] {
+            assert!(
+                matches!(
+                    measure(&events, &stream_order(from, to)),
+                    Err(MeasureError::InvalidPolicy(_))
+                ),
+                "{from} -> {to}"
+            );
+        }
+    }
+
+    #[test]
+    fn samples_limit_keeps_the_earliest_pairs_and_scores_the_whole_window() {
+        let events = (0_u32..4)
+            .flat_map(|index| {
+                let start = u64::from(index) * 20;
+                kernel(start, start + 10, 2, "k", index + 1)
+            })
+            .collect::<Vec<_>>();
+        let mut options = stream_order("cuda:kernel_end", "cuda:kernel_start");
+        options.samples = Some(2);
+        let result = measure(&events, &options).unwrap();
+
+        assert_eq!(result.measurement.samples.matched, 2);
+        // Three gaps matched in the window; the last end has no successor
+        // and the first start no predecessor.
+        assert_eq!(result.measurement.samples.unmatched_start, 1);
+        assert_eq!(result.measurement.samples.unmatched_end, 1);
+        assert!((result.correlation.score - 3.0 / 5.0).abs() < f64::EPSILON);
+        assert_eq!(
+            result.evidence.pairs.as_ref().unwrap()[0]
+                .start
+                .timestamp_ns,
+            10
+        );
     }
 }

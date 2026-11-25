@@ -150,8 +150,15 @@ Supported policies are `exact`, `first-after`, `nearest`, `stack-nested`, and
 `stream-order`. Exact uses deterministic CUPTI correlation IDs, NVTX range
 kind/ID, one named syscall's per-thread entry/exit lifecycle, or one CPython GC
 start/end lifecycle on the same thread. Nested
-requires entry/return of the same host function. Stream order requires GPU
-activity endpoints. Temporal policies always warn that they are heuristic.
+requires entry/return of the same host function. Stream order pairs a GPU
+activity end with the start of the next kernel, copy, or memset on the same
+device, context, and stream, whether or not that activity matches either
+selector; it pairs only when the next activity is the selected end. To see
+every successor it records all GPU activity, using six of the eight Agent
+filters, and `validate` warns `STREAM_ORDER_CAPTURES_ALL_ACTIVITY`. An end
+that overlaps other activity on its stream, whose successor ties with another
+start, or whose successor's truncated kernel name cannot decide the selector
+is ambiguous. Temporal policies always warn that they are heuristic.
 `policy_recommendation` reports the strongest compatible policy, a stable
 machine-readable reason, and all compatible alternatives. The caller still
 chooses the policy; xprobe does not silently replace or retry it.
@@ -357,7 +364,8 @@ contain:
 
 - status and latency statistics;
 - a `quality` verdict (`good` or `caution`) with coded issues;
-- matched, unmatched, ambiguous, and dropped counts;
+- matched, unmatched, ambiguous, and dropped counts; a samples limit keeps the
+  earliest pairs, while unmatched counts and the score cover the whole window;
 - method, confidence, and score;
 - clock alignment and optional estimated error;
 - collection completeness, host/CUDA totals, and CUPTI capacity, observed,

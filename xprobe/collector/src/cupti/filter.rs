@@ -35,6 +35,27 @@ impl fmt::Display for CuptiFilterError {
 
 impl Error for CuptiFilterError {}
 
+/// Unfiltered start and end filters for every activity family. The Agent
+/// checks each record against the filters, so these capture both boundaries
+/// of every kernel, copy (including peer copies), and memset.
+#[must_use]
+pub fn all_activity_filters() -> [CuptiEventFilter; 6] {
+    [
+        CuptiRecordKind::GpuKernelStart,
+        CuptiRecordKind::GpuKernelEnd,
+        CuptiRecordKind::GpuMemcpyStart,
+        CuptiRecordKind::GpuMemcpyEnd,
+        CuptiRecordKind::GpuMemsetStart,
+        CuptiRecordKind::GpuMemsetEnd,
+    ]
+    .map(|record_kind| CuptiEventFilter {
+        record_kind,
+        api_domain: CuptiApiDomain::Any,
+        memcpy_kind: CuptiMemcpyKind::Any,
+        name: CuptiNameFilter::Any,
+    })
+}
+
 /// Lower one validated CUDA endpoint into Agent filters.
 ///
 /// `cuda:launch_api` needs one prefix filter per API domain; every other

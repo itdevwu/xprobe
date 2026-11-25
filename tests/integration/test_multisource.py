@@ -79,6 +79,9 @@ def main() -> None:
         graph_events = (
             pathlib.Path(output_dir) / "graph-events.jsonl"
         ).read_text().splitlines()
+        stream_order_result = json.loads(
+            (pathlib.Path(output_dir) / "stream-order-measure.json").read_text()
+        )
 
         trace_path = pathlib.Path(output_dir) / "trace.json"
         exported = subprocess.run(
@@ -118,13 +121,19 @@ def main() -> None:
         "request_to_launch",
         "launch_to_kernel",
         "kernel_duration",
+        "kernel_to_auxiliary",
     ]
     assert graph_validation["requirements"]["needs_ebpf"] is True
     assert graph_validation["requirements"]["needs_cupti"] is True
     assert graph_result["schema_version"] == "3.0", graph_result
     assert graph_result["status"] == "completed", graph_result
     edges = {edge["name"]: edge for edge in graph_result["edges"]}
-    assert set(edges) == {"request_to_launch", "launch_to_kernel", "kernel_duration"}
+    assert set(edges) == {
+        "request_to_launch",
+        "launch_to_kernel",
+        "kernel_duration",
+        "kernel_to_auxiliary",
+    }
     for edge in edges.values():
         assert edge["measurement"]["samples"]["matched"] >= 3, edge
         assert edge["measurement"]["latency_ns"]["min"] > 0, edge
@@ -133,6 +142,11 @@ def main() -> None:
     assert edges["request_to_launch"]["correlation"]["confidence"] == "heuristic"
     assert edges["launch_to_kernel"]["correlation"]["confidence"] == "exact"
     assert edges["kernel_duration"]["correlation"]["confidence"] == "exact"
+    assert edges["kernel_to_auxiliary"]["correlation"]["confidence"] == "high"
+    # Adjacent kernels on one stream, not the 50 ms between iterations.
+    assert edges["kernel_to_auxiliary"]["measurement"]["latency_ns"]["max"] < 10_000_000
+    assert stream_order_result["ok"] is False, stream_order_result
+    assert stream_order_result["error"]["code"] == "NO_MATCHED_SAMPLES", stream_order_result
     assert graph_result["artifact"]["events"] == len(graph_events)
     assert graph_result["collection"]["host_events"] >= 3
     assert export_result["format"] == "chrome"

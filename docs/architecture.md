@@ -216,7 +216,7 @@ All sources normalize into the versioned `Event` type. `measure` supports:
 | `first-after` | First unused end at or after each start | heuristic |
 | `nearest` | Nearest unused end by timestamp | heuristic |
 | `stack-nested` | Per-thread LIFO host entry/return | high |
-| `stream-order` | Ordered activity within device/context/stream | high |
+| `stream-order` | An activity end and the next kernel, copy, or memset start on its device/context/stream | high |
 
 Statistics are derived from every matched start/end pair. Measurement results
 use schema `3.0`: by default `evidence` inlines one exemplar pair per latency

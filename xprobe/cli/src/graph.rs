@@ -307,6 +307,9 @@ fn collect_graph(
             .map(|endpoint| endpoint.endpoint)
             .collect(),
         requirements: validation.requirements,
+        stream_order: edges
+            .iter()
+            .any(|edge| edge.options.match_policy == xprobe_protocol::MatchPolicy::StreamOrder),
     };
     let execution = collect_live(plan, &request, &GraphEdges { session_id, edges })?;
     Ok((execution, spec, target))

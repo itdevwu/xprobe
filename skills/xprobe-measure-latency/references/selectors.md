@@ -65,7 +65,7 @@ xprobe validate --pid "$PID" --from python:gc_start --to python:gc_end --match e
 | --- | --- | --- |
 | `exact` | Same CUPTI correlation ID (API ↔ its kernel or copy), kernel/copy start ↔ end, NVTX range ID, one syscall's entry ↔ exit on a thread, CPython GC start ↔ end | exact |
 | `stack-nested` | Entry ↔ return of one host function per thread | high |
-| `stream-order` | Activity end ↔ next start on one device stream | high |
+| `stream-order` | Activity end ↔ the next kernel, copy, or memset start on its stream; records all GPU activity | high |
 | `first-after`, `nearest` | Host marker ↔ GPU activity and other unrelated sources | heuristic |
 
 `validate` reports `policy_recommendation` with a reason and the compatible

@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, error::Error, fmt};
 
 use regex::Regex;
 use xprobe_protocol::{
-    AgentActivation, EndpointSource, ErrorCode, EventType, HostProbeKind, MatchPolicy, MemcpyKind,
-    PolicyRecommendation, PolicyRecommendationReason, ProcessReport, ResolvedCudaSelector,
-    ResolvedLinuxSelector, SchemaVersion, ValidatedEndpoint, ValidationIssue,
+    ActivityBoundary, AgentActivation, EndpointSource, ErrorCode, EventType, HostProbeKind,
+    MatchPolicy, MemcpyKind, PolicyRecommendation, PolicyRecommendationReason, ProcessReport,
+    ResolvedCudaSelector, ResolvedLinuxSelector, SchemaVersion, ValidatedEndpoint, ValidationIssue,
     ValidationRequirements, ValidationResult, Warning,
 };
 
@@ -234,7 +234,7 @@ fn recommend_policy(start: &Endpoint, end: &Endpoint) -> PolicyRecommendation {
     if supports_exact(&start.kind, &end.kind) {
         compatible_policies.push(MatchPolicy::Exact);
     }
-    if supports_stream_order(&start.kind, &end.kind) {
+    if supports_stream_order(start, end) {
         compatible_policies.push(MatchPolicy::StreamOrder);
     }
     compatible_policies.push(MatchPolicy::FirstAfter);
@@ -995,13 +995,17 @@ fn check_policy(
             "stack-nested matching requires entry and return probes for the same host function"
                 .to_owned(),
         )),
-        MatchPolicy::StreamOrder if !supports_stream_order(&start.kind, &end.kind) => {
+        MatchPolicy::StreamOrder if !supports_stream_order(start, end) => {
             issues.push(issue(
                 ErrorCode::InvalidCorrelationPolicy,
-                "stream-order matching requires two GPU activity endpoints".to_owned(),
+                "stream-order matching pairs a GPU activity end with the next activity start on its stream; use exact for an activity's own duration".to_owned(),
             ));
         }
-        MatchPolicy::Exact | MatchPolicy::StackNested | MatchPolicy::StreamOrder => {}
+        MatchPolicy::StreamOrder => warnings.push(warning(
+            "STREAM_ORDER_CAPTURES_ALL_ACTIVITY",
+            "stream-order records every kernel, copy, and memset to find each end's successor; size max-events for the whole GPU activity rate",
+        )),
+        MatchPolicy::Exact | MatchPolicy::StackNested => {}
     }
 }
 
@@ -1060,8 +1064,20 @@ fn supports_stack_nested(start: &Endpoint, end: &Endpoint) -> bool {
     start.binary_path == end.binary_path && start.file_offset == end.file_offset
 }
 
-fn supports_stream_order(start: &EndpointKind, end: &EndpointKind) -> bool {
-    start.needs_activity() && end.needs_activity()
+/// Stream order measures the gap from one activity's end to the start of the
+/// next activity on its stream, across kernels, copies, and memsets.
+fn supports_stream_order(start: &Endpoint, end: &Endpoint) -> bool {
+    let boundary = |endpoint: &Endpoint| {
+        endpoint
+            .public
+            .cuda
+            .as_ref()
+            .and_then(|cuda| xprobe_protocol::activity_boundary(&cuda.event_type))
+    };
+    start.kind.needs_activity()
+        && end.kind.needs_activity()
+        && boundary(start) == Some(ActivityBoundary::End)
+        && boundary(end) == Some(ActivityBoundary::Start)
 }
 
 fn check_selector_breadth(endpoint: &Endpoint, name: &str, warnings: &mut Vec<Warning>) {

@@ -87,6 +87,7 @@ def measure(
     start_selector: str,
     end_selector: str,
     samples: str,
+    policy: str = "exact",
 ) -> dict:
     completed = subprocess.run(
         [
@@ -99,7 +100,7 @@ def measure(
             "--to",
             end_selector,
             "--match",
-            "exact",
+            policy,
             "--samples",
             samples,
             "--json",
@@ -271,6 +272,16 @@ def main() -> None:
             "cuda:memset_start",
             "cuda:memset_end",
             "1",
+        )
+        # memset, HtoD, HtoD, then kernels on one stream: only the second
+        # copy is followed by a kernel.
+        copy_to_kernel = measure(
+            xprobe,
+            capture,
+            "cuda:memcpy_end:kind=HtoD",
+            "cuda:kernel_start:name~xprobe_test_kernel.*",
+            "2",
+            "stream-order",
         )
 
     counts = collections.Counter(record["kind"] for record in records)
@@ -450,6 +461,8 @@ def main() -> None:
         assert driver_measurement["measurement"]["latency_ns"]["min"] > 0
         assert driver_measurement["correlation"]["confidence"] == "exact"
     assert memcpy_measurement["measurement"]["samples"]["matched"] == 2
+    assert copy_to_kernel["measurement"]["samples"]["matched"] == 1, copy_to_kernel
+    assert copy_to_kernel["measurement"]["samples"]["unmatched_start"] == 1, copy_to_kernel
     assert memcpy_measurement["measurement"]["latency_ns"]["min"] > 0
     assert memcpy_measurement["correlation"]["confidence"] == "exact"
     assert memset_measurement["measurement"]["samples"]["matched"] == 1
