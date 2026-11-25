@@ -9,16 +9,17 @@ use std::{
 
 use regex::Regex;
 use xprobe_protocol::{
-    ActivityBoundary, CUDA_RECORD_NAME_MAX_BYTES, CaptureCompleteness, ClockDomain, ClockQuality,
-    CollectionSummary, CorrelationConfidence, CorrelationSummary, ErrorCode, Event, EventSource,
-    EventType, HostProbeKind, LatencyStatistics, MatchPolicy, MatchedEventPair, Measurement,
-    MeasurementResult, MemcpyKind, NvtxRangeKind, QualityVerdict, ResultQuality, SampleSummary,
-    SchemaVersion3, SessionStatus, Warning, activity_boundary,
+    ActivityBoundary, CUDA_RECORD_NAME_MAX_BYTES, CaptureCompleteness, CaptureCoverage,
+    ClockDomain, ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary,
+    CoverageSource, ErrorCode, Event, EventSource, EventType, HostProbeKind, LatencyStatistics,
+    MatchPolicy, MatchedEventPair, Measurement, MeasurementResult, MemcpyKind, NvtxRangeKind,
+    QualityVerdict, ResultQuality, SampleSummary, SchemaVersion3, SessionStatus, Warning,
+    activity_boundary,
 };
 
 mod quality;
 
-pub use quality::{assess as assess_quality, finalize};
+pub use quality::{apply_coverage, assess as assess_quality, finalize};
 
 #[derive(Debug, Clone)]
 pub struct MeasureOptions {
@@ -881,6 +882,11 @@ pub fn measure(
         },
         collection: CollectionSummary {
             completeness: CaptureCompleteness::Complete,
+            // The caller knows how the events were collected and replaces this.
+            coverage: CaptureCoverage {
+                source: CoverageSource::Unverified,
+                all_gpu_activity: false,
+            },
             host_events,
             cuda_events,
             dropped_events: options.dropped_events,
@@ -1021,7 +1027,7 @@ const fn correlation_metadata(
         MatchPolicy::FirstAfter => ("first_after", CorrelationConfidence::Heuristic),
         MatchPolicy::Nearest => ("nearest", CorrelationConfidence::Heuristic),
         MatchPolicy::StackNested => ("stack_nested_tid_lifo", CorrelationConfidence::High),
-        MatchPolicy::StreamOrder => ("cuda_stream_order", CorrelationConfidence::High),
+        MatchPolicy::StreamOrder => (quality::STREAM_ORDER_METHOD, CorrelationConfidence::High),
     }
 }
 

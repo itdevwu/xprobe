@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CaptureManifest",
+  "description": "What one bounded capture covered, written to `<artifact>.manifest.json`.\n\nEvent JSONL records only events. The manifest records how they were\ncollected, so offline correlation can tell \"not observed\" from \"not\ncaptured\" and keep losses that the live command reported.",
+  "type": "object",
+  "properties": {
+    "all_gpu_activity": {
+      "description": "Every kernel, copy, and memset on the target was recorded, not only\nthe selected endpoints.",
+      "type": "boolean"
+    },
+    "artifact": {
+      "description": "The artifact this manifest describes; a mismatch makes it stale.",
+      "$ref": "#/$defs/ManifestArtifact"
+    },
+    "capture_failed": {
+      "description": "A collector entered a failed state.",
+      "type": "boolean"
+    },
+    "dropped_records": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "peer_copies": {
+      "description": "Peer-to-peer copies were recorded with other copies.",
+      "type": "boolean"
+    },
+    "record_limit_reached": {
+      "description": "The configured record limit that stopped the capture, if any.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "schema_version": {
+      "$ref": "#/$defs/ManifestVersion"
+    },
+    "selectors": {
+      "description": "Endpoint selectors the collectors were armed for.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "unknown_records": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "window": {
+      "description": "`CLOCK_MONOTONIC` nanoseconds from the first collector armed to the\nfinal collection.",
+      "$ref": "#/$defs/CaptureWindow"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact",
+    "target",
+    "window",
+    "selectors",
+    "all_gpu_activity",
+    "peer_copies",
+    "dropped_records",
+    "unknown_records",
+    "capture_failed"
+  ],
+  "$defs": {
+    "CaptureWindow": {
+      "type": "object",
+      "properties": {
+        "end_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start_ns",
+        "end_ns"
+      ]
+    },
+    "ExportFormat": {
+      "type": "string",
+      "enum": [
+        "jsonl",
+        "chrome"
+      ]
+    },
+    "ManifestArtifact": {
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "format": {
+          "$ref": "#/$defs/ExportFormat"
+        },
+        "sha256": {
+          "description": "Lowercase hexadecimal SHA-256 of the artifact bytes.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "events",
+        "bytes",
+        "sha256"
+      ]
+    },
+    "ManifestVersion": {
+      "description": "Version of the capture manifest contract.",
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    }
+  }
+}

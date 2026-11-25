@@ -142,4 +142,5 @@ trap - EXIT
 chmod 0644 "${live_capture}" \
   "${live_measurement}" "${spec_measurement}" "${gpu_info}" \
   "${graph_validation}" "${graph_measurement}" "$1/graph-events.jsonl" \
+  "$1/graph-events.jsonl.manifest.json" \
   "${stream_order_measurement}"

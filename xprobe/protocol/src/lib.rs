@@ -8,6 +8,7 @@ mod error;
 mod event;
 mod export;
 mod graph;
+mod manifest;
 mod measurement;
 mod process;
 mod resolve;
@@ -41,14 +42,17 @@ pub use graph::{
     GraphTarget, GraphValidationIssue, MeasurementGraphResult, MeasurementGraphSpec,
     MeasurementGraphValidationResult,
 };
+pub use manifest::{
+    CaptureManifest, CaptureWindow, ManifestArtifact, ManifestVersion, manifest_path,
+};
 pub use measurement::{
     AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
-    AggregateInventory, AggregateInventoryResult, CaptureCompleteness, ClockQuality,
-    CollectionSummary, CorrelationConfidence, CorrelationSummary, CuptiCollectionSummary, Evidence,
-    EvidenceArtifact, EvidenceExemplar, EvidenceMode, LatencyRank, LatencyStatistics, MatchPolicy,
-    MatchedEventPair, Measurement, MeasurementMode, MeasurementResult, MeasurementSpec,
-    QualityIssue, QualitySeverity, QualityVerdict, ResultQuality, SampleSummary, SessionStatus,
-    TargetIdentity,
+    AggregateInventory, AggregateInventoryResult, CaptureCompleteness, CaptureCoverage,
+    ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary, CoverageSource,
+    CuptiCollectionSummary, Evidence, EvidenceArtifact, EvidenceExemplar, EvidenceMode,
+    LatencyRank, LatencyStatistics, MatchPolicy, MatchedEventPair, Measurement, MeasurementMode,
+    MeasurementResult, MeasurementSpec, QualityIssue, QualitySeverity, QualityVerdict,
+    ResultQuality, SampleSummary, SessionStatus, TargetIdentity,
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};

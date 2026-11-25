@@ -17,11 +17,14 @@ use xprobe_correlator::{MeasureOptions, finalize, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
     AggregateInventoryResult, ClockDomain, CpuSamplingValidationResult, ErrorCode, Event,
-    EvidenceArtifact, EvidenceMode, ExportFormat, MatchPolicy, MeasurementMode, MeasurementResult,
-    MeasurementSpec, SyscallAggregateValidationResult,
+    EvidenceArtifact, EvidenceMode, ExportFormat, ManifestArtifact, MatchPolicy, MeasurementMode,
+    MeasurementResult, MeasurementSpec, SyscallAggregateValidationResult,
 };
 
+use crate::coverage::CaptureRecord;
+
 mod args;
+mod coverage;
 mod dev;
 mod failure;
 mod graph;
@@ -611,7 +614,9 @@ fn finish_measurement(
     };
     if let Some(path) = path {
         let format = output.format.unwrap_or(ExportFormatArg::Jsonl);
-        if let Err(error) = export_measurement_capture(&execution.events, &path, format) {
+        if let Err(error) =
+            export_measurement_capture(&execution.events, &path, format, execution.capture.as_ref())
+        {
             return emit_command_failure(error, json);
         }
         result.evidence.artifact = Some(EvidenceArtifact {
@@ -641,7 +646,9 @@ fn finish_measurement_failure(
         Err(invalid) => return emit_command_failure(invalid, json),
     };
     let format = output.format.unwrap_or(ExportFormatArg::Jsonl);
-    if let Err(export) = export_measurement_capture(&events, &path, format) {
+    if let Err(export) =
+        export_measurement_capture(&events, &path, format, error.artifact_capture.as_deref())
+    {
         return emit_command_failure(
             export
                 .with_detail("original_error_code", error.code.to_string())
@@ -663,10 +670,13 @@ const fn protocol_export_format(format: ExportFormatArg) -> ExportFormat {
     }
 }
 
+/// Write the capture's events and, for Event JSONL, the coverage manifest
+/// that lets `measure --input` reuse what the collectors reported.
 fn export_measurement_capture(
     events: &[Event],
     path: &Path,
     format: ExportFormatArg,
+    capture: Option<&CaptureRecord>,
 ) -> Result<(), CommandFailure> {
     let artifact = match format {
         ExportFormatArg::Jsonl => events_to_jsonl(events),
@@ -679,7 +689,13 @@ fn export_measurement_capture(
             format!("failed to write {}: {error}", path.display()),
             false,
         )
-    })
+    })?;
+    let format = protocol_export_format(format);
+    coverage::write_manifest(
+        path,
+        capture.filter(|_| format == ExportFormat::Jsonl),
+        ManifestArtifact::of(format, events.len() as u64, artifact.as_bytes()),
+    )
 }
 
 const fn export_format_name(format: ExportFormatArg) -> &'static str {
@@ -694,6 +710,7 @@ fn measure_completed_inputs(
     options: &MeasureOptions,
 ) -> Result<MeasurementExecution, CommandFailure> {
     let mut captures = Vec::with_capacity(input.len());
+    let mut manifests = Vec::with_capacity(input.len());
     for path in input {
         let bytes = fs::read(path).map_err(|error| {
             CommandFailure::new(
@@ -702,20 +719,51 @@ fn measure_completed_inputs(
                 false,
             )
         })?;
-        let capture = completed::decode(&bytes, &options.session_id).map_err(|error| {
+        let mut capture = completed::decode(&bytes, &options.session_id).map_err(|error| {
             CommandFailure::new(
                 ErrorCode::TraceExportFailed,
                 format!("failed to decode {}: {error}", path.display()),
                 false,
             )
         })?;
+        let manifest = coverage::read_manifest(path, &bytes)?;
+        if let Some(manifest) = manifest.as_ref() {
+            if let Some(event) = capture
+                .events
+                .iter()
+                .find(|event| event.pid != manifest.target.pid)
+            {
+                return Err(CommandFailure::new(
+                    ErrorCode::TraceExportFailed,
+                    format!(
+                        "{} holds an event of PID {} but its manifest names PID {}",
+                        path.display(),
+                        event.pid,
+                        manifest.target.pid
+                    ),
+                    false,
+                ));
+            }
+            coverage::apply_manifest(&mut capture, manifest);
+        }
         captures.push(capture);
+        manifests.push(manifest);
     }
+    let coverage = coverage::offline_coverage(&manifests);
+    // A re-exported artifact keeps its input's coverage only when one input
+    // carried a manifest.
+    let record = match manifests.as_slice() {
+        [Some(manifest)] => Some(CaptureRecord::from_manifest(manifest)),
+        _ => None,
+    };
     let capture = completed::merge(captures, &options.session_id).map_err(|error| {
         CommandFailure::new(ErrorCode::TraceExportFailed, error.to_string(), false)
     })?;
-    reject_incomplete_capture(&capture, false, true)
-        .map_err(|error| error.with_artifact_events(capture.events.clone()))?;
+    reject_incomplete_capture(&capture, false, true).map_err(|error| {
+        error
+            .with_artifact_events(capture.events.clone())
+            .with_artifact_capture(record.clone())
+    })?;
     if capture.unknown_records != 0 {
         return Err(CommandFailure::new(
             ErrorCode::TraceExportFailed,
@@ -727,18 +775,23 @@ fn measure_completed_inputs(
         )
         .with_detail("unknown_records", capture.unknown_records)
         .with_hint("rebuild xprobe and the CUPTI Agent from the same release")
-        .with_artifact_events(capture.events));
+        .with_artifact_events(capture.events)
+        .with_artifact_capture(record));
     }
     let options = MeasureOptions {
         dropped_events: capture.dropped_records,
         ..options.clone()
     };
-    let mut result = measure(&capture.events, &options)
-        .map_err(|error| measurement_failure(&error, &options, &capture.events, true))?;
+    let mut result = measure(&capture.events, &options).map_err(|error| {
+        measurement_failure(&error, &options, &capture.events, true)
+            .with_artifact_capture(record.clone())
+    })?;
     apply_collection_summary(&mut result, &capture);
+    xprobe_correlator::apply_coverage(&mut result, coverage);
     Ok(MeasurementExecution {
         result,
         events: capture.events,
+        capture: record,
     })
 }
 
@@ -746,6 +799,8 @@ fn measure_completed_inputs(
 struct MeasurementExecution {
     result: MeasurementResult,
     events: Vec<Event>,
+    /// How the events were collected, when that is known.
+    capture: Option<CaptureRecord>,
 }
 
 const fn clock_domain_name(domain: &ClockDomain) -> &'static str {

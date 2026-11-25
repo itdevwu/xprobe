@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -82,6 +83,29 @@ def main() -> None:
         stream_order_result = json.loads(
             (pathlib.Path(output_dir) / "stream-order-measure.json").read_text()
         )
+        graph_artifact = pathlib.Path(output_dir) / "graph-events.jsonl"
+        graph_manifest = json.loads(
+            (pathlib.Path(output_dir) / "graph-events.jsonl.manifest.json").read_text()
+        )
+        graph_artifact_sha256 = hashlib.sha256(graph_artifact.read_bytes()).hexdigest()
+        offline_stream_order = subprocess.run(
+            [
+                xprobe,
+                "measure",
+                "--input",
+                graph_artifact,
+                "--from",
+                "cuda:kernel_end:name~xprobe_multisource_kernel.*",
+                "--to",
+                "cuda:kernel_start:name~xprobe_auxiliary_kernel.*",
+                "--match",
+                "stream-order",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
         trace_path = pathlib.Path(output_dir) / "trace.json"
         exported = subprocess.run(
@@ -145,6 +169,23 @@ def main() -> None:
     assert edges["kernel_to_auxiliary"]["correlation"]["confidence"] == "high"
     # Adjacent kernels on one stream, not the 50 ms between iterations.
     assert edges["kernel_to_auxiliary"]["measurement"]["latency_ns"]["max"] < 10_000_000
+    # The graph's artifact carries a manifest proving it holds every GPU
+    # activity, so offline stream order keeps its live confidence.
+    assert graph_manifest["schema_version"] == "1.0", graph_manifest
+    assert graph_manifest["artifact"]["events"] == len(graph_events)
+    assert graph_manifest["artifact"]["sha256"] == graph_artifact_sha256
+    assert graph_manifest["all_gpu_activity"] is True, graph_manifest
+    assert graph_manifest["peer_copies"] is True, graph_manifest
+    assert graph_manifest["dropped_records"] == 0
+    assert graph_manifest["window"]["start_ns"] < graph_manifest["window"]["end_ns"]
+    assert offline_stream_order.returncode == 0, offline_stream_order.stdout
+    offline = json.loads(offline_stream_order.stdout)
+    assert offline["collection"]["coverage"]["source"] == "manifest", offline
+    assert offline["correlation"]["confidence"] == "high", offline
+    assert graph_result["collection"]["coverage"] == {
+        "source": "live",
+        "all_gpu_activity": True,
+    }
     assert stream_order_result["ok"] is False, stream_order_result
     assert stream_order_result["error"]["code"] == "NO_MATCHED_SAMPLES", stream_order_result
     assert graph_result["artifact"]["events"] == len(graph_events)

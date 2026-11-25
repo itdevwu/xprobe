@@ -1,18 +1,19 @@
 use schemars::{Schema, schema_for};
 
 use crate::{
-    AggregateInventoryResult, CapabilityReport, CpuSampleInventoryResult, CpuSamplingSpec,
-    CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event, HostCaptureResult,
-    MeasurementGraphResult, MeasurementGraphSpec, MeasurementGraphValidationResult,
-    MeasurementResult, MeasurementSpec, ProcessReport, ResolvedProbe, SyscallAggregateResult,
-    SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, TriageResult,
-    ValidationResult,
+    AggregateInventoryResult, CapabilityReport, CaptureManifest, CpuSampleInventoryResult,
+    CpuSamplingSpec, CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event,
+    HostCaptureResult, MeasurementGraphResult, MeasurementGraphSpec,
+    MeasurementGraphValidationResult, MeasurementResult, MeasurementSpec, ProcessReport,
+    ResolvedProbe, SyscallAggregateResult, SyscallAggregateSpec, SyscallAggregateValidationResult,
+    TraceExportResult, TriageResult, ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 22] {
+pub fn generated_schemas() -> [(&'static str, Schema); 23] {
     [
         ("event.schema.json", schema_for!(Event)),
+        ("capture-manifest.schema.json", schema_for!(CaptureManifest)),
         ("error.schema.json", schema_for!(ErrorResponse)),
         ("measurement-spec.schema.json", schema_for!(MeasurementSpec)),
         (

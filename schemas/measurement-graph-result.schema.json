@@ -96,6 +96,24 @@
         "complete"
       ]
     },
+    "CaptureCoverage": {
+      "description": "What is known about which events the capture could have recorded.",
+      "type": "object",
+      "properties": {
+        "all_gpu_activity": {
+          "description": "Every kernel, copy, and memset on the target was recorded, so stream\norder can see each activity's true successor.",
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/CoverageSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "all_gpu_activity"
+      ]
+    },
     "ClockDomain": {
       "type": "string",
       "enum": [
@@ -130,6 +148,9 @@
         "completeness": {
           "$ref": "#/$defs/CaptureCompleteness"
         },
+        "coverage": {
+          "$ref": "#/$defs/CaptureCoverage"
+        },
         "cuda_events": {
           "type": "integer",
           "format": "uint64",
@@ -159,6 +180,7 @@
       "additionalProperties": false,
       "required": [
         "completeness",
+        "coverage",
         "host_events",
         "cuda_events",
         "dropped_events"
@@ -192,6 +214,30 @@
         "method",
         "confidence",
         "score"
+      ]
+    },
+    "CoverageSource": {
+      "oneOf": [
+        {
+          "description": "Collected live by this command.",
+          "type": "string",
+          "const": "live"
+        },
+        {
+          "description": "Read from artifacts whose capture manifests match them.",
+          "type": "string",
+          "const": "manifest"
+        },
+        {
+          "description": "Read from one artifact without a manifest.",
+          "type": "string",
+          "const": "unverified"
+        },
+        {
+          "description": "Merged from artifacts without manifests that place them in one window\nof one target.",
+          "type": "string",
+          "const": "unverified_merge"
+        }
       ]
     },
     "CudaEvent": {

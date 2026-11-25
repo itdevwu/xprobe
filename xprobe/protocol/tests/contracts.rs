@@ -457,6 +457,7 @@ fn measurement_result_contract_round_trips() {
         },
         "collection": {
             "completeness": "complete",
+            "coverage": {"source": "live", "all_gpu_activity": false},
             "host_events": 1,
             "cuda_events": 1,
             "dropped_events": 0,
@@ -492,7 +493,7 @@ fn measurement_results_require_schema_three() {
             "quality": {"verdict": "good", "issues": []},
             "correlation": {"method": "exact", "confidence": "exact", "score": 1.0},
             "clock": {"alignment": "host_monotonic", "estimated_error_ns": 0},
-            "collection": {"completeness": "complete", "host_events": 2, "cuda_events": 0, "dropped_events": 0, "cupti": null},
+            "collection": {"completeness": "complete", "coverage": {"source": "unverified", "all_gpu_activity": false}, "host_events": 2, "cuda_events": 0, "dropped_events": 0, "cupti": null},
             "evidence": {"mode": "full", "exemplars": [], "pairs": [], "artifact": null},
             "warnings": []
         }))

@@ -1,4 +1,5 @@
 use crate::clock_domain_name;
+use crate::coverage::CaptureRecord;
 use crate::live::match_policy_name;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -18,6 +19,8 @@ pub(crate) struct CommandFailure {
     pub(crate) details: BTreeMap<String, serde_json::Value>,
     pub(crate) hints: Vec<String>,
     pub(crate) artifact_events: Option<Vec<Event>>,
+    /// How the preserved events were collected, written as their manifest.
+    pub(crate) artifact_capture: Option<Box<CaptureRecord>>,
 }
 
 impl CommandFailure {
@@ -29,6 +32,7 @@ impl CommandFailure {
             details: BTreeMap::new(),
             hints: Vec::new(),
             artifact_events: None,
+            artifact_capture: None,
         }
     }
 
@@ -48,6 +52,11 @@ impl CommandFailure {
 
     pub(crate) fn with_artifact_events(mut self, events: Vec<Event>) -> Self {
         self.artifact_events = Some(events);
+        self
+    }
+
+    pub(crate) fn with_artifact_capture(mut self, capture: Option<CaptureRecord>) -> Self {
+        self.artifact_capture = capture.map(Box::new);
         self
     }
 }

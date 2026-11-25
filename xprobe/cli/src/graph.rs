@@ -17,11 +17,13 @@ use xprobe_protocol::{
 };
 
 use crate::{
-    EvidenceOutput, ExportFormatArg, export_measurement_capture,
+    EvidenceOutput, ExportFormatArg,
+    coverage::CaptureRecord,
+    export_measurement_capture,
     failure::{CommandFailure, emit_command_failure, measurement_failure},
     finish_measurement_failure,
     live::{
-        LiveCollection, LiveEvaluator, LiveMeasureRequest, LiveOutcome, LivePlan,
+        LiveCapture, LiveCollection, LiveEvaluator, LiveMeasureRequest, LiveOutcome, LivePlan,
         apply_collection_summary, checked_live_capture, collect_live, validate_live_limits,
     },
     protocol_export_format,
@@ -120,6 +122,7 @@ pub(crate) struct GraphExecution {
     events: Vec<Event>,
     /// The shared capture's summary; every edge reports the same one.
     collection: CollectionSummary,
+    capture: CaptureRecord,
 }
 
 impl LiveOutcome for GraphExecution {
@@ -148,7 +151,7 @@ impl LiveEvaluator for GraphEdges {
         collection: &LiveCollection,
         require_complete: bool,
     ) -> Result<GraphExecution, CommandFailure> {
-        let capture = checked_live_capture(
+        let LiveCapture { capture, record } = checked_live_capture(
             host_captures,
             collection,
             &self.session_id,
@@ -157,7 +160,7 @@ impl LiveEvaluator for GraphEdges {
         let results = self
             .edges
             .iter()
-            .map(|edge| measure_edge(edge, &capture, require_complete))
+            .map(|edge| measure_edge(edge, &capture, &record, require_complete))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(GraphExecution {
             session_id: self.session_id.clone(),
@@ -166,6 +169,7 @@ impl LiveEvaluator for GraphEdges {
             status: SessionStatus::Completed,
             warnings: Vec::new(),
             events: capture.events,
+            capture: record,
         })
     }
 
@@ -185,6 +189,7 @@ impl LiveEvaluator for GraphEdges {
 fn measure_edge(
     edge: &EdgePlan,
     capture: &CompletedCapture,
+    record: &CaptureRecord,
     require_complete: bool,
 ) -> Result<MeasurementResult, CommandFailure> {
     let options = MeasureOptions {
@@ -193,11 +198,13 @@ fn measure_edge(
     };
     let mut result = measure(&capture.events, &options).map_err(|error| {
         let mut failure = measurement_failure(&error, &options, &capture.events, require_complete)
-            .with_detail("edge", edge.name.clone());
+            .with_detail("edge", edge.name.clone())
+            .with_artifact_capture(Some(record.clone()));
         failure.message = format!("edge {:?}: {}", edge.name, failure.message);
         failure
     })?;
     apply_collection_summary(&mut result, capture);
+    xprobe_correlator::apply_coverage(&mut result, record.live_coverage());
     Ok(result)
 }
 
@@ -329,7 +336,9 @@ fn finish_graph(
     let mut artifact = None;
     if let Some(path) = path {
         let format = output.format.unwrap_or(ExportFormatArg::Jsonl);
-        if let Err(error) = export_measurement_capture(&execution.events, &path, format) {
+        if let Err(error) =
+            export_measurement_capture(&execution.events, &path, format, Some(&execution.capture))
+        {
             return emit_command_failure(error, json);
         }
         artifact = Some(EvidenceArtifact {

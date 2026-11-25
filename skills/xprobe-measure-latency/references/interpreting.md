@@ -29,11 +29,15 @@ Start from `quality.verdict`:
 | `CLOCK_ERROR_LARGE` | caution | Clock error ≥ 10% of p50 |
 | `CLOCK_ERROR_UNAVAILABLE` | info | CUPTI gave no interpolation bound |
 | `FEW_SAMPLES` | info | Tail ranks rest on < 100 pairs |
+| `CAPTURE_COVERAGE_UNKNOWN` | caution | Inputs merged without manifests may not share one window |
+| `STREAM_COVERAGE_UNVERIFIED` | caution | Stream order without proof every GPU activity was recorded |
 
 Drops, no matched pairs, target changes, incomplete collection, and clock
 misalignment are command errors, never results. Inspect the rank exemplars for
 selector scope, thread or stream identity, and correlation IDs; use
 `--evidence full` or the artifact when a claim depends on individual pairs.
+Keep an artifact's `.manifest.json` beside it: offline correlation uses it to
+restore losses and coverage, and rejects it once the events are edited.
 
 `completed` means the samples or duration bound was reached; `timed_out` is
 partial. `duration-ms` measures from the first selected event and starts after

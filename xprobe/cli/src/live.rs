@@ -1,4 +1,5 @@
 use crate::MeasurementExecution;
+use crate::coverage::CaptureRecord;
 use crate::failure::CommandFailure;
 use crate::failure::measurement_failure;
 use std::collections::BTreeMap;
@@ -184,6 +185,17 @@ pub(crate) struct LiveCollection {
     pub(crate) agent_major: Option<u32>,
     pub(crate) agent_path: Option<PathBuf>,
     pub(crate) cupti_path: Option<PathBuf>,
+    pub(crate) capture_plan: CapturePlan,
+}
+
+/// What the collectors were armed to record, kept for the capture manifest.
+pub(crate) struct CapturePlan {
+    /// `CLOCK_MONOTONIC` time just before the first collector was armed.
+    pub(crate) start_ns: u64,
+    /// Endpoint selectors the collectors were armed for.
+    pub(crate) selectors: Vec<String>,
+    /// CUPTI recorded every GPU activity for stream order.
+    pub(crate) stream_order: bool,
 }
 
 pub(crate) fn collect_live_measurement(
@@ -464,6 +476,7 @@ pub(crate) fn start_live_collection(
     } = plan;
 
     let activation = prepare_cupti_activation(&report, &requirements, request)?;
+    let capture_start_ns = monotonic_now()?;
     let arm_config = cupti_arm_config(
         &endpoints,
         &requirements,
@@ -505,6 +518,10 @@ pub(crate) fn start_live_collection(
         .and_then(|duration| started.checked_add(duration));
     let collectors = start_host_collectors(&report, &endpoints, request)?;
     let host_captures = collectors.handles.is_empty().then(Vec::new);
+    let selectors = endpoints
+        .iter()
+        .map(|endpoint| endpoint.selector.clone())
+        .collect();
 
     Ok(LiveCollection {
         report,
@@ -525,6 +542,22 @@ pub(crate) fn start_live_collection(
         agent_major: activation.major,
         agent_path: activation.agent_path,
         cupti_path: activation.cupti_path,
+        capture_plan: CapturePlan {
+            start_ns: capture_start_ns,
+            selectors,
+            stream_order,
+        },
+    })
+}
+
+/// `CLOCK_MONOTONIC` now, the clock capture windows are recorded in.
+pub(crate) fn monotonic_now() -> Result<u64, CommandFailure> {
+    xprobe_core::clock::monotonic_ns().map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::Internal,
+            format!("failed to read CLOCK_MONOTONIC: {error}"),
+            false,
+        )
     })
 }
 
@@ -1382,7 +1415,7 @@ pub(crate) fn measure_live_capture(
     options: &MeasureOptions,
     require_complete: bool,
 ) -> Result<MeasurementExecution, CommandFailure> {
-    let capture = checked_live_capture(
+    let LiveCapture { capture, record } = checked_live_capture(
         host_captures,
         collection,
         &options.session_id,
@@ -1394,25 +1427,38 @@ pub(crate) fn measure_live_capture(
     };
     let mut result = measure(&capture.events, &options).map_err(|error| {
         measurement_failure(&error, &options, &capture.events, require_complete)
+            .with_artifact_capture(Some(record.clone()))
     })?;
     apply_collection_summary(&mut result, &capture);
+    xprobe_correlator::apply_coverage(&mut result, record.live_coverage());
     Ok(MeasurementExecution {
         result,
         events: capture.events,
+        capture: Some(record),
     })
 }
 
+/// A merged live capture and the record of how it was collected.
+pub(crate) struct LiveCapture {
+    pub(crate) capture: completed::CompletedCapture,
+    pub(crate) record: CaptureRecord,
+}
+
 /// Merge the live sources into one capture and reject incomplete or unknown
-/// records, preserving the events as an artifact on failure.
+/// records, preserving the events and their coverage as an artifact on failure.
 pub(crate) fn checked_live_capture(
     host_captures: &[HostCaptureResult],
     collection: &LiveCollection,
     session_id: &str,
     require_complete: bool,
-) -> Result<completed::CompletedCapture, CommandFailure> {
+) -> Result<LiveCapture, CommandFailure> {
     let capture = completed_live_capture(host_captures, collection, session_id)?;
-    reject_incomplete_capture(&capture, true, require_complete)
-        .map_err(|error| error.with_artifact_events(capture.events.clone()))?;
+    let record = CaptureRecord::live(collection, &capture)?;
+    reject_incomplete_capture(&capture, true, require_complete).map_err(|error| {
+        error
+            .with_artifact_events(capture.events.clone())
+            .with_artifact_capture(Some(record.clone()))
+    })?;
     if capture.unknown_records != 0 {
         return Err(CommandFailure::new(
             ErrorCode::TraceExportFailed,
@@ -1424,9 +1470,10 @@ pub(crate) fn checked_live_capture(
         )
         .with_detail("unknown_records", capture.unknown_records)
         .with_hint("rebuild xprobe and the CUPTI Agent from the same release")
-        .with_artifact_events(capture.events));
+        .with_artifact_events(capture.events)
+        .with_artifact_capture(Some(record)));
     }
-    Ok(capture)
+    Ok(LiveCapture { capture, record })
 }
 
 pub(crate) fn completed_live_capture(

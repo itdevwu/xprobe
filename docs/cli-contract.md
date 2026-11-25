@@ -358,6 +358,14 @@ metric replay, or kernel performance-counter passes.
 Completed inputs may be CUPTI ABI binary, bounded host-capture JSON, or Event
 JSONL. Repeated inputs are merged after target-PID checks. Unknown records,
 mixed targets, malformed captures, and excessive event counts fail explicitly.
+An input's capture manifest, `<input>.manifest.json`, restores what its live
+capture recorded: drops, record limits, and collector failures fail the
+measurement as they did live, and its coverage sets `collection.coverage`. A
+manifest whose size or SHA-256 no longer matches its input is an error. Without
+manifests, coverage is `unverified`, or `unverified_merge` for several inputs,
+which is a caution because their events may not share one window of one
+target; stream order without a capture of every GPU activity is heuristic and
+cautioned.
 
 Results conform to `schemas/measurement-result.schema.json` (schema `3.0`) and
 contain:
@@ -380,7 +388,12 @@ Live captures always write the complete bounded capture with mode `0600`:
 directory under the temporary directory. `measure --input` with the same
 selectors re-correlates it deterministically. Completed `--input` measurements
 write an artifact only with `--events-out`. The default format is JSONL; `--format chrome` writes Chrome Trace Event
-Format. Once collection has produced a capture, correlation, clock, drop, or
+Format. Beside an Event JSONL artifact, xprobe writes its capture manifest
+(`schemas/capture-manifest.schema.json`, schema `1.0`): target identity, the
+`CLOCK_MONOTONIC` capture window, armed selectors, whether every GPU activity
+and peer copy was recorded, losses, and the artifact's size and SHA-256. A
+re-exported input keeps its manifest only when exactly one input had one; an
+artifact without known coverage removes a stale manifest at its path. Once collection has produced a capture, correlation, clock, drop, or
 capacity failures still write it and identify its path, format, and event count
 in the JSON error. Artifact failure returns `TRACE_EXPORT_FAILED` and preserves
 the original measurement error code in `details`.

@@ -1,8 +1,9 @@
 //! Evidence summarization and deterministic result-quality assessment.
 
 use xprobe_protocol::{
-    CorrelationConfidence, Evidence, EvidenceExemplar, EvidenceMode, LatencyRank, MatchedEventPair,
-    MeasurementResult, QualityIssue, QualitySeverity, QualityVerdict, ResultQuality, SessionStatus,
+    CaptureCoverage, CorrelationConfidence, CoverageSource, Evidence, EvidenceExemplar,
+    EvidenceMode, LatencyRank, MatchedEventPair, MeasurementResult, QualityIssue, QualitySeverity,
+    QualityVerdict, ResultQuality, SessionStatus,
 };
 
 /// Clock error at or above this share of the p50 latency is a caution.
@@ -59,11 +60,41 @@ pub(crate) fn exemplars(pairs: &[MatchedEventPair]) -> Vec<EvidenceExemplar> {
 ///
 /// Call this after every caller-side change to status, collection, or
 /// warnings so the verdict describes the emitted result.
+/// Record what the capture covered. Stream order without a capture of every
+/// activity cannot prove adjacency, so its pairs become heuristic.
+pub fn apply_coverage(result: &mut MeasurementResult, coverage: CaptureCoverage) {
+    result.collection.coverage = coverage;
+    if result.correlation.method == STREAM_ORDER_METHOD && !coverage.all_gpu_activity {
+        result.correlation.confidence = CorrelationConfidence::Heuristic;
+    }
+    result.quality = assess(result);
+}
+
 pub fn finalize(result: &mut MeasurementResult, mode: EvidenceMode) {
     result.quality = assess(result);
     result.evidence.mode = mode;
     if mode == EvidenceMode::Summary {
         result.evidence.pairs = None;
+    }
+}
+
+/// Method name of stream-order correlation, whose successors need every
+/// activity on the stream.
+pub(crate) const STREAM_ORDER_METHOD: &str = "cuda_stream_order";
+
+fn coverage_issues(result: &MeasurementResult, issues: &mut Vec<QualityIssue>) {
+    let coverage = result.collection.coverage;
+    if coverage.source == CoverageSource::UnverifiedMerge {
+        issues.push(caution(
+            "CAPTURE_COVERAGE_UNKNOWN",
+            "inputs were merged without capture manifests placing them in one window of one target; pairs may span gaps between them".to_owned(),
+        ));
+    }
+    if result.correlation.method == STREAM_ORDER_METHOD && !coverage.all_gpu_activity {
+        issues.push(caution(
+            "STREAM_COVERAGE_UNVERIFIED",
+            "nothing shows the capture recorded every activity on each stream; an unrecorded activity between two pairs would hide inside the gap".to_owned(),
+        ));
     }
 }
 
@@ -95,6 +126,7 @@ pub fn assess(result: &MeasurementResult) -> ResultQuality {
             "the correlation method cannot uniquely pair events".to_owned(),
         )),
     }
+    coverage_issues(result, &mut issues);
     if samples.ambiguous != 0 {
         issues.push(caution(
             "AMBIGUOUS_PAIRS",
@@ -253,6 +285,10 @@ mod tests {
             },
             collection: CollectionSummary {
                 completeness: CaptureCompleteness::Complete,
+                coverage: xprobe_protocol::CaptureCoverage {
+                    source: xprobe_protocol::CoverageSource::Live,
+                    all_gpu_activity: false,
+                },
                 host_events: 0,
                 cuda_events: 0,
                 dropped_events: 0,
