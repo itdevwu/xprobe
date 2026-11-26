@@ -72,6 +72,7 @@
   ],
   "$defs": {
     "CaptureWindow": {
+      "description": "`CLOCK_MONOTONIC` interval the capture's coverage holds for: from the\ncollector's ARM acknowledgment until after its final read. Activity that\nwas already running at ARM may begin before `start_ns`.",
       "type": "object",
       "properties": {
         "end_ns": {

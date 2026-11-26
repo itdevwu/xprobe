@@ -650,6 +650,12 @@
           "format": "uint64",
           "minimum": 0
         },
+        "revoked_windows": {
+          "description": "Windows discarded because their firing span no longer crossed the\nthreshold once every record had arrived.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "ring_capacity": {
           "description": "Agent ring and CLI retention bound, in records.",
           "type": "integer",
@@ -663,7 +669,8 @@
         "observed_records",
         "overwritten_records",
         "dropped_records",
-        "lost_windows"
+        "lost_windows",
+        "revoked_windows"
       ]
     },
     "TriggerCondition": {

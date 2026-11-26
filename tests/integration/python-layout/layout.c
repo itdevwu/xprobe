@@ -18,10 +18,12 @@ int main(void) {
 #if PY_MINOR_VERSION <= 11
     P("runtime_gil_last_holder", offsetof(_PyRuntimeState, ceval.gil.last_holder));
     P("runtime_gil_locked", offsetof(_PyRuntimeState, ceval.gil.locked));
+    P("runtime_gil_switch_number", offsetof(_PyRuntimeState, ceval.gil.switch_number));
 #else
     P("gil_locked", offsetof(struct _gil_runtime_state, locked));
     P("interp_ceval_gil", offsetof(PyInterpreterState, ceval.gil));
     P("gil_last_holder", offsetof(struct _gil_runtime_state, last_holder));
+    P("gil_switch_number", offsetof(struct _gil_runtime_state, switch_number));
 #endif
 #if PY_MINOR_VERSION <= 10
     P("interp_threads_head", offsetof(PyInterpreterState, tstate_head));

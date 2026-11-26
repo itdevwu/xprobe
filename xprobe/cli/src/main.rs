@@ -820,7 +820,8 @@ fn measure_completed_inputs(
 ) -> Result<MeasurementExecution, CommandFailure> {
     let mut captures = Vec::with_capacity(input.len());
     let mut manifests = Vec::with_capacity(input.len());
-    let mut digests = std::collections::BTreeSet::new();
+    let mut binaries = std::collections::BTreeSet::new();
+    let mut identities = std::collections::BTreeSet::new();
     for path in input {
         let bytes = fs::read(path).map_err(|error| {
             CommandFailure::new(
@@ -841,12 +842,25 @@ fn measure_completed_inputs(
             coverage::check_manifest(path, manifest, &capture.events)?;
             coverage::apply_manifest(&mut capture, manifest);
         }
-        // Merging an input with itself would double its events.
-        let digest = xprobe_exporter::artifact_sha256(&bytes);
-        if !digests.insert(digest) {
+        // Merging events twice would double them. Event JSON keeps each
+        // event's original identity; a raw CUPTI dump has none, so the
+        // bytes identify it, and only when there is more than one input.
+        let repeated = if capture.cupti.is_some() {
+            input.len() > 1 && !binaries.insert(xprobe_exporter::artifact_sha256(&bytes))
+        } else {
+            let own = capture
+                .events
+                .iter()
+                .map(|event| (event.session_id.clone(), event.event_id.clone()))
+                .collect::<std::collections::BTreeSet<_>>();
+            let repeated = !own.is_disjoint(&identities);
+            identities.extend(own);
+            repeated
+        };
+        if repeated {
             return Err(CommandFailure::new(
                 ErrorCode::TraceExportFailed,
-                format!("{} is given more than once", path.display()),
+                format!("{} repeats events given in another input", path.display()),
                 true,
             ));
         }

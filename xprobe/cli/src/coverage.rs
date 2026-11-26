@@ -232,6 +232,18 @@ pub(crate) fn check_manifest(
     if manifest.window.start_ns > manifest.window.end_ns {
         return failure("has a window that ends before it starts".to_owned());
     }
+    // Activity running at ARM may begin before the window, but nothing on
+    // the window's clock can happen after the capture's final read.
+    let late = events.iter().find(|event| {
+        event.clock_domain != xprobe_protocol::ClockDomain::Cupti
+            && event.timestamp_ns > manifest.window.end_ns
+    });
+    if let Some(event) = late {
+        return failure(format!(
+            "has a window ending at {} ns but holds an event at {} ns",
+            manifest.window.end_ns, event.timestamp_ns
+        ));
+    }
     let foreign = events.iter().find(|event| {
         event.pid != manifest.target.pid
             || event

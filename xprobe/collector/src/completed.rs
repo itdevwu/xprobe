@@ -31,7 +31,16 @@ pub enum CompletedCaptureError {
     HostCaptureFollowedByAnotherDocument,
     HostCaptureInsideEventStream,
     CounterOverflow,
-    TargetMismatch { expected: u32, actual: u32 },
+    TargetMismatch {
+        expected: u32,
+        actual: u32,
+    },
+    /// One PID names two process instances, so the PID was reused.
+    ProcessInstanceMismatch {
+        pid: u32,
+        expected: u64,
+        actual: u64,
+    },
 }
 
 impl fmt::Display for CompletedCaptureError {
@@ -51,6 +60,14 @@ impl fmt::Display for CompletedCaptureError {
                 formatter,
                 "completed capture mixes target PIDs {expected} and {actual}"
             ),
+            Self::ProcessInstanceMismatch {
+                pid,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "completed capture mixes two processes with PID {pid}, started at {expected} and {actual}"
+            ),
         }
     }
 }
@@ -64,7 +81,8 @@ impl Error for CompletedCaptureError {
             | Self::HostCaptureFollowedByAnotherDocument
             | Self::HostCaptureInsideEventStream
             | Self::CounterOverflow
-            | Self::TargetMismatch { .. } => None,
+            | Self::TargetMismatch { .. }
+            | Self::ProcessInstanceMismatch { .. } => None,
         }
     }
 }
@@ -174,6 +192,7 @@ pub fn merge(
         events: Vec::new(),
     };
     let mut target_pid = None;
+    let mut started = None;
     for capture in captures {
         merged.dropped_records = merged
             .dropped_records
@@ -216,6 +235,18 @@ pub fn merge(
                 }
             } else {
                 target_pid = Some(event.pid);
+            }
+            if let Some(actual) = event.process_start_time {
+                match started {
+                    Some(expected) if expected != actual => {
+                        return Err(CompletedCaptureError::ProcessInstanceMismatch {
+                            pid: event.pid,
+                            expected,
+                            actual,
+                        });
+                    }
+                    _ => started = Some(actual),
+                }
             }
             merged.events.push(event);
         }
@@ -262,6 +293,36 @@ mod tests {
             nvtx: None,
             attributes: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn merging_two_processes_behind_one_pid_fails() {
+        let capture = |started: u64| CompletedCapture {
+            dropped_records: 0,
+            unknown_records: 0,
+            record_limit_reached: None,
+            capture_failed: false,
+            cupti: None,
+            events: vec![Event {
+                process_start_time: Some(started),
+                ..event(12, started)
+            }],
+        };
+        assert!(matches!(
+            merge(vec![capture(10), capture(11)], "merged"),
+            Err(CompletedCaptureError::ProcessInstanceMismatch {
+                pid: 12,
+                expected: 10,
+                actual: 11
+            })
+        ));
+        assert_eq!(
+            merge(vec![capture(10), capture(10)], "merged")
+                .unwrap()
+                .events
+                .len(),
+            2
+        );
     }
 
     #[test]

@@ -137,6 +137,7 @@ def pair_activities(events: list[dict]) -> tuple[list[dict], int, int]:
                 "kind": kind,
                 "name": activity_name(kind, cuda),
                 "pid": start.get("pid"),
+                "clock_domain": start["clock_domain"],
                 "device_id": cuda.get("device_id"),
                 "context_id": cuda.get("context_id"),
                 "stream_id": cuda.get("stream_id"),
@@ -280,17 +281,26 @@ def top(entries: list[dict], key: str, limit: int) -> list[dict]:
 
 
 def device_idle_gaps(intervals: list[dict], limit: int) -> list[dict]:
-    """Largest spans with no captured activity on a device: GPU bubbles."""
+    """Largest spans with no captured activity on a device: GPU bubbles.
+
+    Activity is compared only within one process and clock domain."""
     grouped = collections.defaultdict(list)
     for interval in intervals:
-        grouped[(interval["pid"], interval["device_id"])].append(interval)
+        grouped[(interval["pid"], interval["device_id"], interval["clock_domain"])].append(interval)
     gaps = []
-    for (pid, device), group in grouped.items():
+    for (pid, device, clock), group in grouped.items():
         ordered = sorted(group, key=lambda item: (item["start_ns"], item["end_ns"]))
         busy_until = ordered[0]
         for current in ordered[1:]:
             if current["start_ns"] > busy_until["end_ns"]:
-                gaps.append({"pid": pid, "device_id": device, **gap_entry(busy_until, current)})
+                gaps.append(
+                    {
+                        "pid": pid,
+                        "device_id": device,
+                        "clock_domain": clock,
+                        **gap_entry(busy_until, current),
+                    }
+                )
             if current["end_ns"] > busy_until["end_ns"]:
                 busy_until = current
     return top(gaps, "gap_ns", limit)
@@ -304,11 +314,12 @@ def stream_report(intervals: list[dict], top_gaps: int) -> list[dict]:
             interval["device_id"],
             interval["context_id"],
             interval["stream_id"],
+            interval["clock_domain"],
         )
         grouped[key].append(interval)
 
     reports = []
-    for (pid, device, context, stream), group in grouped.items():
+    for (pid, device, context, stream, clock), group in grouped.items():
         kernels = sorted(
             (item for item in group if item["kind"] == "kernel"),
             key=lambda item: (item["start_ns"], item["end_ns"]),
@@ -329,6 +340,7 @@ def stream_report(intervals: list[dict], top_gaps: int) -> list[dict]:
                 "device_id": device,
                 "context_id": context,
                 "stream_id": stream,
+                "clock_domain": clock,
                 "event_counts": dict(
                     sorted(collections.Counter(item["kind"] for item in group).items())
                 ),
@@ -347,6 +359,7 @@ def stream_report(intervals: list[dict], top_gaps: int) -> list[dict]:
             item["device_id"] if item["device_id"] is not None else -1,
             item["context_id"] if item["context_id"] is not None else -1,
             item["stream_id"] if item["stream_id"] is not None else -1,
+            item["clock_domain"],
         )
     )
     return reports
@@ -503,6 +516,7 @@ def measurement_outliers(path: pathlib.Path, limit: int) -> dict:
                     "end_ns": end["timestamp_ns"],
                     "start_event": start.get("event_id"),
                     "end_event": end.get("event_id"),
+                    "pid": start.get("pid"),
                     "tid": start.get("tid"),
                     "stream_id": (start.get("cuda") or {}).get("stream_id"),
                     "correlation_id": (start.get("cuda") or {}).get("correlation_id"),
@@ -578,14 +592,21 @@ def analyze(
         if python_samples is not None:
             window_report["python"] = None
             # Python samples use CLOCK_MONOTONIC; only host-clock slices line
-            # up with them. The slice's own events, or the target pair, are
-            # the evidence; an empty window falls back to the whole trace.
+            # up with them. A gap or outlier carries its own clock and
+            # process; a time range uses the events inside it, or the whole
+            # trace when it holds none.
             evidence = [
                 event for event in events if start_ns <= event["timestamp_ns"] <= end_ns
-            ]
-            domains = {event.get("clock_domain") for event in evidence or events}
-            if kind == "outlier":
-                domains |= set(target["clock_domains"])
+            ] or events
+            if kind == "gap":
+                domains = {target["clock_domain"]}
+                pids = {target["pid"]}
+            elif kind == "outlier":
+                domains = set(target["clock_domains"])
+                pids = {target["pid"]}
+            else:
+                domains = {event.get("clock_domain") for event in evidence}
+                pids = {event.get("pid") for event in evidence}
             if not domains or not domains <= HOST_CLOCKS:
                 warnings.append(
                     {
@@ -594,14 +615,13 @@ def analyze(
                     }
                 )
             else:
-                pids = {event.get("pid") for event in events}
                 samples = load_python_samples(python_samples)
                 matching = [sample for sample in samples if sample.get("pid") in pids]
                 if len(matching) != len(samples):
                     warnings.append(
                         {
                             "code": "PYTHON_SAMPLES_OTHER_PROCESS",
-                            "message": f"{len(samples) - len(matching)} Python samples come from processes absent from the trace and were left out",
+                            "message": f"{len(samples) - len(matching)} Python samples come from processes other than the slice's and were left out",
                         }
                     )
                 window_report["python"] = python_slice(matching, start_ns, end_ns)
@@ -613,7 +633,7 @@ def analyze(
             }
         )
     return {
-        "analysis_version": "1.2",
+        "analysis_version": "1.3",
         "input": str(path),
         "events": {
             "total": len(events),

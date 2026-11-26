@@ -101,8 +101,11 @@ Aggregate records contain a bounded group key and exact integer counters, not
 event evidence or a latency distribution; they therefore do not report
 percentiles or correlation confidence.
 Activity timestamps are normalized to `CLOCK_MONOTONIC` through the CUPTI
-timestamp callback or CUDA 12 clock calibration. If alignment cannot be
-established, GPU durations remain usable in the CUPTI domain but host/GPU
+timestamp callback or CUDA 12 clock calibration. The Agent marks records as
+host-clock only after an activity in the capture ended between ARM and the
+check time, or a kernel started no earlier than its launch call; a start alone
+may predate ARM and proves nothing. If alignment cannot be established, GPU
+durations remain usable in the CUPTI domain but host/GPU
 subtraction fails with `CLOCK_ALIGNMENT_FAILED`. CUPTI provides no numeric
 interpolation error bound, so normalized results emit
 `CLOCK_ERROR_UNAVAILABLE`.

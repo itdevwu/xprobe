@@ -288,7 +288,9 @@ version and checked against `_Py_DebugOffsets` on 3.13 and newer; a
 free-threaded or differently laid out build returns
 `UNSUPPORTED_PYTHON_VERSION`. A read is discarded and counted in
 `inconsistent_reads` when the innermost frame, a frame's mapping, a code
-object, or the GIL holder changes while it is read; a change deeper in the
+object, the GIL holder, or the OS thread behind the thread state changes
+while it is read, including a GIL handoff that returns to the same thread; a
+change deeper in the
 stack that leaves those intact is not detected. Unreadable native thread
 states are counted in `native_unreadable`. Frames name the function and
 the line where it starts, not the line that was running. For threads that are
@@ -384,12 +386,15 @@ timeline boundary collection only. It does not enable CUPTI Range Profiling,
 metric replay, or kernel performance-counter passes.
 
 Completed inputs may be CUPTI ABI binary, bounded host-capture JSON, or Event
-JSONL. Repeated inputs are merged after target-PID checks. Unknown records,
-mixed targets, malformed captures, and excessive event counts fail explicitly.
-An input's capture manifest, `<input>.manifest.json`, restores what its live
+JSONL. Repeated inputs are merged after target checks: one PID naming two
+process start times is a mixed target. An input that repeats another's events,
+by Event session and ID or, for CUPTI binaries, by content, is an error.
+Unknown records, mixed targets, malformed captures, and excessive event counts
+fail explicitly. An input's capture manifest, `<input>.manifest.json`, restores what its live
 capture recorded: drops, record limits, and collector failures fail the
 measurement as they did live, and its coverage sets `collection.coverage`. A
-manifest whose size or SHA-256 no longer matches its input is an error. Without
+manifest whose size or SHA-256 no longer matches its input, or whose window
+ends before a host-clock event, is an error. Without
 manifests, coverage is `unverified`, or `unverified_merge` for several inputs
 (a result without `collection.coverage`, written before xprobe recorded it,
 reads as `unverified`),
@@ -445,18 +450,20 @@ triggers under `stream-order`, record every GPU activity.
 
 The CUPTI Agent keeps the newest `--max-events` records in a ring, and xprobe
 evaluates every new span on each snapshot with the same pairing rules as
-`measure`. When a span crosses the threshold, xprobe waits for the post-roll,
-writes the events from `--pre-ms` before the span to `--post-ms` after it as
-`window-N.events.jsonl` with its capture manifest, and continues until
-`--windows` windows (default one) are written; each window starts after the
-previous one ends. `--events-out` names the directory for the windows.
+`measure`. When a span that began after ARM crosses the threshold, xprobe
+waits for the post-roll and continues until `--windows` windows (default one)
+have fired; each window starts after the previous one ends. Once the capture
+stops and its last records are read, xprobe writes the events from `--pre-ms`
+before each span to `--post-ms` after it, clipped to the captured interval, as
+`window-N.events.jsonl` with its capture manifest. `--events-out` names the directory for the windows.
 Results conform to `schemas/trigger-result.schema.json` (schema `3.0`): the
 condition, every span evaluated and the longest seen, each window's firing
 span and longest spans, and ring capacity, overwrites, and drops.
 
 Records overwritten before a snapshot read them or dropped by CUPTI invalidate
 any window they may overlap; such windows are counted in `lost_windows` and
-never written. Without a written window, a timeout returns
+never written. A window whose firing span no longer crosses the threshold once
+every record arrived is counted in `revoked_windows` and not written either. Without a written window, a timeout returns
 `TRIGGER_NOT_OBSERVED` with the longest span seen as the observed bound, and
 fired windows that all lost records return `EVENTS_DROPPED`.
 

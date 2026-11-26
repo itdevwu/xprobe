@@ -7,7 +7,7 @@
 //! than reported. The GIL holder is sampled at a high rate, because only it
 //! runs Python code; every thread is sampled at a lower rate.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -127,7 +127,7 @@ fn transfer(result: nix::Result<usize>, expected: usize) -> Result<(), ReadError
         Ok(read) if read == expected => Ok(()),
         Err(Errno::EPERM | Errno::EACCES) => Err(ReadError::Permission),
         Err(Errno::ESRCH) => Err(ReadError::Gone),
-        Ok(_) | Err(Errno::EFAULT | Errno::EIO) => Err(ReadError::Fault),
+        Ok(_) | Err(Errno::EFAULT) => Err(ReadError::Fault),
         Err(errno) => Err(ReadError::Other(errno as i32)),
     }
 }
@@ -195,6 +195,17 @@ impl From<ReadError> for Discard {
             ReadError::Permission | ReadError::Gone | ReadError::Other(_) => Self::Fatal(error),
         }
     }
+}
+
+/// The GIL at one instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GilState {
+    /// The thread state holding it, or `None` while it is released.
+    pub holder: Option<u64>,
+    /// The thread state that took it last, even while it is released.
+    pub last_holder: u64,
+    /// Handoffs so far; it changes whenever another thread takes the GIL.
+    pub switches: u64,
 }
 
 /// Walks interpreter state; resolved code objects are cached and shared by
@@ -368,28 +379,81 @@ impl<'m, M: RemoteMemory> Walker<'m, M> {
         Ok(threads)
     }
 
+    /// The GIL's holder and handoff count, read at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError`] when the GIL state is unreadable.
+    pub fn gil_state(&self, interpreter: u64) -> Result<GilState, ReadError> {
+        let (gil, last_holder, locked, switch_number) = match self.layout().gil {
+            GilPath::Runtime {
+                last_holder,
+                locked,
+                switch_number,
+            } => (
+                self.runtime.runtime_address,
+                last_holder,
+                locked,
+                switch_number,
+            ),
+            GilPath::Interpreter {
+                interp_gil,
+                last_holder,
+                locked,
+                switch_number,
+            } => (
+                self.u64_at(interpreter + interp_gil)?,
+                last_holder,
+                locked,
+                switch_number,
+            ),
+        };
+        if gil == 0 {
+            return Ok(GilState {
+                holder: None,
+                last_holder: 0,
+                switches: 0,
+            });
+        }
+        // The three fields sit together at the start of the GIL state.
+        let first = last_holder.min(locked).min(switch_number);
+        let end = last_holder.max(locked).max(switch_number) + 8;
+        let mut block = [0_u8; 64];
+        let block = block
+            .get_mut(..usize::try_from(end - first).map_err(|_| ReadError::Fault)?)
+            .ok_or(ReadError::Fault)?;
+        self.memory.read(gil + first, block)?;
+        let field = |offset: u64, width: usize| -> Result<u64, ReadError> {
+            let start = usize::try_from(offset - first).map_err(|_| ReadError::Fault)?;
+            let mut bytes = [0_u8; 8];
+            bytes[..width]
+                .copy_from_slice(block.get(start..start + width).ok_or(ReadError::Fault)?);
+            Ok(u64::from_le_bytes(bytes))
+        };
+        let holder = field(last_holder, 8)?;
+        Ok(GilState {
+            holder: (field(locked, 4)? != 0 && holder != 0).then_some(holder),
+            last_holder: holder,
+            switches: field(switch_number, 8)?,
+        })
+    }
+
     /// The thread state holding the GIL, or `None` while it is released.
     ///
     /// # Errors
     ///
     /// Returns [`ReadError`] when the GIL state is unreadable.
     pub fn gil_holder(&self, interpreter: u64) -> Result<Option<u64>, ReadError> {
-        let (gil, last_holder, locked) = match self.layout().gil {
-            GilPath::Runtime {
-                last_holder,
-                locked,
-            } => (self.runtime.runtime_address, last_holder, locked),
-            GilPath::Interpreter {
-                interp_gil,
-                last_holder,
-                locked,
-            } => (self.u64_at(interpreter + interp_gil)?, last_holder, locked),
-        };
-        if gil == 0 || self.u32_at(gil + locked)? == 0 {
-            return Ok(None);
+        Ok(self.gil_state(interpreter)?.holder)
+    }
+
+    /// What identifies the OS thread behind a thread state: its TID from
+    /// 3.11, its `pthread_t` before.
+    fn identity(&self, thread: u64) -> Result<u64, ReadError> {
+        match self.layout().tstate_native_thread_id {
+            Some(offset) => self.u64_at(thread + offset),
+            None => self.pthread(thread),
         }
-        let holder = self.u64_at(gil + last_holder)?;
-        Ok((holder != 0).then_some(holder))
     }
 
     /// The Linux TID a thread state records (3.11+).
@@ -633,16 +697,29 @@ impl<'m, M: RemoteMemory> Walker<'m, M> {
 /// Find where `struct pthread` stores its TID (CPython before 3.11 records
 /// only `pthread_t`). Every thread state must agree on one offset that maps
 /// it to a distinct TID of the target; otherwise threads stay unmapped.
+///
+/// A thread that exits during the search leaves it undecided for this sweep.
 fn pthread_tid_offset<M: RemoteMemory>(
     walker: &Walker<'_, M>,
     threads: &[u64],
     tids: &BTreeSet<u32>,
-) -> Option<u64> {
+) -> Result<Option<u64>, ReadError> {
+    match search_pthread_tid_offset(walker, threads, tids) {
+        Err(ReadError::Fault) => Ok(None),
+        other => other,
+    }
+}
+
+fn search_pthread_tid_offset<M: RemoteMemory>(
+    walker: &Walker<'_, M>,
+    threads: &[u64],
+    tids: &BTreeSet<u32>,
+) -> Result<Option<u64>, ReadError> {
     let mut candidates: Option<BTreeSet<u64>> = None;
     for thread in threads {
-        let pthread = walker.pthread(*thread).ok()?;
+        let pthread = walker.pthread(*thread)?;
         let mut bytes = vec![0_u8; PTHREAD_SEARCH_BYTES];
-        walker.memory.read(pthread, &mut bytes).ok()?;
+        walker.memory.read(pthread, &mut bytes)?;
         let found = bytes
             .chunks_exact(4)
             .zip((0_u64..).step_by(4))
@@ -659,24 +736,21 @@ fn pthread_tid_offset<M: RemoteMemory>(
     // Keep offsets that map every thread to a distinct TID; several are
     // acceptable only when they agree on every thread.
     let mut chosen: Option<(u64, Vec<u32>)> = None;
-    for offset in candidates? {
+    for offset in candidates.unwrap_or_default() {
         let mapped = threads
             .iter()
-            .map(|thread| {
-                let pthread = walker.pthread(*thread).ok()?;
-                walker.u32_at(pthread + offset).ok()
-            })
-            .collect::<Option<Vec<_>>>()?;
+            .map(|thread| walker.u32_at(walker.pthread(*thread)? + offset))
+            .collect::<Result<Vec<_>, _>>()?;
         if mapped.iter().collect::<BTreeSet<_>>().len() != threads.len() {
             continue;
         }
         match &chosen {
             None => chosen = Some((offset, mapped)),
             Some((_, previous)) if *previous == mapped => {}
-            Some(_) => return None,
+            Some(_) => return Ok(None),
         }
     }
-    chosen.map(|(offset, _)| offset)
+    Ok(chosen.map(|(offset, _)| offset))
 }
 
 /// When and how much to sample.
@@ -701,15 +775,29 @@ fn monotonic_ns() -> Result<u64, SamplerError> {
     Ok(seconds * 1_000_000_000 + nanoseconds)
 }
 
-fn task_ids(pid: u32) -> BTreeSet<u32> {
-    fs::read_dir(format!("/proc/{pid}/task"))
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
-                .collect()
-        })
-        .unwrap_or_default()
+/// The target's TIDs. A thread that exits mid-listing is skipped; a target
+/// that is gone or unreadable is an error.
+fn task_ids(pid: u32) -> Result<BTreeSet<u32>, SamplerError> {
+    let failure = |error: &std::io::Error| SamplerError::Read {
+        what: "the target's thread list",
+        error: match error.kind() {
+            std::io::ErrorKind::NotFound => ReadError::Gone,
+            std::io::ErrorKind::PermissionDenied => ReadError::Permission,
+            _ => ReadError::Other(error.raw_os_error().unwrap_or(0)),
+        },
+    };
+    let mut tids = BTreeSet::new();
+    for entry in fs::read_dir(format!("/proc/{pid}/task")).map_err(|error| failure(&error))? {
+        let entry = entry.map_err(|error| failure(&error))?;
+        if let Some(tid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        {
+            tids.insert(tid);
+        }
+    }
+    Ok(tids)
 }
 
 struct Run<'w, 'm, M: RemoteMemory> {
@@ -718,56 +806,98 @@ struct Run<'w, 'm, M: RemoteMemory> {
     interpreter: u64,
     config: SamplerConfig,
     capture: PythonCapture,
-    /// TIDs by thread identity: a thread state's address and its
-    /// `pthread_t`, since a new thread can reuse a freed thread state.
-    tids: BTreeMap<(u64, u64), Option<u32>>,
     /// Where `struct pthread` stores the TID, once found (before 3.11).
     pthread_offset: Option<u64>,
 }
 
 impl<M: RemoteMemory> Run<'_, '_, M> {
-    fn read(&mut self, thread: u64, gil: bool) -> Result<(), SamplerError> {
+    /// Sample one thread's stack. A GIL sample passes the GIL state it saw;
+    /// the sample is kept only if no other thread took the GIL meanwhile,
+    /// and any sample only if its thread state named one OS thread
+    /// throughout, since an exited thread's state can be reused.
+    fn read(&mut self, thread: u64, gil: Option<GilState>) -> Result<(), SamplerError> {
         if self.capture.samples.len() >= self.config.max_samples {
             self.capture.counters.over_capacity += 1;
             return Ok(());
         }
         let timestamp_ns = monotonic_ns()?;
         let started = Instant::now();
-        let outcome = self.walker.stack(thread).and_then(|stack| {
-            // A GIL handoff during the read makes it someone else's time.
-            if gil && self.walker.gil_holder(self.interpreter)? != Some(thread) {
-                return Err(Discard::Inconsistent);
-            }
-            Ok(stack)
-        });
-        match outcome {
-            Ok(stack) => {
-                self.capture
-                    .read_ns
-                    .push(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
-                let tid = self.tid(thread)?;
-                // The GIL holder runs Python; a swept thread may be blocked.
-                let native = match tid.filter(|_| !gil) {
-                    Some(tid) => self.native_leaf(tid),
-                    None => None,
-                };
-                self.capture.samples.push(PythonSample {
-                    timestamp_ns,
-                    tid,
-                    gil,
-                    stack,
-                    native,
-                });
-                Ok(())
-            }
+        let outcome = self.consistent_stack(thread, gil);
+        let (stack, identity) = match outcome {
+            Ok(read) => read,
             Err(Discard::Inconsistent) => {
                 self.capture.counters.inconsistent += 1;
-                Ok(())
+                return Ok(());
             }
-            Err(Discard::Fatal(error)) => Err(SamplerError::Read {
-                what: "a thread stack",
-                error,
-            }),
+            Err(Discard::Fatal(error)) => {
+                return Err(SamplerError::Read {
+                    what: "a thread stack",
+                    error,
+                });
+            }
+        };
+        self.capture
+            .read_ns
+            .push(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        let tid = match self.tid(identity) {
+            Ok(tid) => tid,
+            Err(Discard::Inconsistent) => {
+                self.capture.counters.inconsistent += 1;
+                return Ok(());
+            }
+            Err(Discard::Fatal(error)) => {
+                return Err(SamplerError::Read {
+                    what: "a thread identity",
+                    error,
+                });
+            }
+        };
+        self.capture.threads.extend(tid);
+        // The GIL holder runs Python; a swept thread may be blocked.
+        let native = match tid.filter(|_| gil.is_none()) {
+            Some(tid) => self.native_leaf(tid),
+            None => None,
+        };
+        self.capture.samples.push(PythonSample {
+            timestamp_ns,
+            tid,
+            gil: gil.is_some(),
+            stack,
+            native,
+        });
+        Ok(())
+    }
+
+    fn consistent_stack(
+        &mut self,
+        thread: u64,
+        gil: Option<GilState>,
+    ) -> Result<(Stack, u64), Discard> {
+        let identity = self.walker.identity(thread)?;
+        let stack = self.walker.stack(thread)?;
+        if let Some(before) = gil {
+            // Another thread taking the GIL during the read, even if it came
+            // back, makes part of it that thread's time. The holder dropping
+            // and retaking it does not count as a switch.
+            let after = self.walker.gil_state(self.interpreter)?;
+            if after.last_holder != thread || after.switches != before.switches {
+                return Err(Discard::Inconsistent);
+            }
+        }
+        if self.walker.identity(thread)? != identity {
+            return Err(Discard::Inconsistent);
+        }
+        Ok((stack, identity))
+    }
+
+    /// The TID of the OS thread behind `identity`.
+    fn tid(&self, identity: u64) -> Result<Option<u32>, Discard> {
+        if self.walker.layout().tstate_native_thread_id.is_some() {
+            return Ok(u32::try_from(identity).ok().filter(|tid| *tid != 0));
+        }
+        match self.pthread_offset {
+            Some(offset) => Ok(Some(self.walker.u32_at(identity + offset)?)),
+            None => Ok(None),
         }
     }
 
@@ -785,34 +915,6 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
         leaf
     }
 
-    /// The TID of a thread state, mapped once per thread identity.
-    fn tid(&mut self, thread: u64) -> Result<Option<u32>, SamplerError> {
-        let pthread = match self.walker.pthread(thread) {
-            Ok(pthread) => pthread,
-            // The thread exited after its stack was read.
-            Err(ReadError::Fault) => return Ok(None),
-            Err(error) => {
-                return Err(SamplerError::Read {
-                    what: "a thread identity",
-                    error,
-                });
-            }
-        };
-        if let Some(tid) = self.tids.get(&(thread, pthread)) {
-            return Ok(*tid);
-        }
-        let tid = if self.walker.layout().tstate_native_thread_id.is_some() {
-            self.capture.tid_source = TidSource::Native;
-            self.walker.native_thread_id(thread).ok().flatten()
-        } else {
-            self.pthread_offset
-                .and_then(|offset| self.walker.u32_at(pthread + offset).ok())
-        };
-        self.tids.insert((thread, pthread), tid);
-        self.capture.threads.extend(tid);
-        Ok(tid)
-    }
-
     /// Refresh the thread list and its TIDs, then sample every thread.
     fn sweep(&mut self) -> Result<(), SamplerError> {
         let threads =
@@ -822,15 +924,20 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
                     what: "the thread list",
                     error,
                 })?;
+        // Until an offset is found, every sweep searches again.
         if self.walker.layout().tstate_native_thread_id.is_none() && self.pthread_offset.is_none() {
-            self.pthread_offset = pthread_tid_offset(self.walker, &threads, &task_ids(self.pid));
+            self.pthread_offset = pthread_tid_offset(self.walker, &threads, &task_ids(self.pid)?)
+                .map_err(|error| SamplerError::Read {
+                what: "a thread's pthread",
+                error,
+            })?;
             self.capture.tid_source = self
                 .pthread_offset
                 .map_or(TidSource::Unmapped, TidSource::Pthread);
         }
         self.capture.counters.thread_sweeps += 1;
         for thread in threads {
-            self.read(thread, false)?;
+            self.read(thread, None)?;
         }
         Ok(())
     }
@@ -849,6 +956,7 @@ pub fn sample<M: RemoteMemory>(
 ) -> Result<PythonCapture, SamplerError> {
     walker.verify()?;
     let interpreter = walker.interpreter()?;
+    let native_tids = walker.layout().tstate_native_thread_id.is_some();
     let mut run = Run {
         walker,
         pid,
@@ -860,10 +968,13 @@ pub fn sample<M: RemoteMemory>(
             counters: SamplerCounters::default(),
             read_ns: Vec::new(),
             elapsed: Duration::ZERO,
-            tid_source: TidSource::Unmapped,
+            tid_source: if native_tids {
+                TidSource::Native
+            } else {
+                TidSource::Unmapped
+            },
             threads: BTreeSet::new(),
         },
-        tids: BTreeMap::new(),
         pthread_offset: None,
     };
     let start = Instant::now();
@@ -888,9 +999,14 @@ pub fn sample<M: RemoteMemory>(
             && now >= next_gil
         {
             run.capture.counters.gil_ticks += 1;
-            match run.walker.gil_holder(interpreter) {
-                Ok(Some(holder)) => run.read(holder, true)?,
-                Ok(None) => run.capture.counters.gil_idle += 1,
+            match run.walker.gil_state(interpreter) {
+                Ok(
+                    state @ GilState {
+                        holder: Some(holder),
+                        ..
+                    },
+                ) => run.read(holder, Some(state))?,
+                Ok(GilState { holder: None, .. }) => run.capture.counters.gil_idle += 1,
                 Err(ReadError::Fault) => run.capture.counters.inconsistent += 1,
                 Err(error) => {
                     return Err(SamplerError::Read {
@@ -1055,7 +1171,8 @@ mod tests {
         memory.u64(0x3100, 0x4000);
         memory.u64(0x2000 + 384, 0x7000);
         memory.u64(0x7000 + 8, 0x3000);
-        memory.put(0x7000 + 16, &1_u32.to_le_bytes());
+        memory.put(0x7000 + 16, &[1, 0, 0, 0, 0, 0, 0, 0]);
+        memory.u64(0x7000 + 24, 5);
         for (frame, code, back, owner) in [
             (0x4000, 0x5000, 0x4100, 0_u8),
             (0x4100, 0, 0x4200, 3),
@@ -1128,6 +1245,61 @@ mod tests {
         memory.put(0x7000 + 16, &0_u32.to_le_bytes());
         let walker = Walker::new(&memory, runtime(12), 64);
         assert_eq!(walker.gil_holder(0x2000).unwrap(), None);
+    }
+
+    fn run<'w, 'm>(walker: &'w mut Walker<'m, Memory>) -> super::Run<'w, 'm, Memory> {
+        let interpreter = walker.interpreter().unwrap();
+        super::Run {
+            walker,
+            pid: 1,
+            interpreter,
+            config: super::SamplerConfig {
+                duration: std::time::Duration::from_secs(1),
+                gil_period: None,
+                threads_period: std::time::Duration::from_secs(1),
+                max_samples: 16,
+                max_depth: 64,
+            },
+            capture: xprobe_core::python_sampling::PythonCapture {
+                samples: Vec::new(),
+                codes: Vec::new(),
+                counters: xprobe_core::python_sampling::SamplerCounters::default(),
+                read_ns: Vec::new(),
+                elapsed: std::time::Duration::ZERO,
+                tid_source: xprobe_core::python_sampling::TidSource::Native,
+                threads: std::collections::BTreeSet::new(),
+            },
+            pthread_offset: None,
+        }
+    }
+
+    #[test]
+    fn a_gil_sample_needs_the_same_holder_throughout() {
+        let memory = python_312();
+        let mut walker = Walker::new(&memory, runtime(12), 64);
+        let before = walker.gil_state(0x2000).unwrap();
+        assert_eq!((before.holder, before.switches), (Some(0x3000), 5));
+        let mut run = run(&mut walker);
+        run.read(0x3000, Some(before)).unwrap();
+        assert_eq!(run.capture.samples.len(), 1);
+        assert_eq!(run.capture.samples[0].tid, Some(4242));
+
+        // The holder released the GIL during the read without a switch.
+        memory.put(0x7000 + 16, &[0, 0, 0, 0, 0, 0, 0, 0]);
+        run.read(0x3000, Some(before)).unwrap();
+        assert_eq!(run.capture.samples.len(), 2);
+
+        // The GIL went to another thread and came back during the read.
+        run.read(
+            0x3000,
+            Some(super::GilState {
+                switches: 3,
+                ..before
+            }),
+        )
+        .unwrap();
+        assert_eq!(run.capture.samples.len(), 2);
+        assert_eq!(run.capture.counters.inconsistent, 1);
     }
 
     #[test]

@@ -61,6 +61,9 @@ pub struct ManifestArtifact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// `CLOCK_MONOTONIC` interval the capture's coverage holds for: from the
+/// collector's ARM acknowledgment until after its final read. Activity that
+/// was already running at ARM may begin before `start_ns`.
 pub struct CaptureWindow {
     pub start_ns: u64,
     pub end_ns: u64,

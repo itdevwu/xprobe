@@ -32,12 +32,19 @@ pub enum FramePath {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GilPath {
     /// Inside `_PyRuntime` (3.9–3.11).
-    Runtime { last_holder: u64, locked: u64 },
+    Runtime {
+        last_holder: u64,
+        locked: u64,
+        /// Counts GIL handoffs; a change during a read means another thread
+        /// held the GIL in between.
+        switch_number: u64,
+    },
     /// Behind `interp->ceval.gil` (3.12+).
     Interpreter {
         interp_gil: u64,
         last_holder: u64,
         locked: u64,
+        switch_number: u64,
     },
 }
 
@@ -103,6 +110,7 @@ const LAYOUTS: [PythonLayout; 6] = [
         gil: GilPath::Runtime {
             last_holder: 360,
             locked: 368,
+            switch_number: 376,
         },
         interp_threads_head: 8,
         tstate_next: 8,
@@ -131,6 +139,7 @@ const LAYOUTS: [PythonLayout; 6] = [
         gil: GilPath::Runtime {
             last_holder: 360,
             locked: 368,
+            switch_number: 376,
         },
         interp_threads_head: 8,
         tstate_next: 8,
@@ -159,6 +168,7 @@ const LAYOUTS: [PythonLayout; 6] = [
         gil: GilPath::Runtime {
             last_holder: 368,
             locked: 376,
+            switch_number: 384,
         },
         interp_threads_head: 16,
         tstate_next: 8,
@@ -191,6 +201,7 @@ const LAYOUTS: [PythonLayout; 6] = [
             interp_gil: 384,
             last_holder: 8,
             locked: 16,
+            switch_number: 24,
         },
         interp_threads_head: 72,
         tstate_next: 8,
@@ -223,6 +234,7 @@ const LAYOUTS: [PythonLayout; 6] = [
             interp_gil: 16,
             last_holder: 8,
             locked: 16,
+            switch_number: 24,
         },
         interp_threads_head: 7344,
         tstate_next: 8,
@@ -266,6 +278,7 @@ const LAYOUTS: [PythonLayout; 6] = [
             interp_gil: 16,
             last_holder: 8,
             locked: 16,
+            switch_number: 24,
         },
         interp_threads_head: 7344,
         tstate_next: 8,
@@ -565,18 +578,22 @@ mod tests {
             GilPath::Runtime {
                 last_holder,
                 locked,
+                switch_number,
             } => {
                 fields.insert("runtime_gil_last_holder", last_holder);
                 fields.insert("runtime_gil_locked", locked);
+                fields.insert("runtime_gil_switch_number", switch_number);
             }
             GilPath::Interpreter {
                 interp_gil,
                 last_holder,
                 locked,
+                switch_number,
             } => {
                 fields.insert("interp_ceval_gil", interp_gil);
                 fields.insert("gil_last_holder", last_holder);
                 fields.insert("gil_locked", locked);
+                fields.insert("gil_switch_number", switch_number);
             }
         }
         match layout.frame {

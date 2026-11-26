@@ -171,6 +171,11 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
         *pair(7, "memcpy", 200, 300, stream_id=9, correlation_id=4,
               memcpy_kind="HtoD", bytes_count=2000),
         api_event(9, 450, "cudaStreamSynchronize", 5),
+        # Another process in the same trace has a smaller gap of its own.
+        *[{**item, "pid": 999} for item in pair(11, "kernel", 0, 10, stream_id=7,
+                                                 correlation_id=6, kernel_name="z")],
+        *[{**item, "pid": 999} for item in pair(13, "kernel", 60, 70, stream_id=7,
+                                                 correlation_id=7, kernel_name="z")],
     ]
     measurement = {
         "schema_version": "3.0",
@@ -213,7 +218,7 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
                     (1234, 420, 1, True, "load", None),
                     (1234, 450, 2, False, "wait", {"syscall": "futex", "module": "libc.so.6", "symbol": None}),
                     (1234, 600, 1, True, "late", None),
-                    # Another process sampled at the same time is not this trace's.
+                    # Another process in the trace is not the gap's.
                     (999, 300, 9, True, "elsewhere", None),
                 ]
             )
@@ -251,7 +256,10 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
     assert copy["avg_bytes"] == 2000.0, copy
     idle = report["gpu"]["top_idle_gaps"]
     assert [(gap["start_ns"], gap["end_ns"]) for gap in idle] == [(300, 500), (100, 200)], idle
-    stream = next(item for item in report["streams"] if item["stream_id"] == 7)
+    assert {(gap["pid"], gap["clock_domain"]) for gap in idle} == {(1234, "cupti")}
+    stream = next(
+        item for item in report["streams"] if item["stream_id"] == 7 and item["pid"] == 1234
+    )
     assert [gap["gap_ns"] for gap in stream["top_gaps"]] == [400, 50]
     assert stream["top_gaps"][0]["after"] == "a" and stream["top_gaps"][0]["before"] == "b"
     assert report["outliers"] is None and report["slice"] is None

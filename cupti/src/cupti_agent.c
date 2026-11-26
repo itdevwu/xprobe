@@ -85,7 +85,11 @@ extern CUptiResult CUPTIAPI cuptiNvtxInitialize2(void *get_export_table);
 #define XPROBE_CUPTI_DEFAULT_RECORD_CAPACITY 100000U
 #define XPROBE_CUPTI_ACTIVITY_BUFFER_SIZE (8U * 1024U * 1024U)
 #define XPROBE_CUPTI_CLOCK_MARGIN_NS 1000000000U
+/* Launch API entries a snapshot's clock check compares kernels with. */
+#define XPROBE_CUPTI_LAUNCH_SAMPLES 64U
 #define XPROBE_CUPTI_CORRELATION_CLOCK_MARGIN_NS 1000000U
+/* Kernels whose launch API is checked against the kernel's start. */
+#define XPROBE_CUPTI_CORRELATION_CHECKS 4U
 
 _Static_assert(sizeof(struct xprobe_cupti_output_header) == 88U,
                "unexpected CUPTI output header layout");
@@ -161,6 +165,14 @@ static uint32_t runtime_cupti_version;
 static int64_t activity_timestamp_offset_ns;
 static uint64_t capture_start_timestamp_ns;
 static _Atomic int clock_alignment_warning_emitted;
+/* Whether this capture's activity timestamps were seen on CLOCK_MONOTONIC:
+ * unknown until an activity is checked, and unaligned once one fails. */
+enum {
+    XPROBE_CLOCK_UNKNOWN = 0,
+    XPROBE_CLOCK_ALIGNED = 1,
+    XPROBE_CLOCK_UNALIGNED = 2
+};
+static _Atomic int activity_clock;
 static CUpti_SubscriberHandle subscriber;
 static int subscriber_active;
 static int agent_initialized;
@@ -315,6 +327,8 @@ static void reset_capture(void)
     atomic_store_explicit(&last_cupti_result, 0U, memory_order_relaxed);
     atomic_store_explicit(&output_written, 0, memory_order_relaxed);
     atomic_store_explicit(&clock_alignment_warning_emitted, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&activity_clock, XPROBE_CLOCK_UNKNOWN,
                           memory_order_relaxed);
     atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_IDLE,
                           memory_order_relaxed);
@@ -642,22 +656,23 @@ static int capture_filter_matches(const struct xprobe_cupti_record *record)
 #define XPROBE_RING_INDEX (~(XPROBE_RING_WRITING | XPROBE_RING_READING))
 /* Committed records one callback advances over; the reader finishes. */
 #define XPROBE_COMMIT_STEPS 64U
+/* Claim attempts before a contended ring record is given up. */
+#define XPROBE_CLAIM_ATTEMPTS 8U
 
 static void advance_committed_records(uint64_t steps);
 
-/* Claim a ring slot for record `index`. The slot must hold an older record
- * and be idle; otherwise the record is dropped and counted, so no writer or
- * reader ever shares a slot body with another. */
+/* Claim a ring slot for record `index` in a bounded number of attempts.
+ * The slot must hold an older record and be idle; otherwise the record is
+ * given up, so no writer or reader ever shares a slot body with another.
+ * The reader reports a given-up record as a gap in the logical offsets. */
 static int claim_ring_slot(uint64_t slot, uint64_t index)
 {
     _Atomic uint64_t *sequence = &record_sequence[slot];
     uint64_t expected = atomic_load_explicit(sequence, memory_order_acquire);
 
-    for (;;) {
+    for (unsigned attempt = 0U; attempt < XPROBE_CLAIM_ATTEMPTS; ++attempt) {
         if ((expected & (XPROBE_RING_WRITING | XPROBE_RING_READING)) != 0U ||
             (expected & XPROBE_RING_INDEX) >= index + 1U) {
-            atomic_fetch_add_explicit(&agent_dropped_records, 1U,
-                                      memory_order_relaxed);
             return 0;
         }
         if (atomic_compare_exchange_weak_explicit(
@@ -666,6 +681,7 @@ static int claim_ring_slot(uint64_t slot, uint64_t index)
             return 1;
         }
     }
+    return 0;
 }
 
 static void enqueue_record(const struct xprobe_cupti_record *record)
@@ -1291,6 +1307,27 @@ static void enqueue_kernel_record(uint32_t device_id, uint32_t context_id,
     enqueue_record(&record);
 }
 
+/* An activity inside the capture ended after ARM; on CLOCK_MONOTONIC it
+ * also ended before now. Each one is checked while buffers are processed,
+ * where both timestamps are known even when only start records are kept. */
+static void check_activity_clock(uint64_t end_ns)
+{
+    uint64_t now_ns;
+
+    if (atomic_load_explicit(&activity_clock, memory_order_relaxed) ==
+        XPROBE_CLOCK_UNALIGNED) {
+        return;
+    }
+    if (monotonic_timestamp_ns(&now_ns) != XPROBE_CUPTI_AGENT_READY ||
+        (end_ns > now_ns && end_ns - now_ns > XPROBE_CUPTI_CLOCK_MARGIN_NS)) {
+        atomic_store_explicit(&activity_clock, XPROBE_CLOCK_UNALIGNED,
+                              memory_order_relaxed);
+        return;
+    }
+    atomic_store_explicit(&activity_clock, XPROBE_CLOCK_ALIGNED,
+                          memory_order_relaxed);
+}
+
 /*
  * Decide whether a filter-matching activity belongs to the capture. CUPTI
  * hands over records whose timestamps were lost when its device buffers
@@ -1309,13 +1346,16 @@ static int activity_in_capture(uint64_t start_ns, uint64_t end_ns)
         }
         return 0;
     }
-    /* Keep activity that was still running at ARM: dropping it would hide
-     * work that overlaps the capture. Only activity that ended before ARM is
-     * outside it. */
-    if (normalize_activity_timestamp(end_ns) < capture_start_timestamp_ns) {
+    /* Event captures keep activity still running at ARM, so work that
+     * overlaps the capture is not hidden. Aggregates count whole durations,
+     * so they keep only activity that started after ARM. */
+    if (normalize_activity_timestamp(
+            capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE ? start_ns : end_ns) <
+        capture_start_timestamp_ns) {
         return 0;
     }
     atomic_store_explicit(&capture_has_timed_activity, 1, memory_order_relaxed);
+    check_activity_clock(normalize_activity_timestamp(end_ns));
     return 1;
 }
 
@@ -1683,28 +1723,51 @@ static int activity_timestamps_are_host_monotonic(
     const struct xprobe_cupti_record *checked, uint64_t available)
 {
     uint64_t capture_end_timestamp_ns;
-    const struct xprobe_cupti_record *first_kernel = NULL;
 
     if (monotonic_timestamp_ns(&capture_end_timestamp_ns) !=
         XPROBE_CUPTI_AGENT_READY) {
         return 0;
     }
+    unsigned correlation_checks = 0U;
+    /* Launch calls to compare kernel starts with, gathered once so the check
+     * stays linear in the reply. */
+    struct {
+        uint32_t correlation_id;
+        uint64_t timestamp_ns;
+    } launches[XPROBE_CUPTI_LAUNCH_SAMPLES];
+    unsigned launch_count = 0U;
+    int activity = atomic_load_explicit(&activity_clock, memory_order_relaxed);
+    /* A start may predate ARM, so only an end or a start after its launch
+     * call bounds the clock from both sides. */
+    int bounded = activity == XPROBE_CLOCK_ALIGNED;
+
+    if (activity == XPROBE_CLOCK_UNALIGNED) {
+        goto unaligned;
+    }
+    for (uint64_t index = 0U;
+         index < available && launch_count < XPROBE_CUPTI_LAUNCH_SAMPLES; ++index) {
+        if (checked[index].kind == XPROBE_CUPTI_CUDA_API_ENTRY) {
+            launches[launch_count].correlation_id = checked[index].correlation_id;
+            launches[launch_count].timestamp_ns = checked[index].timestamp_ns;
+            ++launch_count;
+        }
+    }
     for (uint64_t index = 0U; index < available; ++index) {
         const struct xprobe_cupti_record *record = &checked[index];
         uint64_t timestamp_ns = record->timestamp_ns;
-        /* An activity running at ARM keeps its earlier start, so only its
-         * end must fall inside the capture. */
-        int is_activity_end = record->kind == XPROBE_CUPTI_GPU_KERNEL_END ||
-                              record->kind == XPROBE_CUPTI_GPU_MEMCPY_END ||
-                              record->kind == XPROBE_CUPTI_GPU_MEMSET_END;
+        int is_start = record->kind == XPROBE_CUPTI_GPU_KERNEL_START ||
+                       record->kind == XPROBE_CUPTI_GPU_MEMCPY_START ||
+                       record->kind == XPROBE_CUPTI_GPU_MEMSET_START;
+        int is_end = record->kind == XPROBE_CUPTI_GPU_KERNEL_END ||
+                     record->kind == XPROBE_CUPTI_GPU_MEMCPY_END ||
+                     record->kind == XPROBE_CUPTI_GPU_MEMSET_END;
 
-        if (record->kind == XPROBE_CUPTI_GPU_KERNEL_START && first_kernel == NULL) {
-            first_kernel = record;
-        }
-        if (is_activity_end == 0) {
+        if (is_start == 0 && is_end == 0) {
             continue;
         }
-        if ((timestamp_ns < capture_start_timestamp_ns &&
+        /* An activity running at ARM keeps its earlier start, so a start is
+         * bounded only by the capture's end; an end by both. */
+        if ((is_end != 0 && timestamp_ns < capture_start_timestamp_ns &&
              capture_start_timestamp_ns - timestamp_ns >
                  XPROBE_CUPTI_CLOCK_MARGIN_NS) ||
             (timestamp_ns > capture_end_timestamp_ns &&
@@ -1712,23 +1775,28 @@ static int activity_timestamps_are_host_monotonic(
                  XPROBE_CUPTI_CLOCK_MARGIN_NS)) {
             goto unaligned;
         }
-    }
-    if (first_kernel != NULL) {
-        for (uint64_t index = 0U; index < available; ++index) {
-            const struct xprobe_cupti_record *record = &checked[index];
-
-            if (record->kind == XPROBE_CUPTI_CUDA_API_ENTRY &&
-                record->correlation_id == first_kernel->correlation_id) {
-                if (first_kernel->timestamp_ns < record->timestamp_ns &&
-                    record->timestamp_ns - first_kernel->timestamp_ns >
-                        XPROBE_CUPTI_CORRELATION_CLOCK_MARGIN_NS) {
-                    goto unaligned;
+        if (is_end != 0) {
+            bounded = 1;
+        }
+        if (record->kind == XPROBE_CUPTI_GPU_KERNEL_START &&
+            timestamp_ns >= capture_start_timestamp_ns &&
+            correlation_checks < XPROBE_CUPTI_CORRELATION_CHECKS) {
+            /* A kernel cannot start before the API call that launched it. */
+            for (unsigned api = 0U; api < launch_count; ++api) {
+                if (launches[api].correlation_id == record->correlation_id) {
+                    if (timestamp_ns < launches[api].timestamp_ns &&
+                        launches[api].timestamp_ns - timestamp_ns >
+                            XPROBE_CUPTI_CORRELATION_CLOCK_MARGIN_NS) {
+                        goto unaligned;
+                    }
+                    ++correlation_checks;
+                    bounded = 1;
+                    break;
                 }
-                break;
             }
         }
     }
-    return 1;
+    return bounded;
 
 unaligned:
     if (atomic_exchange_explicit(&clock_alignment_warning_emitted, 1,
@@ -1881,11 +1949,27 @@ static uint64_t copy_ring_records(uint64_t requested, uint64_t *first)
             continue;
         }
         seen = expected & XPROBE_RING_INDEX;
-        if (seen == index + 1U ||
-            (seen < index + 1U &&
-             atomic_load_explicit(&ring_writers, memory_order_seq_cst) != 0U)) {
-            /* Still being written, or possibly not yet claimed. */
+        if (seen == index + 1U) {
+            /* Still being written. */
             break;
+        }
+        if (seen < index + 1U) {
+            /* Not yet claimed, or given up. With no writer pending, its
+             * writer is done: read the slot again before calling it a gap. */
+            if (atomic_load_explicit(&ring_writers, memory_order_seq_cst) != 0U) {
+                break;
+            }
+            expected = index + 1U;
+            if (atomic_compare_exchange_strong_explicit(
+                    &record_sequence[slot], &expected,
+                    XPROBE_RING_READING | (index + 1U), memory_order_acq_rel,
+                    memory_order_acquire)) {
+                ring_snapshot[count] = records[slot];
+                ++count;
+                atomic_store_explicit(&record_sequence[slot], index + 1U,
+                                      memory_order_release);
+                continue;
+            }
         }
         if (count != 0U) {
             break;
@@ -2382,10 +2466,13 @@ static int shutdown_agent(void)
         } else {
             result = cuptiUnsubscribe(subscriber);
             if (result != CUPTI_SUCCESS) {
+                /* Keep the subscriber marked active so a retry still
+                 * unsubscribes it. */
                 report_cupti_error("cuptiUnsubscribe", result);
                 status = XPROBE_CUPTI_AGENT_CUPTI_ERROR;
+            } else {
+                subscriber_active = 0;
             }
-            subscriber_active = 0;
         }
     }
     if (pthread_mutex_unlock(&subscriber_mutex) != 0) {

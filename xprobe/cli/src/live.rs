@@ -483,7 +483,6 @@ pub(crate) fn start_live_collection(
     } = plan;
 
     let activation = prepare_cupti_activation(&report, &requirements, request)?;
-    let capture_start_ns = monotonic_now()?;
     let arm_config = cupti_arm_config(
         &endpoints,
         &requirements,
@@ -504,6 +503,8 @@ pub(crate) fn start_live_collection(
         requirements.needs_nvtx,
         request,
     )?;
+    // Host-clock activity before the ARM reply may predate the capture.
+    let capture_start_ns = monotonic_now()?;
     let socket = activation.socket;
     let baseline_timestamp = baseline
         .as_ref()
@@ -918,6 +919,10 @@ pub(crate) fn resolve_agent_path(
     })
 }
 
+/// Reads without progress before a stopped ring's unread tail is lost.
+const RING_DRAIN_RETRIES: u32 = 8;
+const RING_DRAIN_PAUSE: Duration = Duration::from_millis(2);
+
 pub(crate) fn stop_cupti_agent(
     collection: &mut LiveCollection,
     request: &LiveMeasureRequest,
@@ -927,30 +932,74 @@ pub(crate) fn stop_cupti_agent(
     }
     let socket = collection
         .socket
-        .as_deref()
+        .clone()
         .expect("armed CUPTI agent has a socket");
-    collection.cupti_armed = false;
-    let capture = if collection.managed_agent {
+    let session = request.options.session_id.as_str();
+    let failure = |error: cupti::CuptiSnapshotError| {
+        CommandFailure::new(ErrorCode::CleanupFailed, error.to_string(), true)
+            .with_detail("cleanup_phase", "stop_cupti")
+            .with_hint("verify the target state before starting another measurement")
+    };
+    // A ring reply ends at its first gap, so stop without closing, read the
+    // rest, and close only after every record was read.
+    let capture = if collection.managed_agent && !request.ring {
         cupti::close(
-            socket,
+            &socket,
             request.timeout,
-            &request.options.session_id,
+            session,
             collection.cuda_record_offset,
         )
     } else {
         cupti::stop(
-            socket,
+            &socket,
             request.timeout,
-            &request.options.session_id,
+            session,
             collection.cuda_record_offset,
         )
     }
-    .map_err(|error| {
-        CommandFailure::new(ErrorCode::CleanupFailed, error.to_string(), true)
-            .with_detail("cleanup_phase", "stop_cupti")
-            .with_hint("verify the target state before starting another measurement")
-    })?;
+    .map_err(failure)?;
     append_cuda_capture(collection, capture)?;
+    if request.ring {
+        // A writer still finishing its record holds the reader back briefly;
+        // a record still unread after the retries is counted as lost.
+        let mut stalled = 0;
+        loop {
+            let taken = collection
+                .latest_cuda
+                .as_ref()
+                .map_or(0, |cuda| cuda.observed_records);
+            let before = collection.cuda_record_offset;
+            if before >= taken {
+                break;
+            }
+            if stalled == RING_DRAIN_RETRIES {
+                collection.ring_overwritten += taken - before;
+                collection.cuda_record_offset = taken;
+                break;
+            }
+            let rest =
+                cupti::snapshot(&socket, request.timeout, session, before).map_err(failure)?;
+            append_cuda_capture(collection, rest)?;
+            if collection.cuda_record_offset == before {
+                stalled += 1;
+                thread::sleep(RING_DRAIN_PAUSE);
+            } else {
+                stalled = 0;
+            }
+        }
+        if collection.managed_agent {
+            let closed = cupti::close(
+                &socket,
+                request.timeout,
+                session,
+                collection.cuda_record_offset,
+            )
+            .map_err(failure)?;
+            append_cuda_capture(collection, closed)?;
+        }
+    }
+    // Only a completed stop clears the flag; otherwise cleanup retries it.
+    collection.cupti_armed = false;
     collection.managed_agent = false;
     Ok(())
 }
@@ -1128,6 +1177,9 @@ pub(crate) fn wait_for_host_collectors(
     Ok(())
 }
 
+/// Shortest I/O timeout given to a snapshot that starts before the deadline.
+const SNAPSHOT_IO_FLOOR: Duration = Duration::from_secs(2);
+
 pub(crate) fn refresh_live_sources(
     collection: &mut LiveCollection,
     request: &LiveMeasureRequest,
@@ -1145,9 +1197,11 @@ pub(crate) fn refresh_live_sources(
         collection.collectors.cancel();
         return Ok(());
     }
+    // The deadline decides whether to start a snapshot; one that starts
+    // near it still gets time to finish.
     let capture = cupti::snapshot(
         path,
-        remaining,
+        remaining.max(SNAPSHOT_IO_FLOOR),
         &request.options.session_id,
         collection.cuda_record_offset,
     )

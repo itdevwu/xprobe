@@ -1449,14 +1449,7 @@ fn correlate_stream_order<'a>(selected: &Selected<'_, 'a>) -> Outcome<'a> {
         .count() as u64;
     let mut ambiguous = 0_u64;
     for timeline in timelines.values_mut() {
-        // Ends sort before starts at one timestamp: A.end == B.start is a
-        // valid zero gap, not an overlap.
-        timeline.sort_by_key(|event| {
-            (
-                event.timestamp_ns,
-                activity_boundary(&event.event_type) == Some(ActivityBoundary::Start),
-            )
-        });
+        sort_timeline(timeline);
         // Track running activity by identity. An end whose start is not in
         // the capture began earlier and ran until then, so no gap before the
         // latest such end can be shown idle.
@@ -1517,11 +1510,47 @@ fn correlate_stream_order<'a>(selected: &Selected<'_, 'a>) -> Outcome<'a> {
     }
 }
 
-/// An activity's family and correlation ID; graph kernels share one ID, so
-/// running activity is counted per key.
-type ActivityKey = (u8, u32);
+/// Order one stream's boundaries in time. At one timestamp, ends come before
+/// starts, so A.end == B.start is a valid zero gap rather than an overlap; a
+/// zero-duration activity's own start and end sit together between them.
+fn sort_timeline(timeline: &mut [&Event]) {
+    let is_start =
+        |event: &Event| activity_boundary(&event.event_type) == Some(ActivityBoundary::Start);
+    let mut boundaries = BTreeMap::<(u64, ActivityKey<'_>), (bool, bool)>::new();
+    for event in timeline.iter() {
+        let seen = boundaries
+            .entry((event.timestamp_ns, activity_key(event)))
+            .or_default();
+        if is_start(event) {
+            seen.0 = true;
+        } else {
+            seen.1 = true;
+        }
+    }
+    timeline.sort_by_cached_key(|event| {
+        let key = activity_key(event);
+        let instant = boundaries
+            .get(&(event.timestamp_ns, key))
+            .is_some_and(|(start, end)| *start && *end);
+        let rank = match (instant, is_start(event)) {
+            (false, false) => 0_u8,
+            (true, _) => 1,
+            (false, true) => 2,
+        };
+        (
+            event.timestamp_ns,
+            rank,
+            instant.then_some(key),
+            !is_start(event),
+        )
+    });
+}
 
-fn activity_key(event: &Event) -> ActivityKey {
+/// An activity's family, correlation ID, and kernel name. Graph nodes can
+/// share one correlation ID, so running activity is counted per key.
+type ActivityKey<'a> = (u8, u32, Option<&'a str>);
+
+fn activity_key(event: &Event) -> ActivityKey<'_> {
     let family = match event.event_type {
         EventType::GpuKernelStart | EventType::GpuKernelEnd => 0,
         EventType::GpuMemcpyStart | EventType::GpuMemcpyEnd => 1,
@@ -1532,7 +1561,11 @@ fn activity_key(event: &Event) -> ActivityKey {
         .as_ref()
         .and_then(|cuda| cuda.correlation_id)
         .unwrap_or(0);
-    (family, correlation)
+    let name = event
+        .cuda
+        .as_ref()
+        .and_then(|cuda| cuda.kernel_name.as_deref());
+    (family, correlation, name)
 }
 
 enum Successor<'a> {
@@ -2351,6 +2384,33 @@ mod tests {
         assert_eq!(result.measurement.samples.unmatched_end, 0);
         assert_eq!(result.correlation.method, "cuda_stream_order");
         assert_eq!(result.correlation.confidence, CorrelationConfidence::High);
+    }
+
+    #[test]
+    fn stream_order_keeps_zero_duration_activity_between_its_neighbours() {
+        // B starts and ends at 10 ns, exactly when A ends and C starts.
+        let events = [
+            kernel(0, 10, 2, "A", 1),
+            kernel(10, 10, 2, "B", 2),
+            kernel(10, 20, 2, "C", 3),
+            kernel(30, 40, 2, "D", 4),
+        ]
+        .concat();
+        let result = measure(
+            &events,
+            &stream_order("cuda:kernel_end", "cuda:kernel_start"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            gaps(&result),
+            [
+                ("A".to_owned(), "B".to_owned(), 0),
+                ("B".to_owned(), "C".to_owned(), 0),
+                ("C".to_owned(), "D".to_owned(), 10)
+            ]
+        );
+        assert_eq!(result.measurement.samples.ambiguous, 0);
     }
 
     #[test]

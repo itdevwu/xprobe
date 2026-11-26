@@ -96,4 +96,7 @@ pub struct TriggerCollection {
     pub dropped_records: u64,
     /// Windows discarded because records inside them were lost.
     pub lost_windows: u32,
+    /// Windows discarded because their firing span no longer crossed the
+    /// threshold once every record had arrived.
+    pub revoked_windows: u32,
 }

@@ -243,10 +243,9 @@ fn merging_inputs_without_manifests_is_a_caution() {
     let first = dir.join("first.jsonl");
     let second = dir.join("second.jsonl");
     let bytes = write_events(&first);
-    // A different capture: every line but the last.
+    // A different capture of the same process.
     let text = String::from_utf8(bytes).unwrap();
-    let lines = text.split_inclusive('\n').collect::<Vec<_>>();
-    fs::write(&second, lines[..lines.len() - 1].concat()).unwrap();
+    fs::write(&second, text.replace("\"capture\"", "\"other\"")).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
         .args(["measure", "--input"])
@@ -271,15 +270,21 @@ fn merging_inputs_without_manifests_is_a_caution() {
     );
     assert!(issue_codes(&result).contains(&"CAPTURE_COVERAGE_UNKNOWN"));
 
-    // The same artifact twice would double its events.
-    let twice = measure(&[&first, &first], &[]);
-    assert_eq!(twice.status.code(), Some(1));
-    let error: ErrorResponse = serde_json::from_slice(&twice.stdout).unwrap();
-    assert!(
-        error.error.message.contains("more than once"),
-        "{}",
-        error.error.message
-    );
+    // The same events twice would double them, even re-serialized or as a
+    // subset of another input.
+    let subset = dir.join("subset.jsonl");
+    let lines = text.split_inclusive('\n').collect::<Vec<_>>();
+    fs::write(&subset, lines[..lines.len() - 1].concat()).unwrap();
+    for inputs in [[&first, &first], [&first, &subset]] {
+        let twice = measure(&inputs.map(PathBuf::as_path), &[]);
+        assert_eq!(twice.status.code(), Some(1));
+        let error: ErrorResponse = serde_json::from_slice(&twice.stdout).unwrap();
+        assert!(
+            error.error.message.contains("repeats events"),
+            "{}",
+            error.error.message
+        );
+    }
 }
 
 #[test]
