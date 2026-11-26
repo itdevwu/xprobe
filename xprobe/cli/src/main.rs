@@ -31,6 +31,7 @@ mod failure;
 mod graph;
 mod inventory;
 mod live;
+mod python;
 mod render;
 mod triage;
 mod trigger;
@@ -92,6 +93,9 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         match_policy,
         cpu_sample,
         syscall_aggregate,
+        python_sample,
+        python_hz,
+        python_threads_hz,
         frequency_hz,
         max_samples,
         stack_depth,
@@ -163,6 +167,22 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
                 .unwrap_or(u64::MAX),
             stack_depth.expect("clap supplies CPU stack depth"),
             max_threads.expect("clap supplies CPU thread capacity"),
+            json,
+        );
+    }
+    if python_sample {
+        let (Some(pid), Some(duration_ms)) = (pid, duration_ms) else {
+            unreachable!("clap requires --pid and --duration-ms with --python-sample");
+        };
+        return python::run_python_sample(
+            &python::PythonSampleRequest {
+                pid,
+                name,
+                duration_ms,
+                gil_hz: python_hz,
+                threads_hz: python_threads_hz,
+                events_out: events_out.as_deref(),
+            },
             json,
         );
     }

@@ -80,6 +80,9 @@ test-cupti-burst-live-cuda12: build
 test-multisource-live: build
     python3 tests/integration/test_multisource.py "{{cuda13_devel_image}}" target/debug/xprobe
 
+test-python-sample-live: build
+    python3 tests/integration/test_python_sample.py
+
 test-trigger-live: build
     python3 tests/integration/test_trigger.py "{{cuda13_devel_image}}" target/debug/xprobe
 
@@ -140,6 +143,9 @@ benchmark-multiprocess:
 
 benchmark-pytorch: build
     if [[ -n "${PYTORCH_ENV:-}" ]]; then python3 benchmarks/pytorch/run.py --image "{{cuda12_devel_image}}" --pytorch-env "${PYTORCH_ENV}"; else python3 benchmarks/pytorch/run.py --image "{{pytorch_image}}"; fi
+
+benchmark-python-sampling: build
+    python3 benchmarks/python-sampling/run.py
 
 benchmark-cpu: build
     python3 benchmarks/cpu-inventory/run-container.py "{{cuda12_devel_image}}"

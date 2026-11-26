@@ -820,8 +820,10 @@ name = "xprobe-collector"
 version = "0.6.3"
 dependencies = [
  "libbpf-rs",
+ "nix",
  "perf-event-open",
  "serde_json",
+ "xprobe-core",
  "xprobe-protocol",
 ]
 

@@ -5,12 +5,13 @@ use crate::{
     CpuSamplingSpec, CpuSamplingValidationResult, DiscoveryResult, ErrorResponse, Event,
     HostCaptureResult, MeasurementGraphResult, MeasurementGraphSpec,
     MeasurementGraphValidationResult, MeasurementResult, MeasurementSpec, ProcessReport,
-    ResolvedProbe, SyscallAggregateResult, SyscallAggregateSpec, SyscallAggregateValidationResult,
-    TraceExportResult, TriageResult, TriggerResult, ValidationResult,
+    PythonSampleRecord, PythonSampleResult, ResolvedProbe, SyscallAggregateResult,
+    SyscallAggregateSpec, SyscallAggregateValidationResult, TraceExportResult, TriageResult,
+    TriggerResult, ValidationResult,
 };
 
 #[must_use]
-pub fn generated_schemas() -> [(&'static str, Schema); 24] {
+pub fn generated_schemas() -> [(&'static str, Schema); 26] {
     [
         ("event.schema.json", schema_for!(Event)),
         ("capture-manifest.schema.json", schema_for!(CaptureManifest)),
@@ -55,6 +56,14 @@ pub fn generated_schemas() -> [(&'static str, Schema); 24] {
         ("resolve.schema.json", schema_for!(ResolvedProbe)),
         ("validate.schema.json", schema_for!(ValidationResult)),
         ("trace-export.schema.json", schema_for!(TraceExportResult)),
+        (
+            "python-sample-result.schema.json",
+            schema_for!(PythonSampleResult),
+        ),
+        (
+            "python-sample-record.schema.json",
+            schema_for!(PythonSampleRecord),
+        ),
         ("triage-result.schema.json", schema_for!(TriageResult)),
         ("trigger-result.schema.json", schema_for!(TriggerResult)),
         (

@@ -1,0 +1,464 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PythonSampleResult",
+  "description": "Result of `measure --python-sample`, schema `3.0`.",
+  "type": "object",
+  "properties": {
+    "artifact": {
+      "description": "Every sample with its timestamp, one `PythonSampleRecord` per line.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvidenceArtifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "collection": {
+      "$ref": "#/$defs/PythonSampleCollection"
+    },
+    "inventory": {
+      "$ref": "#/$defs/PythonSampleInventory"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion3"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetIdentity"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "session_id",
+    "status",
+    "target",
+    "inventory",
+    "collection"
+  ],
+  "$defs": {
+    "EvidenceArtifact": {
+      "description": "Bounded capture written by `measure`; re-correlate it with `measure --input`.",
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "format": {
+          "$ref": "#/$defs/ExportFormat"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "format",
+        "events"
+      ]
+    },
+    "ExportFormat": {
+      "type": "string",
+      "enum": [
+        "jsonl",
+        "chrome"
+      ]
+    },
+    "PythonFrame": {
+      "description": "One Python function in a sampled stack.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "first_line": {
+          "description": "The line where the function starts, not the line that was running.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "function": {
+          "description": "`co_qualname` (3.11+) or `co_name`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "file",
+        "first_line"
+      ]
+    },
+    "PythonHotspot": {
+      "type": "object",
+      "properties": {
+        "exclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "exclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "frame": {
+          "$ref": "#/$defs/PythonFrame"
+        },
+        "inclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "inclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frame",
+        "inclusive_samples",
+        "exclusive_samples",
+        "inclusive_proportion",
+        "exclusive_proportion"
+      ]
+    },
+    "PythonSampleCollection": {
+      "type": "object",
+      "properties": {
+        "elapsed_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gil_hz_achieved": {
+          "description": "GIL ticks per second actually reached.",
+          "type": "number",
+          "format": "double"
+        },
+        "gil_hz_requested": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "gil_released_ticks": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gil_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gil_ticks": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "inconsistent_reads": {
+          "description": "Stacks that changed while they were read and were discarded.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "late_ticks": {
+          "description": "Ticks that started after their deadline.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "over_capacity": {
+          "description": "Samples not kept because the capacity was reached.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "python_binary": {
+          "type": "string"
+        },
+        "python_version": {
+          "description": "`3.N` of the target interpreter.",
+          "type": "string"
+        },
+        "read_latency": {
+          "description": "Wall time of one kept stack read.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadLatency"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sample_capacity": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stack_depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "thread_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "thread_sweeps": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threads": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "threads_hz_achieved": {
+          "type": "number",
+          "format": "double"
+        },
+        "threads_hz_requested": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "tid_source": {
+          "$ref": "#/$defs/PythonTidSource"
+        },
+        "truncated_stacks": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "python_version",
+        "python_binary",
+        "tid_source",
+        "elapsed_ns",
+        "gil_hz_requested",
+        "gil_hz_achieved",
+        "threads_hz_requested",
+        "threads_hz_achieved",
+        "gil_ticks",
+        "gil_samples",
+        "gil_released_ticks",
+        "thread_sweeps",
+        "thread_samples",
+        "threads",
+        "inconsistent_reads",
+        "late_ticks",
+        "sample_capacity",
+        "over_capacity",
+        "stack_depth",
+        "truncated_stacks"
+      ]
+    },
+    "PythonSampleInventory": {
+      "type": "object",
+      "properties": {
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gil_hotspots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PythonHotspot"
+          }
+        },
+        "gil_released_proportion": {
+          "description": "Share of GIL ticks on which no thread held the GIL: native code that\nreleased it, I/O, or idle waiting.",
+          "type": "number",
+          "format": "double"
+        },
+        "gil_stack_groups": {
+          "description": "Stacks of the GIL holder; proportions are of GIL ticks, so they sum\nwith `gil_released_proportion` to one.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PythonStackGroup"
+          }
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_stack_groups": {
+          "description": "Stacks of every thread from the slower sweeps; proportions are of\nthread samples.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PythonStackGroup"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "duration_ms",
+        "gil_stack_groups",
+        "gil_hotspots",
+        "gil_released_proportion",
+        "thread_stack_groups"
+      ]
+    },
+    "PythonStackGroup": {
+      "description": "Identical stacks, innermost frame first.",
+      "type": "object",
+      "properties": {
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PythonFrame"
+          }
+        },
+        "proportion": {
+          "description": "Share of the samples this group was drawn from.",
+          "type": "number",
+          "format": "double"
+        },
+        "samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frames",
+        "samples",
+        "proportion"
+      ]
+    },
+    "PythonTidSource": {
+      "description": "How a sample's thread was mapped to a Linux TID.",
+      "oneOf": [
+        {
+          "description": "`PyThreadState.native_thread_id` (3.11+).",
+          "type": "string",
+          "const": "native"
+        },
+        {
+          "description": "The TID glibc stores in `struct pthread` (before 3.11).",
+          "type": "string",
+          "const": "pthread"
+        },
+        {
+          "description": "No consistent TID mapping; samples carry no TID.",
+          "type": "string",
+          "const": "unmapped"
+        }
+      ]
+    },
+    "ReadLatency": {
+      "type": "object",
+      "properties": {
+        "max_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p50_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "p99_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "p50_ns",
+        "p99_ns",
+        "max_ns"
+      ]
+    },
+    "SchemaVersion3": {
+      "description": "Version of records whose shape changed in xprobe 0.6.\n\nRecords keep their own version so unchanged contracts, such as Event JSONL\nartifacts, remain readable at `2.0`.",
+      "type": "string",
+      "enum": [
+        "3.0"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "timed_out",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "TargetIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "process_start_time": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "process_start_time"
+      ]
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

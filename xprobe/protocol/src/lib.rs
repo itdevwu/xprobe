@@ -11,6 +11,7 @@ mod graph;
 mod manifest;
 mod measurement;
 mod process;
+mod python_sampling;
 mod resolve;
 pub mod schema;
 mod syscall_aggregate;
@@ -56,6 +57,10 @@ pub use measurement::{
     ResultQuality, SampleSummary, SessionStatus, TargetIdentity,
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
+pub use python_sampling::{
+    PythonFrame, PythonHotspot, PythonSampleCollection, PythonSampleInventory, PythonSampleRecord,
+    PythonSampleResult, PythonStackGroup, PythonTidSource, ReadLatency,
+};
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};
 pub use syscall_aggregate::{
     SyscallAggregateCollectionSummary, SyscallAggregateCompleteness, SyscallAggregateGroup,

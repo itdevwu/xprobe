@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PythonSampleRecord",
+  "description": "One line of a Python sample artifact.",
+  "type": "object",
+  "properties": {
+    "frames": {
+      "description": "Innermost frame first.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PythonFrame"
+      }
+    },
+    "gil": {
+      "description": "Taken as the GIL holder rather than in a sweep of every thread.",
+      "type": "boolean"
+    },
+    "pid": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "tid": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "timestamp_ns": {
+      "description": "`CLOCK_MONOTONIC` time just before the stack was read.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "timestamp_ns",
+    "pid",
+    "gil",
+    "truncated",
+    "frames"
+  ],
+  "$defs": {
+    "PythonFrame": {
+      "description": "One Python function in a sampled stack.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "first_line": {
+          "description": "The line where the function starts, not the line that was running.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "function": {
+          "description": "`co_qualname` (3.11+) or `co_name`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "file",
+        "first_line"
+      ]
+    }
+  }
+}

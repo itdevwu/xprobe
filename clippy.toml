@@ -1,0 +1,2 @@
+# Proper names that doc comments use as words, not code.
+doc-valid-idents = ["CPython", "PyTorch", "CUDA", ".."]

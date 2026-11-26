@@ -12,6 +12,8 @@ pub mod gpu_health;
 pub mod graph;
 pub mod inject;
 pub mod inspect;
+pub mod python_layout;
+pub mod python_sampling;
 pub mod resolve;
 pub mod syscall_aggregate;
 pub mod thread_time;

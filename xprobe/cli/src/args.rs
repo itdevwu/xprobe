@@ -406,6 +406,29 @@ pub(crate) struct MeasureArgs {
     )]
     pub(crate) max_threads: Option<u32>,
 
+    /// Sample CPython stacks from outside the process without perf events,
+    /// eBPF, or injection: the GIL holder at --python-hz and every thread at
+    /// --python-threads-hz. Needs ptrace access to the target; requires
+    /// --pid and --duration-ms.
+    #[arg(
+        long,
+        requires_all = ["pid", "duration_ms"],
+        conflicts_with_all = [
+            "spec", "input", "from", "to", "match_policy", "samples", "cpu_sample",
+            "syscall_aggregate", "aggregate", "triage", "format", "cupti_socket", "agent"
+        ]
+    )]
+    pub(crate) python_sample: bool,
+
+    /// Samples per second of the thread holding the GIL; 0 samples only the
+    /// all-thread sweeps.
+    #[arg(long, requires = "python_sample", default_value_t = 2000)]
+    pub(crate) python_hz: u32,
+
+    /// Sweeps per second over every Python thread.
+    #[arg(long, requires = "python_sample", default_value_t = 100)]
+    pub(crate) python_threads_hz: u32,
+
     /// Aggregate all syscall lifecycles in bounded BPF maps.
     #[arg(long, conflicts_with_all = ["input", "from", "to", "match_policy", "samples", "cpu_sample", "aggregate", "events_out", "format", "cupti_socket", "agent"])]
     pub(crate) syscall_aggregate: bool,
