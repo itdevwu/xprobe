@@ -98,15 +98,13 @@ keep the window representative.
 
 ## Tune cost to the workload
 
-Collector cost grows with the event rate of the chosen boundary, and the
-per-event cost depends on the host (`docs/benchmarks.md` in the xprobe
-repository records one measured environment).
+Collector cost grows with the boundary's event rate; per-event cost depends on
+the host (`docs/benchmarks.md` in the xprobe repository has one measurement).
 
-- **Uprobes** trap into the kernel on every entry and return, which costs more
-  under virtualization (WSL2, many cloud VMs) than on bare metal. Prefer a
-  boundary called at most a few thousand times per second; for a hotter
-  function, measure its caller, or use CPU samples or the syscall aggregate,
-  which do not scale with the call rate.
+- **Uprobes** trap into the kernel on every entry and return, more costly under
+  virtualization (WSL2, many cloud VMs). Prefer boundaries called at most a few
+  thousand times per second; for hotter ones measure the caller, or use CPU
+  samples or the syscall aggregate, which do not scale with the call rate.
 - **CUPTI** cost scales with records. Kernel name filters that reduce to a
   literal run in the Agent and keep the rate down; `stream-order` and
   triggered captures record every GPU activity, so on launch-bound workloads

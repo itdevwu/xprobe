@@ -191,6 +191,31 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
         trace.write_text("".join(json.dumps(item) + "\n" for item in events))
         result = pathlib.Path(directory) / "measure.json"
         result.write_text(json.dumps(measurement))
+        python = pathlib.Path(directory) / "python-samples.jsonl"
+        frame = lambda function: {"function": function, "file": "app.py", "first_line": 1}
+        python.write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "timestamp_ns": timestamp,
+                        "pid": 1,
+                        "tid": tid,
+                        "gil": gil,
+                        "truncated": False,
+                        "frames": [frame(leaf), frame("main")],
+                        "native": native,
+                    }
+                )
+                + "\n"
+                for timestamp, tid, gil, leaf, native in [
+                    (260, 1, True, "step", None),
+                    (400, 1, True, "step", None),
+                    (420, 1, True, "load", None),
+                    (450, 2, False, "wait", {"syscall": "futex", "module": "libc.so.6", "symbol": None}),
+                    (600, 1, True, "late", None),
+                ]
+            )
+        )
 
         def run(*arguments: str) -> dict:
             return json.loads(
@@ -203,6 +228,10 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
         by_gap = run("--slice-gap", "1", "--window-ms", "0.00005")
         by_outlier = run("--measurement", str(result), "--slice-outlier", "2")
         by_time = run("--around", "440:460", "--max-slice-events", "1")
+        with_python = run("--slice-gap", "1", "--window-ms", "0.00005", "--python-samples", str(python))
+        unsliced_python = subprocess.run(
+            [script, trace, "--python-samples", str(python)], check=False, capture_output=True, text=True
+        )
         missing = subprocess.run(
             [script, trace, "--slice-outlier", "1"], check=False, capture_output=True, text=True
         )
@@ -231,6 +260,18 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
     assert by_time["slice"]["total_events"] == 1 and not by_time["slice"]["truncated"]
     assert by_time["slice"]["events"][0]["name"] == "cudaStreamSynchronize"
     assert missing.returncode != 0 and "requires --measurement" in missing.stderr
+
+    # Python stacks sampled inside the 250-550 window, beside the GPU events.
+    stacks = with_python["slice"]["python"]
+    assert (stacks["samples"], stacks["gil_samples"]) == (4, 3), stacks
+    assert stacks["gil_stacks"][0]["frames"][0] == "step (app.py:1)"
+    assert stacks["gil_stacks"][0]["samples"] == 2
+    assert stacks["native_waits"] == [
+        {"syscall": "futex", "module": "libc.so.6", "symbol": None, "samples": 1}
+    ]
+    # These GPU timestamps are raw CUPTI time, so the result says so.
+    assert "PYTHON_CLOCK_UNALIGNED" in {item["code"] for item in with_python["warnings"]}
+    assert unsliced_python.returncode != 0 and "requires --slice-gap" in unsliced_python.stderr
 
 
 if __name__ == "__main__":

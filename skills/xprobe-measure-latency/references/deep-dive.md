@@ -110,6 +110,9 @@ Slice the largest bubble to see what the host did meanwhile:
 scripts/analyze_trace.py "$ARTIFACT" --slice-gap 1 --window-ms 1
 ```
 
+To see what Python ran in that bubble, sample it concurrently with
+`measure --python-sample` and add `--python-samples` with its artifact.
+
 Gaps are between captured activities only: a narrow kernel selector hides the
 kernels it filtered out, so capture all kernels on the stream before calling a
 gap idle.

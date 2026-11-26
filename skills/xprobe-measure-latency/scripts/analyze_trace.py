@@ -418,6 +418,58 @@ def slice_events(events: list[dict], start_ns: int, end_ns: int, limit: int) -> 
     }
 
 
+def load_python_samples(path: pathlib.Path) -> list[dict]:
+    """Records written by `measure --python-sample`."""
+    samples = []
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if not isinstance(record, dict) or "timestamp_ns" not in record or "frames" not in record:
+            raise ValueError(f"{path}:{number}: not a Python sample record")
+        samples.append(record)
+    return samples
+
+
+def frame_label(frame: dict) -> str:
+    return f"{frame['function']} ({frame['file']}:{frame['first_line']})"
+
+
+def python_slice(samples: list[dict], start_ns: int, end_ns: int, limit: int = 10) -> dict:
+    """Python stacks sampled inside [start_ns, end_ns]."""
+    inside = [sample for sample in samples if start_ns <= sample["timestamp_ns"] <= end_ns]
+    gil = [sample for sample in inside if sample["gil"]]
+    stacks = collections.Counter(
+        tuple(frame_label(frame) for frame in sample["frames"]) for sample in gil
+    )
+    waits = collections.Counter(
+        (
+            sample["native"].get("syscall"),
+            sample["native"].get("module"),
+            sample["native"].get("symbol"),
+        )
+        for sample in inside
+        if not sample["gil"] and sample.get("native")
+    )
+    return {
+        "samples": len(inside),
+        "gil_samples": len(gil),
+        "gil_stacks": [
+            {"frames": list(frames), "samples": count, "proportion": round(count / len(gil), 6)}
+            for frames, count in sorted(stacks.items(), key=lambda item: (-item[1], item[0]))[:limit]
+        ],
+        "threads": dict(
+            sorted(collections.Counter(str(sample.get("tid")) for sample in inside).items())
+        ),
+        "native_waits": [
+            {"syscall": syscall, "module": module, "symbol": symbol, "samples": count}
+            for (syscall, module, symbol), count in sorted(
+                waits.items(), key=lambda item: (-item[1], tuple(map(str, item[0])))
+            )[:limit]
+        ],
+    }
+
+
 def measurement_outliers(path: pathlib.Path, limit: int) -> dict:
     """Slowest pairs from a measure result; full evidence when available."""
     result = json.loads(path.read_text())
@@ -470,6 +522,7 @@ def analyze(
     window: tuple[str, object] | None = None,
     window_ns: int = 0,
     max_slice_events: int = 200,
+    python_samples: pathlib.Path | None = None,
 ) -> dict:
     events = load_events(path)
     intervals, unmatched_starts, unmatched_ends = pair_activities(events)
@@ -509,16 +562,29 @@ def analyze(
             target = outlier_report["slowest"][value - 1]
         else:
             target = {"start_ns": value[0], "end_ns": value[1]}
+        start_ns = target["start_ns"] - window_ns
+        end_ns = target["end_ns"] + window_ns
         window_report = {
             "around": {"kind": kind, "start_ns": target["start_ns"], "end_ns": target["end_ns"]},
             "window_ns": window_ns,
-            **slice_events(
-                events,
-                target["start_ns"] - window_ns,
-                target["end_ns"] + window_ns,
-                max_slice_events,
-            ),
+            **slice_events(events, start_ns, end_ns, max_slice_events),
         }
+        if python_samples is not None:
+            window_report["python"] = python_slice(
+                load_python_samples(python_samples), start_ns, end_ns
+            )
+            # Python samples use CLOCK_MONOTONIC; raw CUPTI time does not.
+            if any(
+                event.get("clock_domain") == "cupti"
+                for event in events
+                if start_ns <= event["timestamp_ns"] <= end_ns
+            ):
+                warnings.append(
+                    {
+                        "code": "PYTHON_CLOCK_UNALIGNED",
+                        "message": "the slice holds GPU timestamps not normalized to CLOCK_MONOTONIC; Python samples do not line up with them",
+                    }
+                )
     if outlier_report and outlier_report["source"] == ["rank_exemplars"]:
         warnings.append(
             {
@@ -527,7 +593,7 @@ def analyze(
             }
         )
     return {
-        "analysis_version": "1.1",
+        "analysis_version": "1.2",
         "input": str(path),
         "events": {
             "total": len(events),
@@ -602,7 +668,13 @@ def main() -> None:
     parser.add_argument("--window-ms", type=float, default=0.0,
                         help="padding before and after the slice target")
     parser.add_argument("--max-slice-events", type=positive, default=200)
+    parser.add_argument("--python-samples", type=pathlib.Path,
+                        help="measure --python-sample artifact whose stacks to add to the slice")
     args = parser.parse_args()
+    if args.python_samples is not None and not (
+        args.slice_gap or args.slice_outlier or args.around
+    ):
+        parser.error("--python-samples requires --slice-gap, --slice-outlier, or --around")
     if args.window_ms < 0:
         parser.error("--window-ms must not be negative")
     window = None
@@ -620,6 +692,7 @@ def main() -> None:
         window=window,
         window_ns=round(args.window_ms * 1_000_000),
         max_slice_events=args.max_slice_events,
+        python_samples=args.python_samples,
     )
     json.dump(report, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
