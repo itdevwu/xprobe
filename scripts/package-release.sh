@@ -25,7 +25,7 @@ verify_agent() {
     echo "CUDA ${major} CUPTI agent was not found: ${agent}" >&2
     exit 1
   }
-  dynamic=$(readelf -d "${agent}")
+  dynamic=$(LC_ALL=C readelf -d "${agent}")
   grep -Fq "Shared library: [libcupti.so.${major}]" <<<"${dynamic}" || {
     echo "${agent} is not linked to libcupti.so.${major}" >&2
     exit 1

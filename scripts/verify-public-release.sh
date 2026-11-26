@@ -91,7 +91,7 @@ verify_agent() {
   local agent=$1
   local major=$2
   local dynamic
-  dynamic=$(readelf -d "${agent}")
+  dynamic=$(LC_ALL=C readelf -d "${agent}")
   grep -Fq "Shared library: [libcupti.so.${major}]" <<<"${dynamic}" || {
     echo "${agent} is not linked to libcupti.so.${major}" >&2
     exit 1
