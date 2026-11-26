@@ -71,7 +71,7 @@
       "required": [
         "python_status",
         "native fallback",
-        "-X perf",
+        "--python-sample",
         "python:gc_start",
         "check capability, not the process name"
       ]

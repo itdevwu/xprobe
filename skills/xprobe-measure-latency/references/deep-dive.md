@@ -23,9 +23,7 @@ command, and when to stop. Escalate one step at a time.
    ```
 
 4. **CPU time is spread thin.** A `CPU_BOUND` finding without a single hotspot
-   needs more samples or semantic frames. Raise frequency and duration, and for
-   CPython 3.12+ restart the target with `-X perf` so samples resolve to Python
-   functions:
+   needs more samples or semantic frames. Raise frequency and duration:
 
    ```bash
    xprobe measure --pid "$PID" --cpu-sample --duration-ms 5000 \
@@ -34,6 +32,17 @@ command, and when to stop. Escalate one step at a time.
 
    Read `stack_groups`, not only `hotspots`: inclusive callers show which
    high-level operation owns the spread-out leaf time.
+
+5. **The target is CPython.** Sample Python stacks from outside the process
+   (CPython 3.9+, no `-X perf`, perf events, or eBPF; needs ptrace access):
+
+   ```bash
+   xprobe measure --pid "$PID" --python-sample --duration-ms 2000
+   ```
+
+   `gil_released_proportion` is time no thread ran Python; `native_waits`
+   shows where blocked threads wait. Only `-X perf` on 3.12+ mixes native
+   and Python frames in one CPU sample.
 
 ## A span is slow but unexplained
 
@@ -136,5 +145,6 @@ unreliable; fix that before attributing the difference.
 - Time isolated in code without an attachable boundary (JIT, generated, or
   inlined code): a runtime-specific profiler or added instrumentation such as
   an NVTX range or an exported function boundary.
-- Python semantics unavailable (`python_status` not `active`): py-spy or the
+- Python semantics unavailable to CPU samples (`python_status` not `active`):
+  `--python-sample` first; for an unsupported interpreter, py-spy or the
   framework profiler, reported as a separate tool's evidence.

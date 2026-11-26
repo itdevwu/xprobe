@@ -123,6 +123,7 @@ test-release-live:
     just test-injection-live
     just test-multisource-live
     just test-trigger-live
+    just test-python-sample-live
     just test-pytorch-live
     just test-pytorch-cuda-live
     just test-triage-live

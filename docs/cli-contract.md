@@ -277,6 +277,27 @@ ELF and `/tmp/perf-<pid>.map` Python symbols are resolved independently.
 from being mislabeled as Python semantic coverage. Lost samples, truncated
 stacks, thread coverage, and capacity pressure remain visible.
 
+`--python-sample` is live-only and requires `--duration-ms`. It reads CPython
+3.9 through 3.14 interpreter state from outside the target with
+`process_vm_readv`, without perf events, eBPF, `-X perf`, injection, or
+stopping the target; it needs ptrace access (the same user under
+`kernel.yama.ptrace_scope` 0, or `CAP_SYS_PTRACE`). The thread holding the GIL
+is sampled at `--python-hz` (default 2000) and every thread at
+`--python-threads-hz` (default 100). Interpreter offsets are built in per minor
+version and checked against `_Py_DebugOffsets` on 3.13 and newer; a
+free-threaded or differently laid out build returns
+`UNSUPPORTED_PYTHON_VERSION`. A stack that changes while it is read is
+discarded and counted in `inconsistent_reads`. Frames name the function and
+the line where it starts, not the line that was running. For threads that are
+not running in a sweep, `/proc/<pid>/task/<tid>/syscall` adds the system call
+and symbolized native program counter they are blocked in. Results use
+`schemas/python-sample-result.schema.json` (schema `3.0`): GIL-holder stack
+groups and hotspots as shares of GIL ticks, the share of ticks with the GIL
+released, all-thread stack groups, native waits, achieved rates, read latency,
+and TID mapping. Every sample is written with its `CLOCK_MONOTONIC` timestamp
+to the artifact, one `schemas/python-sample-record.schema.json` record per
+line.
+
 `--triage` is live-only, requires `--duration-ms`, and emits
 `schemas/triage-result.schema.json` (schema `3.0`). Within one window it
 concurrently collects procfs per-thread on-CPU, runqueue, and blocked time;

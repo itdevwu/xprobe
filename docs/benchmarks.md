@@ -39,6 +39,8 @@ ratio of target throughput without and with collection over 2 s per case:
 | CPU sampling | native | 1.011 | 199 Hz |
 | CPU sampling | CPython 3.12 with `-X perf` | 1.027 | 199 Hz |
 | CPython GC USDT | CPython 3.12 | 1.020 | GC lifecycles |
+| External Python sampling, 32-frame stack | CPython 3.10 | 0.991 | 2,000 Hz GIL holder, p50 read 68 µs |
+| External Python sampling, 32-frame stack | CPython 3.12 | 0.984 | 2,000 Hz GIL holder, p50 read 39 µs |
 | `perf record` | native | 1.009 | 199 Hz |
 | `py-spy record` (default, pauses the target) | CPython 3.12 | 1.184 | 199 Hz |
 
@@ -46,6 +48,20 @@ Per-event costs depend on the kernel, virtualization, and workload; rerun the
 benchmarks on representative hosts before relying on them.
 
 ## Running the benchmarks
+
+For the external CPython sampler, run:
+
+```bash
+just benchmark-python-sampling
+```
+
+In `python:3.10` and `python:3.12` images, a hot leaf under a 32-frame stack
+runs for a fixed window without and with `--python-sample` at the default
+rates, three times each on fresh targets. The JSON reports both throughputs,
+their median ratio against the `1.02` project target, the achieved GIL rate,
+discarded reads, and read latency. CPython before 3.11 reads one frame per
+system call; later versions read the thread's data stack at once, so read
+latency depends on version and stack depth.
 
 Run the reproducible GPU benchmark with the pinned CUDA devel image:
 

@@ -94,6 +94,9 @@
 - Run `just test-injection-live` for injection or agent lifecycle changes.
 - Run `just test-multisource-live` for host/GPU orchestration changes.
 - Run `just test-trigger-live` for triggered capture or CUPTI ring changes.
+- Run `just test-python-sample-live` for CPython layout or sampler changes; add
+  a minor version by regenerating `tests/integration/python-layout/expected.json`
+  from its headers.
 - Run `just test-agent-contract` for CLI, schema, docs, or Skill changes.
 - Test bundled Skill scripts with deterministic fixtures and include them in
   `just test-agent-contract`.
@@ -101,6 +104,7 @@
 - Run `just benchmark-aggregate` for aggregate inventory hot-path or capacity
   changes.
 - Run `just benchmark-multiprocess` for concurrent worker orchestration changes.
+- Run `just benchmark-python-sampling` for Python sampler read-path changes.
 - Run `just benchmark-pytorch` for PyTorch workflow or framework-overhead
   changes.
 - Use emoji conventional commits, for example `🐛 fix: restore target registers`.

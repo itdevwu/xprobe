@@ -53,6 +53,9 @@ do not compare their capacities or completeness as one collector.
   using hotspot names. Proportions are sampled estimates. `python_status`
   `inactive` or `unsupported` means native fallback; native frames remain
   valid, Python semantics are not claimed.
+- Python samples: shares of GIL ticks are estimates. Check achieved rates,
+  `inconsistent_reads`, and `tid_source`; `first_line` is where a function
+  starts.
 - Syscall aggregation: durations are exact for matched lifecycles, but groups
   have no order or percentiles; check unmatched, inflight, and drops.
 - GPU aggregation: count, summed, min, max, and mean duration and bytes per

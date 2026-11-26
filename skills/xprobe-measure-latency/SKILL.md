@@ -62,7 +62,8 @@ Escalate one step at a time, each driven by the previous result; details are in
 
 1. **Triage found nothing actionable**: fix `unavailable` sources first, then
    widen the window to cover a slow cycle, or run the focused inventory triage
-   omits (memcpy/memset activity, larger CPU sample, `-X perf` for Python).
+   omits (memcpy/memset activity, larger CPU sample, `--python-sample` for
+   Python stacks).
 2. **A span is slow but unexplained**: split it with a measurement graph into
    sub-edges, and follow sampled stacks down to a callee boundary.
 3. **Only the tail is slow, or the GPU has bubbles**: rank the slowest pairs or
