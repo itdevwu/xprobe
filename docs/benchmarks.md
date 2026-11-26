@@ -26,6 +26,27 @@ exact measurements. It does not enforce an overhead winner: the observations
 are workload-specific and do not establish that any profiler is universally
 faster.
 
+## Observed costs
+
+One run on WSL2 with an RTX 3060 Laptop GPU (xprobe 0.7 development), as the
+ratio of target throughput without and with collection over 2 s per case:
+
+| Collector | Workload | Ratio | Rate |
+| --- | --- | --- | --- |
+| CUPTI callbacks and activity | paced kernels | 1.0005 | ~6,800 events/s |
+| CUPTI callbacks and activity | empty-launch stress | 1.285 | ~2.7 µs per launch |
+| Uprobe entry and return | native function | 1.042 | ~1,300 pairs/s |
+| CPU sampling | native | 1.011 | 199 Hz |
+| CPU sampling | CPython 3.12 with `-X perf` | 1.027 | 199 Hz |
+| CPython GC USDT | CPython 3.12 | 1.020 | GC lifecycles |
+| `perf record` | native | 1.009 | 199 Hz |
+| `py-spy record` (default, pauses the target) | CPython 3.12 | 1.184 | 199 Hz |
+
+Per-event costs depend on the kernel, virtualization, and workload; rerun the
+benchmarks on representative hosts before relying on them.
+
+## Running the benchmarks
+
 Run the reproducible GPU benchmark with the pinned CUDA devel image:
 
 ```bash

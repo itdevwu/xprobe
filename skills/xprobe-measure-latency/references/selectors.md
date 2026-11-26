@@ -95,3 +95,25 @@ Start an exact capture with modest record headroom:
 expected unmatched records. Triage specs size capacity from the observed rate.
 On `EVENT_RATE_TOO_HIGH`, narrow the selector before raising `max_events`, and
 keep the window representative.
+
+## Tune cost to the workload
+
+Collector cost grows with the event rate of the chosen boundary, and the
+per-event cost depends on the host (`docs/benchmarks.md` in the xprobe
+repository records one measured environment).
+
+- **Uprobes** trap into the kernel on every entry and return, which costs more
+  under virtualization (WSL2, many cloud VMs) than on bare metal. Prefer a
+  boundary called at most a few thousand times per second; for a hotter
+  function, measure its caller, or use CPU samples or the syscall aggregate,
+  which do not scale with the call rate.
+- **CUPTI** cost scales with records. Kernel name filters that reduce to a
+  literal run in the Agent and keep the rate down; `stream-order` and
+  triggered captures record every GPU activity, so on launch-bound workloads
+  with tens of thousands of kernels per second shorten the window or raise
+  `max_events` from the triage rate.
+- Stop early: on a hot boundary bound the capture by `samples`, not only by
+  duration.
+
+When a claim depends on low overhead, compare the application's own
+throughput or step time with and without the capture.
