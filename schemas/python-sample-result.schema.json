@@ -230,13 +230,19 @@
           "minimum": 0
         },
         "inconsistent_reads": {
-          "description": "Stacks that changed while they were read and were discarded.",
+          "description": "Reads discarded because the innermost frame, a code object, a frame\nmapping, or the GIL holder changed while they were read.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
         "late_ticks": {
           "description": "Ticks that started after their deadline.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "native_unreadable": {
+          "description": "Swept threads whose `/proc/<pid>/task/<tid>/syscall` could not be\nread or parsed.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
@@ -325,6 +331,7 @@
         "thread_samples",
         "threads",
         "inconsistent_reads",
+        "native_unreadable",
         "late_ticks",
         "sample_capacity",
         "over_capacity",

@@ -81,6 +81,8 @@ pub struct SamplerCounters {
     pub over_capacity: u64,
     /// Ticks that started after their deadline had passed.
     pub late_ticks: u64,
+    /// Swept threads whose native state could not be read or parsed.
+    pub native_unreadable: u64,
 }
 
 /// How thread states were mapped to Linux TIDs.
@@ -360,6 +362,7 @@ pub fn analyze(
             thread_samples,
             threads: u32::try_from(capture.threads.len()).unwrap_or(u32::MAX),
             inconsistent_reads: counters.inconsistent,
+            native_unreadable: counters.native_unreadable,
             late_ticks: counters.late_ticks,
             sample_capacity: request.sample_capacity,
             over_capacity: counters.over_capacity,

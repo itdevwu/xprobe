@@ -222,6 +222,8 @@ pub struct ClockQuality {
 #[serde(deny_unknown_fields)]
 pub struct CollectionSummary {
     pub completeness: CaptureCompleteness,
+    /// Results written before xprobe recorded coverage read as unverified.
+    #[serde(default)]
     pub coverage: CaptureCoverage,
     pub host_events: u64,
     pub cuda_events: u64,
@@ -236,7 +238,7 @@ pub enum CaptureCompleteness {
 }
 
 /// What is known about which events the capture could have recorded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureCoverage {
     pub source: CoverageSource,
@@ -245,15 +247,16 @@ pub struct CaptureCoverage {
     pub all_gpu_activity: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageSource {
     /// Collected live by this command.
     Live,
+    /// Read from one artifact without a manifest.
+    #[default]
+    Unverified,
     /// Read from artifacts whose capture manifests match them.
     Manifest,
-    /// Read from one artifact without a manifest.
-    Unverified,
     /// Merged from artifacts without manifests that place them in one window
     /// of one target.
     UnverifiedMerge,

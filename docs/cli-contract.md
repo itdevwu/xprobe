@@ -286,8 +286,11 @@ is sampled at `--python-hz` (default 2000) and every thread at
 `--python-threads-hz` (default 100). Interpreter offsets are built in per minor
 version and checked against `_Py_DebugOffsets` on 3.13 and newer; a
 free-threaded or differently laid out build returns
-`UNSUPPORTED_PYTHON_VERSION`. A stack that changes while it is read is
-discarded and counted in `inconsistent_reads`. Frames name the function and
+`UNSUPPORTED_PYTHON_VERSION`. A read is discarded and counted in
+`inconsistent_reads` when the innermost frame, a frame's mapping, a code
+object, or the GIL holder changes while it is read; a change deeper in the
+stack that leaves those intact is not detected. Unreadable native thread
+states are counted in `native_unreadable`. Frames name the function and
 the line where it starts, not the line that was running. For threads that are
 not running in a sweep, `/proc/<pid>/task/<tid>/syscall` adds the system call
 and symbolized native program counter they are blocked in. Results use
@@ -387,7 +390,9 @@ An input's capture manifest, `<input>.manifest.json`, restores what its live
 capture recorded: drops, record limits, and collector failures fail the
 measurement as they did live, and its coverage sets `collection.coverage`. A
 manifest whose size or SHA-256 no longer matches its input is an error. Without
-manifests, coverage is `unverified`, or `unverified_merge` for several inputs,
+manifests, coverage is `unverified`, or `unverified_merge` for several inputs
+(a result without `collection.coverage`, written before xprobe recorded it,
+reads as `unverified`),
 which is a caution because their events may not share one window of one
 target; stream order without a capture of every GPU activity is heuristic and
 cautioned.

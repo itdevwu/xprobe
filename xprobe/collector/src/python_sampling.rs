@@ -46,6 +46,8 @@ pub enum ReadError {
     Permission,
     /// The target exited.
     Gone,
+    /// Any other `process_vm_readv` failure, by errno.
+    Other(i32),
 }
 
 /// Read-only access to a target's memory.
@@ -125,7 +127,8 @@ fn transfer(result: nix::Result<usize>, expected: usize) -> Result<(), ReadError
         Ok(read) if read == expected => Ok(()),
         Err(Errno::EPERM | Errno::EACCES) => Err(ReadError::Permission),
         Err(Errno::ESRCH) => Err(ReadError::Gone),
-        Ok(_) | Err(_) => Err(ReadError::Fault),
+        Ok(_) | Err(Errno::EFAULT | Errno::EIO) => Err(ReadError::Fault),
+        Err(errno) => Err(ReadError::Other(errno as i32)),
     }
 }
 
@@ -189,7 +192,7 @@ impl From<ReadError> for Discard {
         match error {
             // Frames are freed while a running thread is read.
             ReadError::Fault => Self::Inconsistent,
-            ReadError::Permission | ReadError::Gone => Self::Fatal(error),
+            ReadError::Permission | ReadError::Gone | ReadError::Other(_) => Self::Fatal(error),
         }
     }
 }
@@ -653,17 +656,27 @@ fn pthread_tid_offset<M: RemoteMemory>(
             Some(previous) => previous.intersection(&found).copied().collect(),
         });
     }
-    let candidates = candidates?;
-    candidates.into_iter().find(|offset| {
+    // Keep offsets that map every thread to a distinct TID; several are
+    // acceptable only when they agree on every thread.
+    let mut chosen: Option<(u64, Vec<u32>)> = None;
+    for offset in candidates? {
         let mapped = threads
             .iter()
-            .filter_map(|thread| {
+            .map(|thread| {
                 let pthread = walker.pthread(*thread).ok()?;
                 walker.u32_at(pthread + offset).ok()
             })
-            .collect::<BTreeSet<_>>();
-        mapped.len() == threads.len()
-    })
+            .collect::<Option<Vec<_>>>()?;
+        if mapped.iter().collect::<BTreeSet<_>>().len() != threads.len() {
+            continue;
+        }
+        match &chosen {
+            None => chosen = Some((offset, mapped)),
+            Some((_, previous)) if *previous == mapped => {}
+            Some(_) => return None,
+        }
+    }
+    chosen.map(|(offset, _)| offset)
 }
 
 /// When and how much to sample.
@@ -702,9 +715,14 @@ fn task_ids(pid: u32) -> BTreeSet<u32> {
 struct Run<'w, 'm, M: RemoteMemory> {
     walker: &'w mut Walker<'m, M>,
     pid: u32,
+    interpreter: u64,
     config: SamplerConfig,
     capture: PythonCapture,
-    tids: BTreeMap<u64, Option<u32>>,
+    /// TIDs by thread identity: a thread state's address and its
+    /// `pthread_t`, since a new thread can reuse a freed thread state.
+    tids: BTreeMap<(u64, u64), Option<u32>>,
+    /// Where `struct pthread` stores the TID, once found (before 3.11).
+    pthread_offset: Option<u64>,
 }
 
 impl<M: RemoteMemory> Run<'_, '_, M> {
@@ -715,19 +733,24 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
         }
         let timestamp_ns = monotonic_ns()?;
         let started = Instant::now();
-        match self.walker.stack(thread) {
+        let outcome = self.walker.stack(thread).and_then(|stack| {
+            // A GIL handoff during the read makes it someone else's time.
+            if gil && self.walker.gil_holder(self.interpreter)? != Some(thread) {
+                return Err(Discard::Inconsistent);
+            }
+            Ok(stack)
+        });
+        match outcome {
             Ok(stack) => {
                 self.capture
                     .read_ns
                     .push(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
-                let tid = self.tids.get(&thread).copied().flatten();
+                let tid = self.tid(thread)?;
                 // The GIL holder runs Python; a swept thread may be blocked.
-                let native = tid
-                    .filter(|_| !gil)
-                    .and_then(|tid| {
-                        fs::read_to_string(format!("/proc/{}/task/{tid}/syscall", self.pid)).ok()
-                    })
-                    .and_then(|text| parse_task_syscall(&text));
+                let native = match tid.filter(|_| !gil) {
+                    Some(tid) => self.native_leaf(tid),
+                    None => None,
+                };
                 self.capture.samples.push(PythonSample {
                     timestamp_ns,
                     tid,
@@ -748,47 +771,68 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
         }
     }
 
+    /// Where a blocked thread waits; an unreadable or unparsable state is
+    /// counted rather than mistaken for a running thread.
+    fn native_leaf(&mut self, tid: u32) -> Option<NativeLeaf> {
+        let Ok(text) = fs::read_to_string(format!("/proc/{}/task/{tid}/syscall", self.pid)) else {
+            self.capture.counters.native_unreadable += 1;
+            return None;
+        };
+        let leaf = parse_task_syscall(&text);
+        if leaf.is_none() && text.trim() != "running" {
+            self.capture.counters.native_unreadable += 1;
+        }
+        leaf
+    }
+
+    /// The TID of a thread state, mapped once per thread identity.
+    fn tid(&mut self, thread: u64) -> Result<Option<u32>, SamplerError> {
+        let pthread = match self.walker.pthread(thread) {
+            Ok(pthread) => pthread,
+            // The thread exited after its stack was read.
+            Err(ReadError::Fault) => return Ok(None),
+            Err(error) => {
+                return Err(SamplerError::Read {
+                    what: "a thread identity",
+                    error,
+                });
+            }
+        };
+        if let Some(tid) = self.tids.get(&(thread, pthread)) {
+            return Ok(*tid);
+        }
+        let tid = if self.walker.layout().tstate_native_thread_id.is_some() {
+            self.capture.tid_source = TidSource::Native;
+            self.walker.native_thread_id(thread).ok().flatten()
+        } else {
+            self.pthread_offset
+                .and_then(|offset| self.walker.u32_at(pthread + offset).ok())
+        };
+        self.tids.insert((thread, pthread), tid);
+        self.capture.threads.extend(tid);
+        Ok(tid)
+    }
+
     /// Refresh the thread list and its TIDs, then sample every thread.
-    fn sweep(&mut self, interpreter: u64, pid: u32) -> Result<(), SamplerError> {
-        let threads = self
-            .walker
-            .threads(interpreter)
-            .map_err(|error| SamplerError::Read {
-                what: "the thread list",
-                error,
-            })?;
-        if threads.iter().any(|thread| !self.tids.contains_key(thread)) {
-            self.map_threads(&threads, pid);
+    fn sweep(&mut self) -> Result<(), SamplerError> {
+        let threads =
+            self.walker
+                .threads(self.interpreter)
+                .map_err(|error| SamplerError::Read {
+                    what: "the thread list",
+                    error,
+                })?;
+        if self.walker.layout().tstate_native_thread_id.is_none() && self.pthread_offset.is_none() {
+            self.pthread_offset = pthread_tid_offset(self.walker, &threads, &task_ids(self.pid));
+            self.capture.tid_source = self
+                .pthread_offset
+                .map_or(TidSource::Unmapped, TidSource::Pthread);
         }
         self.capture.counters.thread_sweeps += 1;
         for thread in threads {
             self.read(thread, false)?;
         }
         Ok(())
-    }
-
-    fn map_threads(&mut self, threads: &[u64], pid: u32) {
-        if self.walker.layout().tstate_native_thread_id.is_some() {
-            self.capture.tid_source = TidSource::Native;
-            for thread in threads {
-                let tid = self.walker.native_thread_id(*thread).ok().flatten();
-                self.tids.insert(*thread, tid);
-            }
-        } else {
-            let tids = task_ids(pid);
-            let offset = pthread_tid_offset(self.walker, threads, &tids);
-            self.capture.tid_source = offset.map_or(TidSource::Unmapped, TidSource::Pthread);
-            for thread in threads {
-                let tid = offset.and_then(|offset| {
-                    let pthread = self.walker.pthread(*thread).ok()?;
-                    self.walker.u32_at(pthread + offset).ok()
-                });
-                self.tids.insert(*thread, tid);
-            }
-        }
-        self.capture
-            .threads
-            .extend(self.tids.values().copied().flatten());
     }
 }
 
@@ -808,6 +852,7 @@ pub fn sample<M: RemoteMemory>(
     let mut run = Run {
         walker,
         pid,
+        interpreter,
         config,
         capture: PythonCapture {
             samples: Vec::new(),
@@ -819,6 +864,7 @@ pub fn sample<M: RemoteMemory>(
             threads: BTreeSet::new(),
         },
         tids: BTreeMap::new(),
+        pthread_offset: None,
     };
     let start = Instant::now();
     let end = start + config.duration;
@@ -830,7 +876,7 @@ pub fn sample<M: RemoteMemory>(
             break;
         }
         if now >= next_sweep {
-            run.sweep(interpreter, pid)?;
+            run.sweep()?;
             next_sweep = advance(
                 next_sweep,
                 config.threads_period,

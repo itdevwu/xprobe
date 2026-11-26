@@ -117,8 +117,12 @@ pub struct PythonSampleCollection {
     pub thread_sweeps: u64,
     pub thread_samples: u64,
     pub threads: u32,
-    /// Stacks that changed while they were read and were discarded.
+    /// Reads discarded because the innermost frame, a code object, a frame
+    /// mapping, or the GIL holder changed while they were read.
     pub inconsistent_reads: u64,
+    /// Swept threads whose `/proc/<pid>/task/<tid>/syscall` could not be
+    /// read or parsed.
+    pub native_unreadable: u64,
     /// Ticks that started after their deadline.
     pub late_ticks: u64,
     pub sample_capacity: u64,

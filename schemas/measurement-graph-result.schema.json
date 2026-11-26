@@ -149,7 +149,12 @@
           "$ref": "#/$defs/CaptureCompleteness"
         },
         "coverage": {
-          "$ref": "#/$defs/CaptureCoverage"
+          "description": "Results written before xprobe recorded coverage read as unverified.",
+          "$ref": "#/$defs/CaptureCoverage",
+          "default": {
+            "all_gpu_activity": false,
+            "source": "unverified"
+          }
         },
         "cuda_events": {
           "type": "integer",
@@ -180,7 +185,6 @@
       "additionalProperties": false,
       "required": [
         "completeness",
-        "coverage",
         "host_events",
         "cuda_events",
         "dropped_events"
@@ -224,14 +228,14 @@
           "const": "live"
         },
         {
-          "description": "Read from artifacts whose capture manifests match them.",
-          "type": "string",
-          "const": "manifest"
-        },
-        {
           "description": "Read from one artifact without a manifest.",
           "type": "string",
           "const": "unverified"
+        },
+        {
+          "description": "Read from artifacts whose capture manifests match them.",
+          "type": "string",
+          "const": "manifest"
         },
         {
           "description": "Merged from artifacts without manifests that place them in one window\nof one target.",

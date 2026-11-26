@@ -418,6 +418,9 @@ def slice_events(events: list[dict], start_ns: int, end_ns: int, limit: int) -> 
     }
 
 
+HOST_CLOCKS = {"host_monotonic", "cupti_normalized_to_host_monotonic"}
+
+
 def load_python_samples(path: pathlib.Path) -> list[dict]:
     """Records written by `measure --python-sample`."""
     samples = []
@@ -503,6 +506,9 @@ def measurement_outliers(path: pathlib.Path, limit: int) -> dict:
                     "tid": start.get("tid"),
                     "stream_id": (start.get("cuda") or {}).get("stream_id"),
                     "correlation_id": (start.get("cuda") or {}).get("correlation_id"),
+                    "clock_domains": sorted(
+                        {str(start.get("clock_domain")), str(end.get("clock_domain"))}
+                    ),
                 }
             )
     outliers.sort(key=lambda item: (-item["latency_ns"], item["start_ns"]))
@@ -570,21 +576,35 @@ def analyze(
             **slice_events(events, start_ns, end_ns, max_slice_events),
         }
         if python_samples is not None:
-            window_report["python"] = python_slice(
-                load_python_samples(python_samples), start_ns, end_ns
-            )
-            # Python samples use CLOCK_MONOTONIC; raw CUPTI time does not.
-            if any(
-                event.get("clock_domain") == "cupti"
-                for event in events
-                if start_ns <= event["timestamp_ns"] <= end_ns
-            ):
+            window_report["python"] = None
+            # Python samples use CLOCK_MONOTONIC; only host-clock slices line
+            # up with them. The slice's own events, or the target pair, are
+            # the evidence; an empty window falls back to the whole trace.
+            evidence = [
+                event for event in events if start_ns <= event["timestamp_ns"] <= end_ns
+            ]
+            domains = {event.get("clock_domain") for event in evidence or events}
+            if kind == "outlier":
+                domains |= set(target["clock_domains"])
+            if not domains or not domains <= HOST_CLOCKS:
                 warnings.append(
                     {
                         "code": "PYTHON_CLOCK_UNALIGNED",
-                        "message": "the slice holds GPU timestamps not normalized to CLOCK_MONOTONIC; Python samples do not line up with them",
+                        "message": "the slice's timestamps are not all CLOCK_MONOTONIC; Python samples were not placed in it",
                     }
                 )
+            else:
+                pids = {event.get("pid") for event in events}
+                samples = load_python_samples(python_samples)
+                matching = [sample for sample in samples if sample.get("pid") in pids]
+                if len(matching) != len(samples):
+                    warnings.append(
+                        {
+                            "code": "PYTHON_SAMPLES_OTHER_PROCESS",
+                            "message": f"{len(samples) - len(matching)} Python samples come from processes absent from the trace and were left out",
+                        }
+                    )
+                window_report["python"] = python_slice(matching, start_ns, end_ns)
     if outlier_report and outlier_report["source"] == ["rank_exemplars"]:
         warnings.append(
             {

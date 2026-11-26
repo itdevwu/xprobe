@@ -17,9 +17,8 @@ use xprobe_correlator::{MeasureOptions, finalize, measure};
 use xprobe_exporter::{events_to_chrome_trace, events_to_jsonl};
 use xprobe_protocol::{
     AggregateInventoryResult, ClockDomain, CpuSamplingValidationResult, ErrorCode, Event,
-    EvidenceArtifact, EvidenceMode, ExportFormat, ManifestArtifact, MatchPolicy, MeasurementMode,
-    MeasurementResult, MeasurementSpec, SyscallAggregateValidationResult, TriggerCondition,
-    TriggerKind,
+    EvidenceArtifact, EvidenceMode, ExportFormat, MatchPolicy, MeasurementMode, MeasurementResult,
+    MeasurementSpec, SyscallAggregateValidationResult, TriggerCondition, TriggerKind,
 };
 
 use crate::coverage::CaptureRecord;
@@ -177,6 +176,7 @@ fn run_measure(args: MeasureArgs) -> ExitCode {
         return python::run_python_sample(
             &python::PythonSampleRequest {
                 pid,
+                runtime: None,
                 name,
                 duration_ms,
                 gil_hz: python_hz,
@@ -789,10 +789,21 @@ fn export_measurement_capture(
         )
     })?;
     let format = protocol_export_format(format);
+    // Only an Event JSONL artifact with known coverage gets a manifest; the
+    // digest is computed for it alone.
+    let record = capture.filter(|_| format == ExportFormat::Jsonl);
     coverage::write_manifest(
         path,
-        capture.filter(|_| format == ExportFormat::Jsonl),
-        ManifestArtifact::of(format, events.len() as u64, artifact.as_bytes()),
+        record.map(|record| {
+            (
+                record,
+                xprobe_exporter::manifest_artifact(
+                    format,
+                    events.len() as u64,
+                    artifact.as_bytes(),
+                ),
+            )
+        }),
     )
 }
 
@@ -831,7 +842,7 @@ fn measure_completed_inputs(
             coverage::apply_manifest(&mut capture, manifest);
         }
         // Merging an input with itself would double its events.
-        let digest = ManifestArtifact::of(ExportFormat::Jsonl, 0, &bytes).sha256;
+        let digest = xprobe_exporter::artifact_sha256(&bytes);
         if !digests.insert(digest) {
             return Err(CommandFailure::new(
                 ErrorCode::TraceExportFailed,

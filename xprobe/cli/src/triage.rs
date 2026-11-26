@@ -144,6 +144,7 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
     let python_artifact = artifacts.join("python-samples.jsonl");
     let python_request = PythonSampleRequest {
         pid: request.pid,
+        runtime: python_runtime.as_ref().ok().cloned(),
         name: None,
         duration_ms: request.duration_ms,
         gil_hz: 2000,

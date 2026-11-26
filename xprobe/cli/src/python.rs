@@ -24,6 +24,8 @@ const MAX_CAPACITY: u64 = 2_000_000;
 
 pub(crate) struct PythonSampleRequest<'a> {
     pub(crate) pid: u32,
+    /// The interpreter, when the caller already located it.
+    pub(crate) runtime: Option<python_layout::PythonRuntime>,
     pub(crate) name: Option<String>,
     pub(crate) duration_ms: u64,
     pub(crate) gil_hz: u32,
@@ -134,7 +136,10 @@ pub(crate) fn python_sample(
     let report = inspect::run(request.pid).map_err(|error| {
         CommandFailure::new(error.code(), error.to_string(), error.recoverable())
     })?;
-    let runtime = python_layout::locate(&report).map_err(|error| locate_failure(&error))?;
+    let runtime = match request.runtime.clone() {
+        Some(runtime) => runtime,
+        None => python_layout::locate(&report).map_err(|error| locate_failure(&error))?,
+    };
     let memory = ProcessMemory::new(request.pid);
     let mut walker = Walker::new(&memory, runtime.clone(), STACK_DEPTH);
     let sample_capacity = capacity(request);
@@ -207,6 +212,7 @@ mod tests {
     fn capacity_covers_the_requested_rates_with_a_bound() {
         let request = PythonSampleRequest {
             pid: 1,
+            runtime: None,
             name: None,
             duration_ms: 2000,
             gil_hz: 2000,

@@ -98,8 +98,7 @@ impl CaptureRecord {
 /// stale one when the artifact has no known coverage.
 pub(crate) fn write_manifest(
     artifact_path: &Path,
-    record: Option<&CaptureRecord>,
-    artifact: ManifestArtifact,
+    described: Option<(&CaptureRecord, ManifestArtifact)>,
 ) -> Result<(), CommandFailure> {
     let path = manifest_path(artifact_path);
     let failure = |action: &str, error: &dyn std::fmt::Display| {
@@ -109,7 +108,7 @@ pub(crate) fn write_manifest(
             false,
         )
     };
-    let Some(record) = record else {
+    let Some((record, artifact)) = described else {
         return match fs::remove_file(&path) {
             Err(error) if error.kind() != ErrorKind::NotFound => {
                 Err(failure("remove stale manifest", &error))
@@ -150,7 +149,7 @@ pub(crate) fn read_manifest(
             false,
         )
     })?;
-    if !manifest.artifact.matches(bytes) {
+    if !xprobe_exporter::artifact_matches(&manifest.artifact, bytes) {
         return Err(CommandFailure::new(
             ErrorCode::TraceExportFailed,
             format!(
@@ -261,8 +260,8 @@ pub(crate) fn apply_manifest(capture: &mut CompletedCapture, manifest: &CaptureM
 #[cfg(test)]
 mod tests {
     use xprobe_protocol::{
-        CaptureManifest, CaptureWindow, CoverageSource, ExportFormat, ManifestArtifact,
-        ManifestVersion, TargetIdentity,
+        CaptureManifest, CaptureWindow, CoverageSource, ExportFormat, ManifestVersion,
+        TargetIdentity,
     };
 
     use super::offline_coverage;
@@ -270,7 +269,7 @@ mod tests {
     fn manifest(pid: u32, window: (u64, u64), all_gpu_activity: bool) -> CaptureManifest {
         CaptureManifest {
             schema_version: ManifestVersion::current(),
-            artifact: ManifestArtifact::of(ExportFormat::Jsonl, 0, b""),
+            artifact: xprobe_exporter::manifest_artifact(ExportFormat::Jsonl, 0, b""),
             target: TargetIdentity {
                 pid,
                 process_start_time: 7,

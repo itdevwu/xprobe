@@ -198,7 +198,7 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
                 json.dumps(
                     {
                         "timestamp_ns": timestamp,
-                        "pid": 1,
+                        "pid": pid,
                         "tid": tid,
                         "gil": gil,
                         "truncated": False,
@@ -207,12 +207,14 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
                     }
                 )
                 + "\n"
-                for timestamp, tid, gil, leaf, native in [
-                    (260, 1, True, "step", None),
-                    (400, 1, True, "step", None),
-                    (420, 1, True, "load", None),
-                    (450, 2, False, "wait", {"syscall": "futex", "module": "libc.so.6", "symbol": None}),
-                    (600, 1, True, "late", None),
+                for pid, timestamp, tid, gil, leaf, native in [
+                    (1234, 260, 1, True, "step", None),
+                    (1234, 400, 1, True, "step", None),
+                    (1234, 420, 1, True, "load", None),
+                    (1234, 450, 2, False, "wait", {"syscall": "futex", "module": "libc.so.6", "symbol": None}),
+                    (1234, 600, 1, True, "late", None),
+                    # Another process sampled at the same time is not this trace's.
+                    (999, 300, 9, True, "elsewhere", None),
                 ]
             )
         )
@@ -229,6 +231,14 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
         by_outlier = run("--measurement", str(result), "--slice-outlier", "2")
         by_time = run("--around", "440:460", "--max-slice-events", "1")
         with_python = run("--slice-gap", "1", "--window-ms", "0.00005", "--python-samples", str(python))
+        # The same trace on the host clock, as a normalized CUPTI capture is.
+        trace.write_text(
+            "".join(
+                json.dumps({**item, "clock_domain": "cupti_normalized_to_host_monotonic"}) + "\n"
+                for item in events
+            )
+        )
+        aligned = run("--slice-gap", "1", "--window-ms", "0.00005", "--python-samples", str(python))
         unsliced_python = subprocess.run(
             [script, trace, "--python-samples", str(python)], check=False, capture_output=True, text=True
         )
@@ -261,16 +271,22 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
     assert by_time["slice"]["events"][0]["name"] == "cudaStreamSynchronize"
     assert missing.returncode != 0 and "requires --measurement" in missing.stderr
 
+    # Raw CUPTI timestamps do not line up with Python samples: no stacks are
+    # placed in the slice, and the result says why.
+    assert with_python["slice"]["python"] is None
+    assert "PYTHON_CLOCK_UNALIGNED" in {item["code"] for item in with_python["warnings"]}
+
     # Python stacks sampled inside the 250-550 window, beside the GPU events.
-    stacks = with_python["slice"]["python"]
+    stacks = aligned["slice"]["python"]
     assert (stacks["samples"], stacks["gil_samples"]) == (4, 3), stacks
     assert stacks["gil_stacks"][0]["frames"][0] == "step (app.py:1)"
     assert stacks["gil_stacks"][0]["samples"] == 2
     assert stacks["native_waits"] == [
         {"syscall": "futex", "module": "libc.so.6", "symbol": None, "samples": 1}
     ]
-    # These GPU timestamps are raw CUPTI time, so the result says so.
-    assert "PYTHON_CLOCK_UNALIGNED" in {item["code"] for item in with_python["warnings"]}
+    codes = {item["code"] for item in aligned["warnings"]}
+    assert "PYTHON_CLOCK_UNALIGNED" not in codes
+    assert "PYTHON_SAMPLES_OTHER_PROCESS" in codes
     assert unsliced_python.returncode != 0 and "requires --slice-gap" in unsliced_python.stderr
 
 

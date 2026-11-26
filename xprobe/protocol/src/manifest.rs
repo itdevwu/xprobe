@@ -2,7 +2,6 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{ExportFormat, TargetIdentity};
 
@@ -60,25 +59,6 @@ pub struct ManifestArtifact {
     pub sha256: String,
 }
 
-impl ManifestArtifact {
-    /// Describe artifact bytes holding `events` events.
-    #[must_use]
-    pub fn of(format: ExportFormat, events: u64, bytes: &[u8]) -> Self {
-        Self {
-            format,
-            events,
-            bytes: bytes.len() as u64,
-            sha256: sha256_hex(bytes),
-        }
-    }
-
-    /// Whether `bytes` are the artifact this describes.
-    #[must_use]
-    pub fn matches(&self, bytes: &[u8]) -> bool {
-        self.bytes == bytes.len() as u64 && self.sha256 == sha256_hex(bytes)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureWindow {
@@ -102,33 +82,9 @@ pub fn manifest_path(artifact: &std::path::Path) -> std::path::PathBuf {
     path.into()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
-            hex
-        })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{CaptureWindow, ManifestArtifact, manifest_path};
-    use crate::ExportFormat;
-
-    #[test]
-    fn describes_artifact_bytes_by_length_and_sha256() {
-        let artifact = ManifestArtifact::of(ExportFormat::Jsonl, 0, b"abc");
-        assert_eq!(
-            artifact.sha256,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert!(artifact.matches(b"abc"));
-        assert!(!artifact.matches(b"abd"));
-        assert!(!artifact.matches(b"abcd"));
-    }
+    use super::{CaptureWindow, manifest_path};
 
     #[test]
     fn windows_overlap_when_they_share_an_instant() {

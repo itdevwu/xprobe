@@ -1,7 +1,38 @@
 //! Structured result and trace exporters.
 
 use serde_json::{Value, json};
-use xprobe_protocol::{Event, EventSource, EventType};
+use sha2::{Digest, Sha256};
+use xprobe_protocol::{Event, EventSource, EventType, ExportFormat, ManifestArtifact};
+
+/// Lowercase hexadecimal SHA-256 of artifact bytes.
+#[must_use]
+pub fn artifact_sha256(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+            hex
+        })
+}
+
+/// Describe artifact bytes holding `events` events for their manifest.
+#[must_use]
+pub fn manifest_artifact(format: ExportFormat, events: u64, bytes: &[u8]) -> ManifestArtifact {
+    ManifestArtifact {
+        format,
+        events,
+        bytes: bytes.len() as u64,
+        sha256: artifact_sha256(bytes),
+    }
+}
+
+/// Whether `bytes` are the artifact a manifest describes.
+#[must_use]
+pub fn artifact_matches(artifact: &ManifestArtifact, bytes: &[u8]) -> bool {
+    artifact.bytes == bytes.len() as u64 && artifact.sha256 == artifact_sha256(bytes)
+}
 
 /// Serialize events as one compact, versioned JSON object per line.
 ///
@@ -180,5 +211,24 @@ mod tests {
         assert_eq!(document["traceEvents"][0]["ph"], "i");
         assert_eq!(document["traceEvents"][0]["ts"], 10);
         assert_eq!(document["traceEvents"][0]["args"]["timestamp_ns"], 10_999);
+    }
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use xprobe_protocol::ExportFormat;
+
+    use super::{artifact_matches, manifest_artifact};
+
+    #[test]
+    fn describes_artifact_bytes_by_length_and_sha256() {
+        let artifact = manifest_artifact(ExportFormat::Jsonl, 0, b"abc");
+        assert_eq!(
+            artifact.sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(artifact_matches(&artifact, b"abc"));
+        assert!(!artifact_matches(&artifact, b"abd"));
+        assert!(!artifact_matches(&artifact, b"abcd"));
     }
 }

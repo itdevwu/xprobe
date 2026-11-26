@@ -10,9 +10,8 @@ use std::{
 
 use xprobe_protocol::{
     CaptureManifest, CaptureWindow, ClockDomain, CorrelationConfidence, CoverageSource, CudaEvent,
-    ErrorCode, ErrorResponse, Event, EventSource, EventType, ExportFormat, ManifestArtifact,
-    ManifestVersion, MeasurementResult, QualityVerdict, SchemaVersion, TargetIdentity,
-    manifest_path,
+    ErrorCode, ErrorResponse, Event, EventSource, EventType, ExportFormat, ManifestVersion,
+    MeasurementResult, QualityVerdict, SchemaVersion, TargetIdentity, manifest_path,
 };
 
 const PID: u32 = 1234;
@@ -88,7 +87,7 @@ fn write_events(path: &Path) -> Vec<u8> {
 fn manifest(bytes: &[u8], all_gpu_activity: bool) -> CaptureManifest {
     CaptureManifest {
         schema_version: ManifestVersion::current(),
-        artifact: ManifestArtifact::of(ExportFormat::Jsonl, 6, bytes),
+        artifact: xprobe_exporter::manifest_artifact(ExportFormat::Jsonl, 6, bytes),
         target: TargetIdentity {
             pid: PID,
             process_start_time: 99,
@@ -297,7 +296,10 @@ fn re_exported_artifacts_keep_or_drop_their_manifest() {
     ));
     let written: CaptureManifest =
         serde_json::from_slice(&fs::read(manifest_path(&copy)).unwrap()).unwrap();
-    assert!(written.artifact.matches(&fs::read(&copy).unwrap()));
+    assert!(xprobe_exporter::artifact_matches(
+        &written.artifact,
+        &fs::read(&copy).unwrap()
+    ));
     assert!(written.all_gpu_activity);
 
     // Without a manifest on the input, a stale one at the output goes away.

@@ -853,6 +853,7 @@ name = "xprobe-exporter"
 version = "0.6.3"
 dependencies = [
  "serde_json",
+ "sha2",
  "xprobe-protocol",
 ]
 
@@ -863,7 +864,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha2",
 ]
 
 [[package]]

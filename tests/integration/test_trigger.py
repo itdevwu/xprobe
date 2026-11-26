@@ -50,6 +50,8 @@ def main() -> None:
         offline = []
         for window in windows:
             assert window["fired"]["latency_ns"] >= 20 * MS, window["fired"]
+            # Both windows sit well inside the capture.
+            assert window["truncated"] is False, window
             assert window["start_ns"] <= window["fired"]["start"]["timestamp_ns"] - 5 * MS
             artifact = output / pathlib.Path(window["artifact"]["path"]).relative_to("/output")
             manifest = json.loads(
