@@ -100,6 +100,10 @@ pub struct TriageResult {
     pub threads: ThreadTimeBreakdown,
     pub cgroup: Option<CgroupCpuThrottling>,
     pub cpu_hotspots: Vec<crate::CpuHotspot>,
+    /// Python functions holding the GIL, from external CPython sampling.
+    pub python_hotspots: Vec<crate::PythonHotspot>,
+    /// Share of GIL ticks with no thread running Python, when sampled.
+    pub gil_released_proportion: Option<f64>,
     pub syscalls: Vec<crate::SyscallAggregateGroup>,
     pub gpu_devices: Vec<GpuDeviceHealth>,
     pub gpu_activity: Vec<crate::AggregateGroup>,
@@ -159,6 +163,7 @@ pub enum TriageSourceKind {
     SyscallAggregate,
     GpuHealth,
     GpuActivity,
+    PythonSample,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

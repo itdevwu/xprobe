@@ -272,6 +272,18 @@ pub(crate) fn print_triage_result(result: &TriageResult) {
             thread.blocked_share * 100.0
         );
     }
+    if let Some(released) = result.gil_released_proportion {
+        println!("Python: GIL released {:.0}% of ticks", released * 100.0);
+    }
+    for hotspot in &result.python_hotspots {
+        println!(
+            "  {:>5.1}% self  {} ({}:{})",
+            hotspot.exclusive_proportion * 100.0,
+            hotspot.frame.function,
+            hotspot.frame.file,
+            hotspot.frame.first_line
+        );
+    }
     for source in &result.sources {
         println!(
             "Source {:?}: {:?}{}",

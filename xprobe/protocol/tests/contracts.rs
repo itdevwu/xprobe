@@ -796,6 +796,8 @@ fn triage_result_contract_round_trips() {
             "throttled_ns": 0
         },
         "cpu_hotspots": [],
+        "python_hotspots": [],
+        "gil_released_proportion": null,
         "syscalls": [],
         "gpu_devices": [{
             "index": 0,

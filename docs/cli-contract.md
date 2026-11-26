@@ -301,12 +301,16 @@ line.
 `--triage` is live-only, requires `--duration-ms`, and emits
 `schemas/triage-result.schema.json` (schema `3.0`). Within one window it
 concurrently collects procfs per-thread on-CPU, runqueue, and blocked time;
-cgroup CPU throttling; a CPU sample inventory; a syscall aggregate; NVML device
+cgroup CPU throttling; a CPU sample inventory; external CPython stack samples
+when the target is CPython; a syscall aggregate; NVML device
 health (utilization, clock event reasons, temperature, power, PCIe link); and,
 when the target has loaded libcuda, a CUDA kernel aggregate, which may inject
 the CUPTI Agent under the same rules as `measure`. The result keeps the top
 five hotspots, syscall groups, and kernel groups inline and writes each full
-inventory to a private artifact referenced from `sources`. `findings` are
+inventory to a private artifact referenced from `sources`. Python sampling
+adds the top GIL-holder hotspots and `gil_released_proportion`, and a
+`PYTHON_HOTSPOT` finding when one function holds the GIL for a measurable
+share of the window. `findings` are
 deterministic and ranked by an estimated share of the window; a finding whose
 impact cannot be bounded has `impact_share: null` and ranks last. Each finding
 carries an environment action or a ready `MeasurementSpec` for `measure

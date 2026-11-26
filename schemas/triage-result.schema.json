@@ -27,6 +27,14 @@
         "$ref": "#/$defs/TriageFinding"
       }
     },
+    "gil_released_proportion": {
+      "description": "Share of GIL ticks with no thread running Python, when sampled.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
     "gpu_activity": {
       "type": "array",
       "items": {
@@ -48,6 +56,13 @@
     },
     "ok": {
       "type": "boolean"
+    },
+    "python_hotspots": {
+      "description": "Python functions holding the GIL, from external CPython sampling.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PythonHotspot"
+      }
     },
     "schema_version": {
       "$ref": "#/$defs/SchemaVersion3"
@@ -100,6 +115,7 @@
     "findings",
     "threads",
     "cpu_hotspots",
+    "python_hotspots",
     "syscalls",
     "gpu_devices",
     "gpu_activity",
@@ -638,6 +654,65 @@
         "width_max"
       ]
     },
+    "PythonFrame": {
+      "description": "One Python function in a sampled stack.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "first_line": {
+          "description": "The line where the function starts, not the line that was running.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "function": {
+          "description": "`co_qualname` (3.11+) or `co_name`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "file",
+        "first_line"
+      ]
+    },
+    "PythonHotspot": {
+      "type": "object",
+      "properties": {
+        "exclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "exclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "frame": {
+          "$ref": "#/$defs/PythonFrame"
+        },
+        "inclusive_proportion": {
+          "type": "number",
+          "format": "double"
+        },
+        "inclusive_samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frame",
+        "inclusive_samples",
+        "exclusive_samples",
+        "inclusive_proportion",
+        "exclusive_proportion"
+      ]
+    },
     "SchemaVersion": {
       "type": "string",
       "enum": [
@@ -950,7 +1025,8 @@
         "cpu_sample",
         "syscall_aggregate",
         "gpu_health",
-        "gpu_activity"
+        "gpu_activity",
+        "python_sample"
       ]
     },
     "TriageSourceStatus": {

@@ -121,7 +121,9 @@ fn period(hz: u32) -> Option<Duration> {
     (hz != 0).then(|| Duration::from_secs(1) / hz)
 }
 
-fn python_sample(request: &PythonSampleRequest<'_>) -> Result<PythonSampleResult, CommandFailure> {
+pub(crate) fn python_sample(
+    request: &PythonSampleRequest<'_>,
+) -> Result<PythonSampleResult, CommandFailure> {
     if request.duration_ms == 0 || request.threads_hz == 0 {
         return Err(CommandFailure::new(
             ErrorCode::SessionLimitExceeded,

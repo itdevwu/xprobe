@@ -16,6 +16,7 @@ EXPECTED_SOURCES = {
     "syscall_aggregate",
     "gpu_health",
     "gpu_activity",
+    "python_sample",
 }
 
 
@@ -160,6 +161,9 @@ def assert_triage(triage: dict, pid: int) -> None:
     assert set(statuses) == EXPECTED_SOURCES, statuses
     collected = {name for name, status in statuses.items() if status == "collected"}
     assert collected >= EXPECTED_SOURCES - {"cgroup"}, statuses
+    # The PyTorch workload is CPython: its GIL holder is sampled externally.
+    assert triage["python_hotspots"], triage["python_hotspots"]
+    assert triage["gil_released_proportion"] is not None
     for source in triage["sources"]:
         if source["source"] in {"cpu_sample", "syscall_aggregate", "gpu_activity"}:
             assert pathlib.Path(source["artifact"]).name.endswith(".json"), source

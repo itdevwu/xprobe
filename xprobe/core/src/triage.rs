@@ -6,9 +6,9 @@
 
 use xprobe_protocol::{
     AggregateActivity, AggregateGroup, CgroupCpuThrottling, CpuHotspot, GpuDeviceHealth,
-    MatchPolicy, MeasurementMode, MeasurementSpec, PythonSymbolizationStatus, SchemaVersion,
-    SyscallAggregateGroup, TargetIdentity, ThreadTimeBreakdown, TriageFinding, TriageNextKind,
-    TriageNextStep,
+    MatchPolicy, MeasurementMode, MeasurementSpec, PythonHotspot, PythonSymbolizationStatus,
+    SchemaVersion, SyscallAggregateGroup, TargetIdentity, ThreadTimeBreakdown, TriageFinding,
+    TriageNextKind, TriageNextStep,
 };
 
 /// Throttled time at or above this share of the window is reported.
@@ -51,6 +51,8 @@ pub struct TriageEvidence<'a> {
     pub cpu_hotspots: &'a [CpuHotspot],
     /// Python perf-map status of the CPU sample, when one was collected.
     pub python_status: Option<PythonSymbolizationStatus>,
+    /// GIL-holder hotspots, when external CPython sampling ran.
+    pub python_hotspots: Option<&'a [PythonHotspot]>,
     pub syscalls: &'a [SyscallAggregateGroup],
     pub gpu_devices: &'a [GpuDeviceHealth],
     /// Present when CUDA activity was collected for the target.
@@ -63,6 +65,7 @@ pub fn findings(evidence: &TriageEvidence<'_>) -> Vec<TriageFinding> {
     let mut found = Vec::new();
     cgroup_throttled(evidence, &mut found);
     thread_rules(evidence, &mut found);
+    python_hotspot(evidence, &mut found);
     syscall_time(evidence, &mut found);
     gpu_rules(evidence, &mut found);
     found.sort_by(|left, right| {
@@ -292,6 +295,55 @@ fn thread_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
     }
 }
 
+/// The Python function that held the GIL longest. GIL ticks are uniform in
+/// wall time, so its exclusive share estimates its share of the window.
+fn python_hotspot(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
+    let Some(hotspots) = evidence.python_hotspots else {
+        return;
+    };
+    let Some(top) = hotspots
+        .iter()
+        .filter(|hotspot| hotspot.exclusive_proportion >= HOTSPOT_SHARE)
+        .max_by(|left, right| {
+            left.exclusive_proportion
+                .total_cmp(&right.exclusive_proportion)
+        })
+    else {
+        return;
+    };
+    let callers = hotspots
+        .iter()
+        .filter(|hotspot| {
+            hotspot.frame != top.frame && hotspot.inclusive_proportion > top.exclusive_proportion
+        })
+        .take(2)
+        .map(|hotspot| {
+            format!(
+                "{} {}",
+                hotspot.frame.function,
+                percent(hotspot.inclusive_proportion)
+            )
+        })
+        .collect::<Vec<_>>();
+    found.push(finding(
+        "PYTHON_HOTSPOT",
+        top.exclusive_proportion,
+        format!(
+            "Python function {} ({}:{}) held the GIL {} of the window{}; Python functions have no attachable boundary, so read gil_stack_groups in the python-sample artifact for its callers",
+            top.frame.function,
+            top.frame.file,
+            top.frame.first_line,
+            percent(top.exclusive_proportion),
+            if callers.is_empty() {
+                String::new()
+            } else {
+                format!(" under {}", callers.join(", "))
+            }
+        ),
+        None,
+    ));
+}
+
 /// The busiest thread is on CPU but no single frame crosses the hotspot share.
 fn cpu_bound(evidence: &TriageEvidence<'_>, tid: u32, on_cpu_share: f64) -> TriageFinding {
     let frames = evidence
@@ -306,13 +358,15 @@ fn cpu_bound(evidence: &TriageEvidence<'_>, tid: u32, on_cpu_share: f64) -> Tria
             )
         })
         .collect::<Vec<_>>();
+    // Python samples name the functions themselves; without them, point at
+    // the sampler, which needs no interpreter restart.
     let python_inactive = matches!(
         evidence.python_status,
         Some(PythonSymbolizationStatus::Inactive)
-    );
+    ) && evidence.python_hotspots.is_none();
     let next = python_inactive.then(|| {
         environment(
-            "restart the interpreter with -X perf (CPython 3.12+) so samples resolve to Python functions"
+            "run measure --python-sample to name the Python functions without restarting the interpreter"
                 .to_owned(),
         )
     });
@@ -636,6 +690,7 @@ mod tests {
             cgroup: None,
             cpu_hotspots: &hotspots,
             python_status: None,
+            python_hotspots: None,
             syscalls: &[],
             gpu_devices: &[],
             gpu_activity: None,
@@ -686,6 +741,7 @@ mod tests {
             cgroup: None,
             cpu_hotspots: &[],
             python_status: None,
+            python_hotspots: None,
             syscalls: &[],
             gpu_devices: &busy_gpu,
             gpu_activity: Some(&kernels),
@@ -716,6 +772,7 @@ mod tests {
             cgroup: None,
             cpu_hotspots: &hotspots,
             python_status: Some(PythonSymbolizationStatus::Inactive),
+            python_hotspots: None,
             syscalls: &[],
             gpu_devices: &[],
             gpu_activity: None,
@@ -728,6 +785,55 @@ mod tests {
             found[0].next.as_ref().map(|next| next.kind),
             Some(TriageNextKind::Environment)
         );
+    }
+
+    #[test]
+    fn the_python_function_holding_the_gil_longest_is_a_finding() {
+        let target = target();
+        let threads = threads(thread(0.95, 0.0));
+        let python =
+            |function: &str, exclusive: f64, inclusive: f64| xprobe_protocol::PythonHotspot {
+                frame: xprobe_protocol::PythonFrame {
+                    function: function.to_owned(),
+                    file: "train.py".to_owned(),
+                    first_line: 10,
+                },
+                inclusive_samples: 0,
+                exclusive_samples: 0,
+                inclusive_proportion: inclusive,
+                exclusive_proportion: exclusive,
+            };
+        let hotspots = [
+            python("collate", 0.62, 0.62),
+            python("Loader.next", 0.0, 0.8),
+        ];
+        let evidence = TriageEvidence {
+            target: &target,
+            threads: &threads,
+            collection_window_ns: WINDOW,
+            cgroup: None,
+            cpu_hotspots: &[],
+            python_status: Some(PythonSymbolizationStatus::Inactive),
+            python_hotspots: Some(&hotspots),
+            syscalls: &[],
+            gpu_devices: &[],
+            gpu_activity: None,
+        };
+        let found = findings(&evidence);
+        let python = found
+            .iter()
+            .find(|finding| finding.code == "PYTHON_HOTSPOT")
+            .expect("the GIL hotspot is a finding");
+        assert_eq!(python.impact_share, Some(0.62));
+        assert!(python.summary.contains("collate (train.py:10)"));
+        assert!(python.summary.contains("under Loader.next 80%"));
+        // Python samples already name the functions, so CPU_BOUND does not
+        // point at the sampler again.
+        let cpu = found
+            .iter()
+            .find(|finding| finding.code == "CPU_BOUND")
+            .unwrap();
+        assert!(cpu.next.is_none());
     }
 
     #[test]
@@ -763,6 +869,7 @@ mod tests {
             cgroup: Some(&cgroup),
             cpu_hotspots: &[],
             python_status: None,
+            python_hotspots: None,
             syscalls: &syscalls,
             gpu_devices: &[],
             gpu_activity: None,
@@ -801,6 +908,7 @@ mod tests {
             cgroup: None,
             cpu_hotspots: &[],
             python_status: None,
+            python_hotspots: None,
             syscalls: &[],
             gpu_devices: &idle_gpu,
             gpu_activity: None,

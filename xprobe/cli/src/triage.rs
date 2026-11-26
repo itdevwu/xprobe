@@ -9,7 +9,9 @@ use std::{
 
 use serde::Serialize;
 use xprobe_core::{
-    cgroup_cpu, gpu_health, inspect, thread_time,
+    cgroup_cpu, gpu_health, inspect,
+    python_layout::{self, PythonLocateError},
+    thread_time,
     triage::{TriageEvidence, findings},
 };
 use xprobe_correlator::MeasureOptions;
@@ -26,6 +28,7 @@ use crate::{
     inventory::{cpu_inventory, syscall_inventory},
     live::{LiveMeasureRequest, collect_live_aggregate},
     private_artifact_dir,
+    python::{PythonSampleRequest, python_sample},
     render::print_triage_result,
 };
 
@@ -96,6 +99,7 @@ fn classify<T>(result: Result<T, CommandFailure>) -> Result<Outcome<T>, CommandF
             | ErrorCode::CuptiAgentNotLoaded
             | ErrorCode::CudaContextNotFound
             | ErrorCode::UnsupportedCudaVersion
+            | ErrorCode::UnsupportedPythonVersion
             | ErrorCode::EventRateTooHigh
             | ErrorCode::EventsDropped
             | ErrorCode::NoMatchedSamples
@@ -136,7 +140,17 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
     let started = Instant::now();
     let window = Duration::from_millis(request.duration_ms);
 
-    let (cpu, syscalls, gpu_activity, gpu_rounds) = thread::scope(|scope| {
+    let python_runtime = python_layout::locate(&report);
+    let python_artifact = artifacts.join("python-samples.jsonl");
+    let python_request = PythonSampleRequest {
+        pid: request.pid,
+        name: None,
+        duration_ms: request.duration_ms,
+        gil_hz: 2000,
+        threads_hz: 100,
+        events_out: Some(&python_artifact),
+    };
+    let (cpu, syscalls, gpu_activity, gpu_rounds, python) = thread::scope(|scope| {
         let cpu = scope.spawn(|| cpu_inventory(&cpu_spec(&report, request), Some(report.clone())));
         let syscalls = scope
             .spawn(|| syscall_inventory(&syscall_spec(&report, request), Some(report.clone())));
@@ -145,11 +159,15 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
             .libcuda_loaded
             .then(|| scope.spawn(|| collect_live_aggregate(&gpu_request(request))));
         let gpu_rounds = scope.spawn(|| sample_gpu_health(window));
+        let python = python_runtime
+            .is_ok()
+            .then(|| scope.spawn(|| python_sample(&python_request)));
         (
             cpu.join(),
             syscalls.join(),
             gpu_activity.map(thread::ScopedJoinHandle::join),
             gpu_rounds.join(),
+            python.map(thread::ScopedJoinHandle::join),
         )
     });
     let elapsed = started.elapsed();
@@ -175,6 +193,14 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
         None => Outcome::Skipped("the target has not loaded libcuda".to_owned()),
     };
     let gpu_rounds = gpu_rounds.map_err(|_| panicked("GPU health"))?;
+    let python = match (python, &python_runtime) {
+        (Some(joined), _) => classify(joined.map_err(|_| panicked("Python sampling"))?)?,
+        (None, Err(PythonLocateError::NotPython)) => {
+            Outcome::Skipped("the target is not a CPython process".to_owned())
+        }
+        (None, Err(error)) => Outcome::Unavailable(error.to_string()),
+        (None, Ok(_)) => unreachable!("a located CPython runtime is sampled"),
+    };
 
     let window_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
     let threads = thread_time::breakdown(&threads_before, &threads_after, window_ns, TOP);
@@ -229,6 +255,26 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
             ));
         }
         outcome => sources.push(not_collected(TriageSourceKind::CpuSample, outcome)),
+    }
+
+    let mut python_hotspots = None;
+    let mut gil_released_proportion = None;
+    match python {
+        Outcome::Collected(result) => {
+            let path = write_artifact(&artifacts, "python-sample.json", &result)?;
+            let mut hotspots = result.inventory.gil_hotspots;
+            hotspots.truncate(TOP);
+            python_hotspots = Some(hotspots);
+            gil_released_proportion = Some(result.inventory.gil_released_proportion);
+            warnings.extend(result.warnings);
+            sources.push(source(
+                TriageSourceKind::PythonSample,
+                TriageSourceStatus::Collected,
+                None,
+                Some(path),
+            ));
+        }
+        outcome => sources.push(not_collected(TriageSourceKind::PythonSample, outcome)),
     }
 
     let mut syscall_groups = Vec::new();
@@ -316,6 +362,7 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
         cgroup: cgroup_throttling.as_ref(),
         cpu_hotspots: &cpu_hotspots,
         python_status,
+        python_hotspots: python_hotspots.as_deref(),
         syscalls: &syscall_groups,
         gpu_devices: &gpu_devices,
         gpu_activity: activity_groups.as_deref(),
@@ -331,6 +378,8 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
         threads,
         cgroup: cgroup_throttling,
         cpu_hotspots,
+        python_hotspots: python_hotspots.unwrap_or_default(),
+        gil_released_proportion,
         syscalls: syscall_groups,
         gpu_devices,
         gpu_activity: activity_groups.unwrap_or_default(),
