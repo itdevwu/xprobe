@@ -15,6 +15,17 @@
       "description": "Taken as the GIL holder rather than in a sweep of every thread.",
       "type": "boolean"
     },
+    "native": {
+      "description": "Where the thread was blocked in native code, for sweep samples of a\nthread that was not running.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PythonNativeLeaf"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "pid": {
       "type": "integer",
       "format": "uint32",
@@ -71,6 +82,33 @@
         "file",
         "first_line"
       ]
+    },
+    "PythonNativeLeaf": {
+      "description": "Where a blocked thread waits in native code, from\n`/proc/<pid>/task/<tid>/syscall`.",
+      "type": "object",
+      "properties": {
+        "module": {
+          "description": "The mapped object and symbol of its user-space program counter.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "syscall": {
+          "description": "The system call it is blocked in, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -7,9 +7,10 @@ use std::time::Duration;
 use xprobe_collector::python_sampling::{
     ProcessMemory, ReadError, SamplerConfig, SamplerError, Walker, sample,
 };
+use xprobe_core::cpu_sampling_analysis::symbolize_native;
 use xprobe_core::inspect;
 use xprobe_core::python_layout::{self, PythonLocateError};
-use xprobe_core::python_sampling::{SamplingRequest, analyze, records};
+use xprobe_core::python_sampling::{SamplingRequest, analyze, native_addresses, records};
 use xprobe_protocol::{ErrorCode, EvidenceArtifact, ExportFormat, PythonSampleResult, ReadLatency};
 
 use crate::failure::{CommandFailure, emit_command_failure};
@@ -152,6 +153,9 @@ fn python_sample(request: &PythonSampleRequest<'_>) -> Result<PythonSampleResult
     inspect::verify_target(&report.target).map_err(|error| {
         CommandFailure::new(error.code(), error.to_string(), error.recoverable())
     })?;
+    // Symbolize native leaves while the target's mappings are still live.
+    let native = symbolize_native(&report, &native_addresses(&capture))
+        .map_err(|error| CommandFailure::new(error.code(), error.to_string(), true))?;
     let mut result = analyze(
         &SamplingRequest {
             session_id: format!("xp_python_{}", std::process::id()),
@@ -166,12 +170,13 @@ fn python_sample(request: &PythonSampleRequest<'_>) -> Result<PythonSampleResult
             stack_depth: u32::try_from(STACK_DEPTH).unwrap_or(u32::MAX),
         },
         &capture,
+        &native,
     );
     let path = match request.events_out {
         Some(path) => path.to_path_buf(),
         None => crate::private_artifact_dir()?.join("python-samples.jsonl"),
     };
-    let lines = records(&capture, request.pid);
+    let lines = records(&capture, request.pid, &native);
     let mut text = String::new();
     for line in &lines {
         text.push_str(&serde_json::to_string(line).expect("sample record must serialize"));

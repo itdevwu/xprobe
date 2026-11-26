@@ -144,6 +144,58 @@
         "exclusive_proportion"
       ]
     },
+    "PythonNativeLeaf": {
+      "description": "Where a blocked thread waits in native code, from\n`/proc/<pid>/task/<tid>/syscall`.",
+      "type": "object",
+      "properties": {
+        "module": {
+          "description": "The mapped object and symbol of its user-space program counter.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "syscall": {
+          "description": "The system call it is blocked in, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PythonNativeWait": {
+      "description": "Thread samples blocked at one native leaf.",
+      "type": "object",
+      "properties": {
+        "leaf": {
+          "$ref": "#/$defs/PythonNativeLeaf"
+        },
+        "proportion": {
+          "description": "Share of thread samples.",
+          "type": "number",
+          "format": "double"
+        },
+        "samples": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "leaf",
+        "samples",
+        "proportion"
+      ]
+    },
     "PythonSampleCollection": {
       "type": "object",
       "properties": {
@@ -312,6 +364,13 @@
             "null"
           ]
         },
+        "native_waits": {
+          "description": "Native leaves of blocked threads in the sweeps; a running thread has\nnone.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PythonNativeWait"
+          }
+        },
         "thread_stack_groups": {
           "description": "Stacks of every thread from the slower sweeps; proportions are of\nthread samples.",
           "type": "array",
@@ -326,7 +385,8 @@
         "gil_stack_groups",
         "gil_hotspots",
         "gil_released_proportion",
-        "thread_stack_groups"
+        "thread_stack_groups",
+        "native_waits"
       ]
     },
     "PythonStackGroup": {

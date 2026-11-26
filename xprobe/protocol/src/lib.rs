@@ -58,8 +58,9 @@ pub use measurement::{
 };
 pub use process::{CgroupEntry, ProcessCredentials, ProcessCudaState, ProcessReport};
 pub use python_sampling::{
-    PythonFrame, PythonHotspot, PythonSampleCollection, PythonSampleInventory, PythonSampleRecord,
-    PythonSampleResult, PythonStackGroup, PythonTidSource, ReadLatency,
+    PythonFrame, PythonHotspot, PythonNativeLeaf, PythonNativeWait, PythonSampleCollection,
+    PythonSampleInventory, PythonSampleRecord, PythonSampleResult, PythonStackGroup,
+    PythonTidSource, ReadLatency,
 };
 pub use resolve::{ElfObjectKind, ProcessMapping, ResolvedProbe};
 pub use syscall_aggregate::{

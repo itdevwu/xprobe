@@ -40,6 +40,11 @@ def check(minor: int, output: pathlib.Path, expected: dict) -> dict:
         if group["frames"][0]["function"] == "sleeper"
     ]
     assert sleeper, result["inventory"]["thread_stack_groups"]
+    # time.sleep blocks in a sleep system call (select before 3.11); the
+    # sweep sees where.
+    sleeps = {"clock_nanosleep", "nanosleep", "pselect6", "select"}
+    waits = result["inventory"]["native_waits"]
+    assert any(wait["leaf"]["syscall"] in sleeps for wait in waits), waits
     records = [
         json.loads(line) for line in (output / "samples.jsonl").read_text().splitlines()
     ]

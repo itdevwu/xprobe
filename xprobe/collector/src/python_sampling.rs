@@ -21,7 +21,8 @@ use nix::time::{ClockId, clock_gettime};
 use nix::unistd::Pid;
 use xprobe_core::python_layout::{FramePath, GilPath, PythonLayout, PythonRuntime};
 pub use xprobe_core::python_sampling::{
-    Code, PythonCapture, PythonSample, SamplerCounters, Stack, TidSource,
+    Code, NativeLeaf, PythonCapture, PythonSample, SamplerCounters, Stack, TidSource,
+    parse_task_syscall,
 };
 
 /// Longest string read from an interpreter object, in code points.
@@ -700,6 +701,7 @@ fn task_ids(pid: u32) -> BTreeSet<u32> {
 
 struct Run<'w, 'm, M: RemoteMemory> {
     walker: &'w mut Walker<'m, M>,
+    pid: u32,
     config: SamplerConfig,
     capture: PythonCapture,
     tids: BTreeMap<u64, Option<u32>>,
@@ -718,11 +720,20 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
                 self.capture
                     .read_ns
                     .push(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                let tid = self.tids.get(&thread).copied().flatten();
+                // The GIL holder runs Python; a swept thread may be blocked.
+                let native = tid
+                    .filter(|_| !gil)
+                    .and_then(|tid| {
+                        fs::read_to_string(format!("/proc/{}/task/{tid}/syscall", self.pid)).ok()
+                    })
+                    .and_then(|text| parse_task_syscall(&text));
                 self.capture.samples.push(PythonSample {
                     timestamp_ns,
-                    tid: self.tids.get(&thread).copied().flatten(),
+                    tid,
                     gil,
                     stack,
+                    native,
                 });
                 Ok(())
             }
@@ -796,6 +807,7 @@ pub fn sample<M: RemoteMemory>(
     let interpreter = walker.interpreter()?;
     let mut run = Run {
         walker,
+        pid,
         config,
         capture: PythonCapture {
             samples: Vec::new(),

@@ -16,6 +16,28 @@ pub struct PythonFrame {
     pub first_line: u32,
 }
 
+/// Where a blocked thread waits in native code, from
+/// `/proc/<pid>/task/<tid>/syscall`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PythonNativeLeaf {
+    /// The system call it is blocked in, if any.
+    pub syscall: Option<String>,
+    /// The mapped object and symbol of its user-space program counter.
+    pub module: Option<String>,
+    pub symbol: Option<String>,
+}
+
+/// Thread samples blocked at one native leaf.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PythonNativeWait {
+    pub leaf: PythonNativeLeaf,
+    pub samples: u64,
+    /// Share of thread samples.
+    pub proportion: f64,
+}
+
 /// Identical stacks, innermost frame first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +73,9 @@ pub struct PythonSampleInventory {
     /// Stacks of every thread from the slower sweeps; proportions are of
     /// thread samples.
     pub thread_stack_groups: Vec<PythonStackGroup>,
+    /// Native leaves of blocked threads in the sweeps; a running thread has
+    /// none.
+    pub native_waits: Vec<PythonNativeWait>,
 }
 
 /// How a sample's thread was mapped to a Linux TID.
@@ -135,4 +160,7 @@ pub struct PythonSampleRecord {
     pub truncated: bool,
     /// Innermost frame first.
     pub frames: Vec<PythonFrame>,
+    /// Where the thread was blocked in native code, for sweep samples of a
+    /// thread that was not running.
+    pub native: Option<PythonNativeLeaf>,
 }

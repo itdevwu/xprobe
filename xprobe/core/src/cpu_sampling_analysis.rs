@@ -174,6 +174,22 @@ struct Symbolizer {
     warnings: Vec<Warning>,
 }
 
+/// Resolve native addresses of a live process to their module and symbol.
+///
+/// # Errors
+///
+/// Returns [`CpuAnalysisError`] when the process mappings are unreadable.
+pub fn symbolize_native(
+    report: &ProcessReport,
+    addresses: &BTreeSet<u64>,
+) -> Result<BTreeMap<u64, CpuStackFrame>, CpuAnalysisError> {
+    let symbolizer = Symbolizer::load(report, PythonSymbolizationStatus::NotDetected, addresses)?;
+    Ok(addresses
+        .iter()
+        .map(|address| (*address, symbolizer.symbolize(*address)))
+        .collect())
+}
+
 /// Aggregate and symbolize one completed bounded CPU capture.
 ///
 /// # Errors

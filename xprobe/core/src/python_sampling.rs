@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use xprobe_protocol::{
-    PythonFrame, PythonHotspot, PythonSampleCollection, PythonSampleInventory, PythonSampleRecord,
-    PythonSampleResult, PythonStackGroup, PythonTidSource, ReadLatency, SchemaVersion3,
-    SessionStatus, TargetIdentity, Warning,
+    CpuStackFrame, PythonFrame, PythonHotspot, PythonNativeLeaf, PythonNativeWait,
+    PythonSampleCollection, PythonSampleInventory, PythonSampleRecord, PythonSampleResult,
+    PythonStackGroup, PythonTidSource, ReadLatency, SchemaVersion3, SessionStatus, TargetIdentity,
+    Warning,
 };
 
 /// A function in a sampled stack.
@@ -38,6 +39,33 @@ pub struct PythonSample {
     /// Taken as the GIL holder rather than in an all-thread sweep.
     pub gil: bool,
     pub stack: Stack,
+    /// Where a blocked thread waits in native code (sweep samples only).
+    pub native: Option<NativeLeaf>,
+}
+
+/// A blocked thread's system call and user-space program counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeLeaf {
+    pub syscall: Option<u32>,
+    pub pc: u64,
+}
+
+/// Parse `/proc/<pid>/task/<tid>/syscall`: `running`, `-1 sp pc` for a
+/// thread blocked outside a system call, or `nr args... sp pc`.
+#[must_use]
+pub fn parse_task_syscall(text: &str) -> Option<NativeLeaf> {
+    let fields = text.split_whitespace().collect::<Vec<_>>();
+    let first = *fields.first()?;
+    if first == "running" || fields.len() < 3 {
+        return None;
+    }
+    let pc = u64::from_str_radix(fields.last()?.trim_start_matches("0x"), 16).ok()?;
+    let syscall = if first == "-1" {
+        None
+    } else {
+        Some(first.parse().ok()?)
+    };
+    Some(NativeLeaf { syscall, pc })
 }
 
 /// How many reads of each kind happened.
@@ -266,7 +294,11 @@ fn quality_warnings(
 
 /// Aggregate a finished capture.
 #[must_use]
-pub fn analyze(request: &SamplingRequest, capture: &PythonCapture) -> PythonSampleResult {
+pub fn analyze(
+    request: &SamplingRequest,
+    capture: &PythonCapture,
+    native: &BTreeMap<u64, CpuStackFrame>,
+) -> PythonSampleResult {
     let counters = capture.counters;
     let gil = || capture.samples.iter().filter(|sample| sample.gil);
     let threads = || capture.samples.iter().filter(|sample| !sample.gil);
@@ -306,6 +338,7 @@ pub fn analyze(request: &SamplingRequest, capture: &PythonCapture) -> PythonSamp
             gil_hotspots: hotspots(gil(), &capture.codes, counters.gil_ticks),
             gil_released_proportion: ratio(counters.gil_idle, counters.gil_ticks),
             thread_stack_groups: groups(threads(), &capture.codes, thread_samples),
+            native_waits: native_waits(threads(), native, thread_samples),
         },
         collection: PythonSampleCollection {
             python_version: format!("3.{}", request.python_minor),
@@ -339,9 +372,63 @@ pub fn analyze(request: &SamplingRequest, capture: &PythonCapture) -> PythonSamp
     }
 }
 
+/// The program counters of every native leaf, to symbolize while the
+/// target's mappings are still live.
+#[must_use]
+pub fn native_addresses(capture: &PythonCapture) -> BTreeSet<u64> {
+    capture
+        .samples
+        .iter()
+        .filter_map(|sample| sample.native.map(|leaf| leaf.pc))
+        .collect()
+}
+
+fn native_leaf(leaf: NativeLeaf, native: &BTreeMap<u64, CpuStackFrame>) -> PythonNativeLeaf {
+    let frame = native.get(&leaf.pc);
+    PythonNativeLeaf {
+        syscall: leaf.syscall.map(|number| {
+            crate::syscall_aggregate::syscall_name(number)
+                .map_or_else(|| format!("syscall {number}"), str::to_owned)
+        }),
+        module: frame.and_then(|frame| frame.module_path.clone()),
+        symbol: frame.and_then(|frame| frame.symbol.clone()),
+    }
+}
+
+fn native_waits<'a>(
+    samples: impl Iterator<Item = &'a PythonSample>,
+    native: &BTreeMap<u64, CpuStackFrame>,
+    total: u64,
+) -> Vec<PythonNativeWait> {
+    let mut counts = BTreeMap::<PythonNativeLeaf, u64>::new();
+    for leaf in samples.filter_map(|sample| sample.native) {
+        *counts.entry(native_leaf(leaf, native)).or_default() += 1;
+    }
+    let mut waits = counts
+        .into_iter()
+        .map(|(leaf, samples)| PythonNativeWait {
+            leaf,
+            samples,
+            proportion: ratio(samples, total),
+        })
+        .collect::<Vec<_>>();
+    waits.sort_by(|left, right| {
+        right
+            .samples
+            .cmp(&left.samples)
+            .then_with(|| left.leaf.cmp(&right.leaf))
+    });
+    waits.truncate(LIST_LIMIT);
+    waits
+}
+
 /// Every sample as an artifact record.
 #[must_use]
-pub fn records(capture: &PythonCapture, pid: u32) -> Vec<PythonSampleRecord> {
+pub fn records(
+    capture: &PythonCapture,
+    pid: u32,
+    native: &BTreeMap<u64, CpuStackFrame>,
+) -> Vec<PythonSampleRecord> {
     capture
         .samples
         .iter()
@@ -357,6 +444,7 @@ pub fn records(capture: &PythonCapture, pid: u32) -> Vec<PythonSampleRecord> {
                 .iter()
                 .map(|index| frame(&capture.codes, *index))
                 .collect(),
+            native: sample.native.map(|leaf| native_leaf(leaf, native)),
         })
         .collect()
 }
@@ -369,8 +457,8 @@ mod tests {
     use xprobe_protocol::TargetIdentity;
 
     use super::{
-        Code, PythonCapture, PythonSample, SamplerCounters, SamplingRequest, Stack, TidSource,
-        analyze, records,
+        Code, NativeLeaf, PythonCapture, PythonSample, SamplerCounters, SamplingRequest, Stack,
+        TidSource, analyze, parse_task_syscall, records,
     };
 
     fn sample(gil: bool, frames: &[u32]) -> PythonSample {
@@ -382,7 +470,27 @@ mod tests {
                 frames: frames.to_vec(),
                 truncated: false,
             },
+            native: None,
         }
+    }
+
+    #[test]
+    fn parses_task_syscall_states() {
+        assert_eq!(parse_task_syscall("running\n"), None);
+        assert_eq!(
+            parse_task_syscall("-1 0x7ffc1234 0x7f00aa\n"),
+            Some(NativeLeaf {
+                syscall: None,
+                pc: 0x7f_00aa
+            })
+        );
+        assert_eq!(
+            parse_task_syscall("202 0x1 0x80 0x0 0x0 0x0 0x0 0x7ffc1234 0x7f00bb\n"),
+            Some(NativeLeaf {
+                syscall: Some(202),
+                pc: 0x7f_00bb
+            })
+        );
     }
 
     #[test]
@@ -429,7 +537,7 @@ mod tests {
             sample_capacity: 100,
             stack_depth: 128,
         };
-        let result = analyze(&request, &capture);
+        let result = analyze(&request, &capture, &std::collections::BTreeMap::new());
         let inventory = &result.inventory;
         assert_eq!(inventory.gil_stack_groups[0].samples, 3);
         assert!((inventory.gil_stack_groups[0].proportion - 0.6).abs() < 1e-9);
@@ -454,7 +562,7 @@ mod tests {
         );
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
 
-        let lines = records(&capture, 1);
+        let lines = records(&capture, 1, &std::collections::BTreeMap::new());
         assert_eq!(lines.len(), 5);
         assert_eq!(lines[0].frames[0].function, "step");
         assert_eq!(lines[0].frames[1].function, "main");
