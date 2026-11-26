@@ -18,7 +18,8 @@ trap 'rm -rf "${work}"' EXIT
 xprobe="${work}/venv/bin/xprobe"
 [[ -x "${xprobe}" ]] || { echo "wheel did not install an executable xprobe" >&2; exit 1; }
 version=$("${xprobe}" --version)
-expected=$(basename "${wheel}" | sed -n 's/^xprobe-\([0-9.]*\)-.*/\1/p')
+# The wheel's PEP 440 X.Y.Z.devN is the CLI's X.Y.Z-dev.N.
+expected=$(basename "${wheel}" | sed -n 's/^xprobe-\([0-9]*\.[0-9]*\.[0-9]*\)\(\.dev\([0-9]*\)\)\{0,1\}-.*/\1-dev.\3/p' | sed 's/-dev\.$//')
 [[ "${version}" == "xprobe ${expected}" ]] || {
   echo "unexpected version: ${version} (expected ${expected})" >&2
   exit 1

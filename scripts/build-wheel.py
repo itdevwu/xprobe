@@ -98,10 +98,11 @@ def absolute_links(readme: str) -> str:
 
 
 def build(stage: pathlib.Path, output: pathlib.Path) -> pathlib.Path:
-    match = re.fullmatch(r"xprobe-(\d+\.\d+\.\d+)-linux-x86_64", stage.name)
+    match = re.fullmatch(r"xprobe-(\d+\.\d+\.\d+)(?:-dev\.(\d+))?-linux-x86_64", stage.name)
     if match is None:
         raise SystemExit(f"unexpected staging directory name: {stage.name}")
-    version = match.group(1)
+    # Cargo's X.Y.Z-dev.N is PEP 440's X.Y.Z.devN.
+    version = match.group(1) + (f".dev{match.group(2)}" if match.group(2) else "")
     data_dir = f"{NAME}-{version}.data"
     dist_info = f"{NAME}-{version}.dist-info"
 

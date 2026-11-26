@@ -135,6 +135,9 @@ jobs:
             dist/${{ steps.package.outputs.name }}.tar.gz.sha256
             dist/${{ steps.package.outputs.name }}.spdx.json
           generate_release_notes: true
+          # X.Y.Z-dev.N tags are prereleases and never become latest.
+          prerelease: ${{ contains(github.ref_name, '-dev.') }}
+          make_latest: ${{ !contains(github.ref_name, '-dev.') }}
       - name: Verify public release archive
         env:
           GH_TOKEN: ${{ github.token }}
@@ -165,7 +168,9 @@ jobs:
           python-version: "3.12"
       - name: Verify the public PyPI wheel
         run: |
+          # PyPI names X.Y.Z-dev.N as X.Y.Z.devN.
           version=${GITHUB_REF_NAME#v}
+          version=${version/-dev./.dev}
           for attempt in $(seq 1 30); do
             if python -m pip download --quiet --no-deps --only-binary :all: \
                 --dest public "xprobe==${version}"; then

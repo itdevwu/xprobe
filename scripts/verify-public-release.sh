@@ -7,7 +7,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 version=${1#v}
-[[ ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+[[ ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?$ ]] || {
   echo "invalid release version: ${version}" >&2
   exit 2
 }

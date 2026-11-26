@@ -17,7 +17,7 @@ repairs the matching xprobe CLI itself:
 
 ```bash
 npx skills@1 add \
-  https://github.com/itdevwu/xprobe/tree/v0.6.3/skills/xprobe-measure-latency \
+  https://github.com/itdevwu/xprobe/tree/v0.7.0-dev.1/skills/xprobe-measure-latency \
   --global
 ```
 

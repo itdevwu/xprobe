@@ -11,6 +11,11 @@ links in `skills/xprobe-measure-latency/references/setup.md`, and the versioned
 links in `README.md`, `docs/installation.md`, and `docs/agent-integration.md`.
 `just test-agent-contract` checks that these agree.
 
+A development release uses `X.Y.Z-dev.N` (CMake takes `X.Y.Z`). Its wheel is
+PEP 440 `X.Y.Z.devN`, which `pip install xprobe` skips unless asked for with
+`--pre` or an exact version, and its GitHub release is a prerelease that never
+becomes latest. Tag it on the feature branch; it is not merged first.
+
 ## 2. Run the local live gate
 
 GitHub Actions runs only what hosted runners support. Before tagging, run the

@@ -49,6 +49,14 @@ def development_version(workspace: pathlib.Path) -> str:
     return version_match.group(1)
 
 
+def version_key(version: str) -> tuple[int, int, int, float]:
+    """X.Y.Z or X.Y.Z-dev.N; a dev release sorts before its X.Y.Z."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-dev\.(\d+))?", version)
+    assert match is not None, version
+    major, minor, patch, dev = match.groups()
+    return int(major), int(minor), int(patch), float(dev) if dev else float("inf")
+
+
 def release_version(workspace: pathlib.Path) -> str:
     installer = (workspace / "install.sh").read_text()
     release_match = re.search(r"^version=\$\{XPROBE_VERSION:-([^}]+)\}$", installer, re.MULTILINE)
@@ -177,7 +185,7 @@ def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
     assert "$xprobe-measure-latency" in openai_yaml
 
     setup = re.sub(r"\s+", " ", (skill_root / "references/setup.md").read_text())
-    major, minor, _ = development_version(workspace).split(".")
+    major, minor, *_ = version_key(development_version(workspace))
     release = release_version(workspace)
     for required in (
         f"xprobe `{major}.{minor}.x`",
@@ -226,7 +234,7 @@ def check_installation_docs(workspace: pathlib.Path) -> None:
     development = development_version(workspace)
     release = release_version(workspace)
     installer = (workspace / "install.sh").read_text()
-    assert tuple(map(int, development.split("."))) >= tuple(map(int, release.split(".")))
+    assert version_key(development) >= version_key(release)
     assert f"default: {release}" in installer
 
     for relative_path in (
