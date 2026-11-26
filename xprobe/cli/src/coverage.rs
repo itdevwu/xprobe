@@ -192,10 +192,60 @@ pub(crate) fn offline_coverage(manifests: &[Option<CaptureManifest>]) -> Capture
     if !one_window {
         return unverified;
     }
+    // A capture of every GPU activity proves adjacency for the merge only
+    // when its window holds every other input's.
+    let all_gpu_activity = known.iter().any(|wide| {
+        wide.all_gpu_activity
+            && known.iter().all(|other| {
+                wide.window.start_ns <= other.window.start_ns
+                    && other.window.end_ns <= wide.window.end_ns
+            })
+    });
     CaptureCoverage {
         source: CoverageSource::Manifest,
-        all_gpu_activity: known.iter().any(|manifest| manifest.all_gpu_activity),
+        all_gpu_activity,
     }
+}
+
+/// Check a manifest against the events decoded from its artifact.
+pub(crate) fn check_manifest(
+    artifact_path: &Path,
+    manifest: &CaptureManifest,
+    events: &[xprobe_protocol::Event],
+) -> Result<(), CommandFailure> {
+    let failure = |problem: String| {
+        Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!("the manifest beside {} {problem}", artifact_path.display()),
+            false,
+        ))
+    };
+    if manifest.artifact.format != xprobe_protocol::ExportFormat::Jsonl {
+        return failure("describes a non-JSONL artifact".to_owned());
+    }
+    if manifest.artifact.events != events.len() as u64 {
+        return failure(format!(
+            "counts {} events but the artifact holds {}",
+            manifest.artifact.events,
+            events.len()
+        ));
+    }
+    if manifest.window.start_ns > manifest.window.end_ns {
+        return failure("has a window that ends before it starts".to_owned());
+    }
+    let foreign = events.iter().find(|event| {
+        event.pid != manifest.target.pid
+            || event
+                .process_start_time
+                .is_some_and(|start| start != manifest.target.process_start_time)
+    });
+    if let Some(event) = foreign {
+        return failure(format!(
+            "names process {} started at {} but holds an event of PID {}",
+            manifest.target.pid, manifest.target.process_start_time, event.pid
+        ));
+    }
+    Ok(())
 }
 
 /// Apply the losses and stop state a manifest records to its decoded events.
@@ -241,13 +291,18 @@ mod tests {
 
     #[test]
     fn manifests_prove_coverage_only_for_one_window_of_one_target() {
-        let gpu = manifest(1, (10, 20), true);
+        let gpu = manifest(1, (10, 30), true);
         let host = manifest(1, (12, 25), false);
         let covered = offline_coverage(&[Some(gpu.clone()), Some(host.clone())]);
         assert_eq!(covered.source, CoverageSource::Manifest);
         assert!(covered.all_gpu_activity);
+        // A wide capture of 10-30 says nothing about a narrower one past it.
+        let past = manifest(1, (12, 40), false);
+        let partial = offline_coverage(&[Some(gpu.clone()), Some(past)]);
+        assert_eq!(partial.source, CoverageSource::Manifest);
+        assert!(!partial.all_gpu_activity);
 
-        let later = manifest(1, (30, 40), false);
+        let later = manifest(1, (31, 40), false);
         let other = manifest(2, (10, 20), false);
         for inputs in [
             vec![Some(gpu.clone()), Some(later)],

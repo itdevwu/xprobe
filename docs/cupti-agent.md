@@ -51,9 +51,10 @@ a later bounded measurement. An automatically injected measurement uses
 socket. In both cases the shared object remains mapped; it must not be passed to
 `dlclose` while CUDA may still reference callback code.
 
-Activity records that began before the ARM epoch are excluded as a whole. This
-prevents CUPTI's boundary records, which can have an unavailable start
-timestamp, from becoming malformed or unmatched in-window evidence.
+Activity that ended before the ARM epoch is excluded as a whole; activity still
+running at ARM keeps its earlier start, so work overlapping the capture is not
+hidden. CUPTI boundary records whose start or end timestamp is unavailable are
+never emitted; after the first timed activity they count as dropped.
 
 The target and xprobe must share a mount namespace. ptrace credentials, Yama,
 seccomp, and LSM policy still apply. Every remote call restores the stopped

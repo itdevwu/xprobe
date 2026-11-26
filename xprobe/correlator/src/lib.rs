@@ -1457,18 +1457,40 @@ fn correlate_stream_order<'a>(selected: &Selected<'_, 'a>) -> Outcome<'a> {
                 activity_boundary(&event.event_type) == Some(ActivityBoundary::Start),
             )
         });
-        let mut in_flight = 0_u64;
-        for (index, event) in timeline.iter().enumerate() {
+        // Track running activity by identity. An end whose start is not in
+        // the capture began earlier and ran until then, so no gap before the
+        // latest such end can be shown idle.
+        let mut open = BTreeMap::<ActivityKey, u64>::new();
+        let mut orphan_horizon = None::<u64>;
+        for event in timeline.iter() {
+            let key = activity_key(event);
             if activity_boundary(&event.event_type) == Some(ActivityBoundary::Start) {
-                in_flight += 1;
+                *open.entry(key).or_default() += 1;
+            } else if let Some(count) = open.get_mut(&key).filter(|count| **count > 0) {
+                *count -= 1;
+            } else {
+                orphan_horizon = orphan_horizon.max(Some(event.timestamp_ns));
+            }
+        }
+        open.clear();
+        let mut running = 0_u64;
+        for (index, event) in timeline.iter().enumerate() {
+            let key = activity_key(event);
+            if activity_boundary(&event.event_type) == Some(ActivityBoundary::Start) {
+                *open.entry(key).or_default() += 1;
+                running += 1;
                 continue;
             }
-            let balanced = in_flight > 0;
-            in_flight = in_flight.saturating_sub(1);
+            let started = open.get_mut(&key).filter(|count| **count > 0).map(|count| {
+                *count -= 1;
+                running -= 1;
+            });
             if !from.contains(&ptr::from_ref(*event)) {
                 continue;
             }
-            match stream_successor(timeline, index, balanced && in_flight == 0) {
+            let overlapped = orphan_horizon.is_some_and(|horizon| event.timestamp_ns < horizon);
+            let alone = started.is_some() && running == 0 && !overlapped;
+            match stream_successor(timeline, index, alone) {
                 Successor::Next(next) if to.contains(&ptr::from_ref(next)) => pairs.push(Pair {
                     start: event,
                     end: next,
@@ -1493,6 +1515,24 @@ fn correlate_stream_order<'a>(selected: &Selected<'_, 'a>) -> Outcome<'a> {
         ambiguous,
         beyond_limit: 0,
     }
+}
+
+/// An activity's family and correlation ID; graph kernels share one ID, so
+/// running activity is counted per key.
+type ActivityKey = (u8, u32);
+
+fn activity_key(event: &Event) -> ActivityKey {
+    let family = match event.event_type {
+        EventType::GpuKernelStart | EventType::GpuKernelEnd => 0,
+        EventType::GpuMemcpyStart | EventType::GpuMemcpyEnd => 1,
+        _ => 2,
+    };
+    let correlation = event
+        .cuda
+        .as_ref()
+        .and_then(|cuda| cuda.correlation_id)
+        .unwrap_or(0);
+    (family, correlation)
 }
 
 enum Successor<'a> {
@@ -2383,6 +2423,41 @@ mod tests {
         // C and flash are followed by unselected kernels; the long kernel
         // ends the capture.
         assert_eq!(samples.unmatched_start, 3);
+    }
+
+    #[test]
+    fn activity_without_a_captured_start_hides_the_gaps_it_overlaps() {
+        let boundary = |kind, timestamp, correlation_id| {
+            let mut event = event(kind, timestamp, correlation_id);
+            event.cuda.as_mut().expect("CUDA payload").stream_id = Some(2);
+            event
+        };
+        // B runs 5-30; A's start was trimmed, so A.end at 10 is no gap.
+        let trimmed = [
+            boundary(EventType::GpuKernelStart, 5, 2),
+            boundary(EventType::GpuKernelEnd, 10, 1),
+            boundary(EventType::GpuKernelStart, 15, 3),
+            boundary(EventType::GpuKernelEnd, 30, 2),
+        ];
+        assert_eq!(super::spans::stream_gaps(&trimmed).len(), 0);
+
+        // B started before the capture and ended at 30: every gap before 30
+        // may overlap it; only the 35-40 gap after it is idle.
+        let started_earlier = [
+            boundary(EventType::GpuKernelStart, 0, 1),
+            boundary(EventType::GpuKernelEnd, 10, 1),
+            boundary(EventType::GpuKernelStart, 15, 3),
+            boundary(EventType::GpuKernelEnd, 20, 3),
+            boundary(EventType::GpuKernelEnd, 30, 2),
+            boundary(EventType::GpuKernelStart, 32, 4),
+            boundary(EventType::GpuKernelEnd, 35, 4),
+            boundary(EventType::GpuKernelStart, 40, 5),
+        ];
+        let gaps = super::spans::stream_gaps(&started_earlier)
+            .iter()
+            .map(|span| (span.start.timestamp_ns, span.end.timestamp_ns))
+            .collect::<Vec<_>>();
+        assert_eq!(gaps, [(35, 40)]);
     }
 
     #[test]

@@ -136,6 +136,10 @@ static uint64_t record_capacity;
 static uint32_t capture_mode;
 static _Atomic uint64_t record_count;
 static _Atomic uint64_t committed_record_count;
+/* Ring mode: callbacks between taking a record index and publishing or
+ * dropping it. With none pending, an index whose slot never shows it was
+ * dropped rather than still being written. */
+static _Atomic uint64_t ring_writers;
 static _Atomic uint64_t agent_dropped_records;
 static _Atomic uint64_t cupti_dropped_records;
 /* Set while a forced flush hands over buffers that may hold activity still
@@ -300,6 +304,7 @@ static void reset_capture(void)
     }
     atomic_store_explicit(&record_count, 0U, memory_order_relaxed);
     atomic_store_explicit(&committed_record_count, 0U, memory_order_relaxed);
+    atomic_store_explicit(&ring_writers, 0U, memory_order_relaxed);
     atomic_store_explicit(&agent_dropped_records, 0U, memory_order_relaxed);
     atomic_store_explicit(&cupti_dropped_records, 0U, memory_order_relaxed);
     atomic_store_explicit(&capture_has_timed_activity, 0, memory_order_relaxed);
@@ -630,7 +635,38 @@ static int capture_filter_matches(const struct xprobe_cupti_record *record)
     return 0;
 }
 
-static void advance_committed_records(void);
+/* Ring slot sequence words: the record's logical index plus one, with these
+ * flags while a writer or the snapshot reader owns the slot body. */
+#define XPROBE_RING_WRITING (UINT64_C(1) << 63)
+#define XPROBE_RING_READING (UINT64_C(1) << 62)
+#define XPROBE_RING_INDEX (~(XPROBE_RING_WRITING | XPROBE_RING_READING))
+/* Committed records one callback advances over; the reader finishes. */
+#define XPROBE_COMMIT_STEPS 64U
+
+static void advance_committed_records(uint64_t steps);
+
+/* Claim a ring slot for record `index`. The slot must hold an older record
+ * and be idle; otherwise the record is dropped and counted, so no writer or
+ * reader ever shares a slot body with another. */
+static int claim_ring_slot(uint64_t slot, uint64_t index)
+{
+    _Atomic uint64_t *sequence = &record_sequence[slot];
+    uint64_t expected = atomic_load_explicit(sequence, memory_order_acquire);
+
+    for (;;) {
+        if ((expected & (XPROBE_RING_WRITING | XPROBE_RING_READING)) != 0U ||
+            (expected & XPROBE_RING_INDEX) >= index + 1U) {
+            atomic_fetch_add_explicit(&agent_dropped_records, 1U,
+                                      memory_order_relaxed);
+            return 0;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                sequence, &expected, XPROBE_RING_WRITING | (index + 1U),
+                memory_order_acq_rel, memory_order_acquire)) {
+            return 1;
+        }
+    }
+}
 
 static void enqueue_record(const struct xprobe_cupti_record *record)
 {
@@ -644,13 +680,20 @@ static void enqueue_record(const struct xprobe_cupti_record *record)
     if (capture_filter_matches(record) == 0) {
         return;
     }
-    index = atomic_fetch_add_explicit(&record_count, 1U, memory_order_relaxed);
     if (capture_mode == XPROBE_CUPTI_CAPTURE_RING) {
+        atomic_fetch_add_explicit(&ring_writers, 1U, memory_order_seq_cst);
+        index = atomic_fetch_add_explicit(&record_count, 1U, memory_order_seq_cst);
         slot = index % record_capacity;
-        /* Sequence-lock writer: invalidate, write, then publish the index. */
-        atomic_store_explicit(&record_sequence[slot], 0U, memory_order_relaxed);
-        atomic_thread_fence(memory_order_release);
-    } else if (index >= record_capacity) {
+        if (claim_ring_slot(slot, index) != 0) {
+            records[slot] = *record;
+            atomic_store_explicit(&record_sequence[slot], index + 1U,
+                                  memory_order_release);
+        }
+        atomic_fetch_sub_explicit(&ring_writers, 1U, memory_order_seq_cst);
+        return;
+    }
+    index = atomic_fetch_add_explicit(&record_count, 1U, memory_order_relaxed);
+    if (index >= record_capacity) {
         atomic_store_explicit(&stop_reason, XPROBE_CUPTI_STOP_RECORD_LIMIT,
                               memory_order_relaxed);
         atomic_store_explicit(&capture_state,
@@ -662,26 +705,21 @@ static void enqueue_record(const struct xprobe_cupti_record *record)
     }
     records[slot] = *record;
     atomic_store_explicit(&record_sequence[slot], index + 1U, memory_order_release);
-    advance_committed_records();
+    advance_committed_records(XPROBE_COMMIT_STEPS);
 }
 
-/* Advance the committed count over every record written in order. In ring
- * mode a slot already reused by a later record is skipped: its record is
- * gone, and snapshots report the gap. */
-static void advance_committed_records(void)
+/* Advance the exact-mode committed count over at most `steps` records
+ * written in order. Ring mode reads slot states directly instead. */
+static void advance_committed_records(uint64_t steps)
 {
     uint64_t committed =
         atomic_load_explicit(&committed_record_count, memory_order_acquire);
 
-    for (;;) {
-        uint64_t sequence;
+    for (uint64_t step = 0U; step < steps && committed < record_capacity; ++step) {
+        uint64_t sequence =
+            atomic_load_explicit(&record_sequence[committed], memory_order_acquire);
 
-        if (capture_mode != XPROBE_CUPTI_CAPTURE_RING && committed >= record_capacity) {
-            return;
-        }
-        sequence = atomic_load_explicit(
-            &record_sequence[committed % record_capacity], memory_order_acquire);
-        if (sequence == 0U || sequence <= committed) {
+        if (sequence <= committed) {
             return;
         }
         if (atomic_compare_exchange_weak_explicit(
@@ -1271,7 +1309,10 @@ static int activity_in_capture(uint64_t start_ns, uint64_t end_ns)
         }
         return 0;
     }
-    if (normalize_activity_timestamp(start_ns) < capture_start_timestamp_ns) {
+    /* Keep activity that was still running at ARM: dropping it would hide
+     * work that overlaps the capture. Only activity that ended before ARM is
+     * outside it. */
+    if (normalize_activity_timestamp(end_ns) < capture_start_timestamp_ns) {
         return 0;
     }
     atomic_store_explicit(&capture_has_timed_activity, 1, memory_order_relaxed);
@@ -1651,10 +1692,16 @@ static int activity_timestamps_are_host_monotonic(
     for (uint64_t index = 0U; index < available; ++index) {
         const struct xprobe_cupti_record *record = &checked[index];
         uint64_t timestamp_ns = record->timestamp_ns;
-        int is_activity = record->kind >= XPROBE_CUPTI_GPU_KERNEL_START &&
-                          record->kind <= XPROBE_CUPTI_GPU_MEMSET_END;
+        /* An activity running at ARM keeps its earlier start, so only its
+         * end must fall inside the capture. */
+        int is_activity_end = record->kind == XPROBE_CUPTI_GPU_KERNEL_END ||
+                              record->kind == XPROBE_CUPTI_GPU_MEMCPY_END ||
+                              record->kind == XPROBE_CUPTI_GPU_MEMSET_END;
 
-        if (is_activity == 0) {
+        if (record->kind == XPROBE_CUPTI_GPU_KERNEL_START && first_kernel == NULL) {
+            first_kernel = record;
+        }
+        if (is_activity_end == 0) {
             continue;
         }
         if ((timestamp_ns < capture_start_timestamp_ns &&
@@ -1664,10 +1711,6 @@ static int activity_timestamps_are_host_monotonic(
              timestamp_ns - capture_end_timestamp_ns >
                  XPROBE_CUPTI_CLOCK_MARGIN_NS)) {
             goto unaligned;
-        }
-        if (first_kernel == NULL &&
-            record->kind == XPROBE_CUPTI_GPU_KERNEL_START) {
-            first_kernel = record;
         }
     }
     if (first_kernel != NULL) {
@@ -1808,44 +1851,67 @@ static int write_aggregate_records(int descriptor,
     return 0;
 }
 
-/* Copy ring records [requested, available) that are still intact into
- * ring_snapshot and return the index of the first one. A slot rewritten
- * before or while it is read loses that record and every older one, so the
- * copy stays contiguous and the caller sees the gap in record_offset. */
-static uint64_t copy_ring_records(uint64_t requested, uint64_t available)
+/* Copy the contiguous ring records from `requested` that are still intact
+ * into ring_snapshot, setting `*first` to the index of the first and
+ * returning how many. A record overwritten by a newer one, or dropped by a
+ * writer that could not claim its slot, is a gap: one at the start moves
+ * `*first` past it, and one later ends this copy so the next snapshot
+ * reports it. A record still being written ends the copy. */
+static uint64_t copy_ring_records(uint64_t requested, uint64_t *first)
 {
-    uint64_t oldest = available > record_capacity ? available - record_capacity : 0U;
-    uint64_t first = requested > oldest ? requested : oldest;
+    uint64_t end = atomic_load_explicit(&record_count, memory_order_seq_cst);
+    uint64_t oldest = end > record_capacity ? end - record_capacity : 0U;
     uint64_t count = 0U;
 
-    for (uint64_t index = first; index < available; ++index) {
+    *first = requested > oldest ? requested : oldest;
+    for (uint64_t index = *first; index < end; ++index) {
         uint64_t slot = index % record_capacity;
-        uint64_t before =
-            atomic_load_explicit(&record_sequence[slot], memory_order_acquire);
-        struct xprobe_cupti_record copy = records[slot];
-        uint64_t after;
+        uint64_t expected = index + 1U;
+        uint64_t seen;
 
-        atomic_thread_fence(memory_order_acquire);
-        after = atomic_load_explicit(&record_sequence[slot], memory_order_relaxed);
-        if (before != index + 1U || after != index + 1U) {
-            first = index + 1U;
-            count = 0U;
+        /* Own the slot while copying it; a writer that finds it owned drops
+         * its record and counts the loss instead of rewriting it. */
+        if (atomic_compare_exchange_strong_explicit(
+                &record_sequence[slot], &expected, XPROBE_RING_READING | (index + 1U),
+                memory_order_acq_rel, memory_order_acquire)) {
+            ring_snapshot[count] = records[slot];
+            ++count;
+            atomic_store_explicit(&record_sequence[slot], index + 1U,
+                                  memory_order_release);
             continue;
         }
-        ring_snapshot[count] = copy;
-        ++count;
+        seen = expected & XPROBE_RING_INDEX;
+        if (seen == index + 1U ||
+            (seen < index + 1U &&
+             atomic_load_explicit(&ring_writers, memory_order_seq_cst) != 0U)) {
+            /* Still being written, or possibly not yet claimed. */
+            break;
+        }
+        if (count != 0U) {
+            break;
+        }
+        *first = index + 1U;
     }
-    return first;
+    return count;
 }
 
 static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
 {
     struct xprobe_cupti_output_header header;
-    uint64_t available =
-        atomic_load_explicit(&committed_record_count, memory_order_acquire);
     int (*write_function)(int, const void *, size_t) =
         is_socket != 0 ? send_all : write_all;
+    uint64_t available;
     int result;
+
+    if (capture_mode == XPROBE_CUPTI_CAPTURE_EXACT) {
+        /* Callbacks advance the commit count a bounded step at a time; the
+         * reader finishes the job before taking its snapshot. */
+        advance_committed_records(UINT64_MAX);
+    }
+    /* A ring's offsets are logical indices of every record taken. */
+    available = capture_mode == XPROBE_CUPTI_CAPTURE_RING
+                    ? atomic_load_explicit(&record_count, memory_order_seq_cst)
+                    : atomic_load_explicit(&committed_record_count, memory_order_acquire);
 
     if ((capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE &&
          record_offset != 0U) ||
@@ -1858,14 +1924,14 @@ static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
         return -1;
     }
     if (capture_mode == XPROBE_CUPTI_CAPTURE_RING) {
-        uint64_t first = copy_ring_records(record_offset, available);
+        uint64_t first = 0U;
+        uint64_t count = copy_ring_records(record_offset, &first);
 
-        initialize_output_header(&header, available, first, ring_snapshot,
-                                 available - first);
+        initialize_output_header(&header, first + count, first, ring_snapshot, count);
         result = write_function(descriptor, &header, sizeof(header));
         if (result == 0) {
             result = write_function(descriptor, ring_snapshot,
-                                    (available - first) * sizeof(records[0]));
+                                    count * sizeof(records[0]));
         }
         return result;
     }
@@ -2069,9 +2135,14 @@ static int stop_capture(void)
     if (enabled_activity_mask != 0U) {
         status = flush_activity_buffers(1, 1);
     }
-    if (status == XPROBE_CUPTI_AGENT_READY &&
-        (subscriber_active != 0 || enabled_activity_mask != 0U)) {
-        status = shutdown_agent();
+    /* Disable callbacks and activity even after a failed flush; the failed
+     * capture state already tells the caller the records are incomplete. */
+    if (subscriber_active != 0 || enabled_activity_mask != 0U) {
+        int shutdown_status = shutdown_agent();
+
+        if (status == XPROBE_CUPTI_AGENT_READY) {
+            status = shutdown_status;
+        }
     }
     if (status == XPROBE_CUPTI_AGENT_READY &&
         atomic_load_explicit(&capture_state, memory_order_acquire) ==

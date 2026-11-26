@@ -809,6 +809,7 @@ fn measure_completed_inputs(
 ) -> Result<MeasurementExecution, CommandFailure> {
     let mut captures = Vec::with_capacity(input.len());
     let mut manifests = Vec::with_capacity(input.len());
+    let mut digests = std::collections::BTreeSet::new();
     for path in input {
         let bytes = fs::read(path).map_err(|error| {
             CommandFailure::new(
@@ -826,23 +827,17 @@ fn measure_completed_inputs(
         })?;
         let manifest = coverage::read_manifest(path, &bytes)?;
         if let Some(manifest) = manifest.as_ref() {
-            if let Some(event) = capture
-                .events
-                .iter()
-                .find(|event| event.pid != manifest.target.pid)
-            {
-                return Err(CommandFailure::new(
-                    ErrorCode::TraceExportFailed,
-                    format!(
-                        "{} holds an event of PID {} but its manifest names PID {}",
-                        path.display(),
-                        event.pid,
-                        manifest.target.pid
-                    ),
-                    false,
-                ));
-            }
+            coverage::check_manifest(path, manifest, &capture.events)?;
             coverage::apply_manifest(&mut capture, manifest);
+        }
+        // Merging an input with itself would double its events.
+        let digest = ManifestArtifact::of(ExportFormat::Jsonl, 0, &bytes).sha256;
+        if !digests.insert(digest) {
+            return Err(CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!("{} is given more than once", path.display()),
+                true,
+            ));
         }
         captures.push(capture);
         manifests.push(manifest);

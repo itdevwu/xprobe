@@ -73,10 +73,13 @@ pub struct TriggerWindow {
     pub index: u32,
     /// The span that crossed the threshold.
     pub fired: MatchedEventPair,
-    /// Window bounds in the events' clock.
+    /// Window bounds in the events' clock, clipped to what was captured.
     pub start_ns: u64,
     pub end_ns: u64,
     pub clock_domain: ClockDomain,
+    /// The capture began after `pre_ns` before the span or ended before
+    /// `post_ns` after it, so the window is shorter than requested.
+    pub truncated: bool,
     /// The longest spans of the trigger's kind inside the window.
     pub longest: Vec<MatchedEventPair>,
     pub artifact: EvidenceArtifact,

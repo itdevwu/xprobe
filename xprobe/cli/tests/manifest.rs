@@ -243,8 +243,11 @@ fn merging_inputs_without_manifests_is_a_caution() {
     let dir = workdir("merge");
     let first = dir.join("first.jsonl");
     let second = dir.join("second.jsonl");
-    write_events(&first);
-    fs::copy(&first, &second).unwrap();
+    let bytes = write_events(&first);
+    // A different capture: every line but the last.
+    let text = String::from_utf8(bytes).unwrap();
+    let lines = text.split_inclusive('\n').collect::<Vec<_>>();
+    fs::write(&second, lines[..lines.len() - 1].concat()).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_xprobe"))
         .args(["measure", "--input"])
@@ -268,6 +271,16 @@ fn merging_inputs_without_manifests_is_a_caution() {
         CoverageSource::UnverifiedMerge
     );
     assert!(issue_codes(&result).contains(&"CAPTURE_COVERAGE_UNKNOWN"));
+
+    // The same artifact twice would double its events.
+    let twice = measure(&[&first, &first], &[]);
+    assert_eq!(twice.status.code(), Some(1));
+    let error: ErrorResponse = serde_json::from_slice(&twice.stdout).unwrap();
+    assert!(
+        error.error.message.contains("more than once"),
+        "{}",
+        error.error.message
+    );
 }
 
 #[test]

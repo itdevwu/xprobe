@@ -45,6 +45,7 @@ pub(crate) struct CutWindow {
     pub(crate) fired: MatchedEventPair,
     pub(crate) start_ns: u64,
     pub(crate) end_ns: u64,
+    pub(crate) truncated: bool,
     pub(crate) events: Vec<Event>,
     pub(crate) longest: Vec<MatchedEventPair>,
 }
@@ -67,11 +68,20 @@ pub(crate) struct TriggerEngine {
     cooldown_until_ns: u64,
     written: u32,
     lost_windows: u32,
+    /// `CLOCK_MONOTONIC` time just before the Agent was armed.
+    armed_ns: u64,
+    /// Earliest and latest timestamps ever read.
+    observed: Option<(u64, u64)>,
+    /// New records arrived since the last evaluation.
+    dirty: bool,
 }
 
 impl TriggerEngine {
-    pub(crate) fn new(condition: TriggerCondition, capacity: usize) -> Self {
+    pub(crate) fn new(condition: TriggerCondition, capacity: usize, armed_ns: u64) -> Self {
         Self {
+            armed_ns,
+            observed: None,
+            dirty: false,
             condition,
             capacity,
             retained: Vec::new(),
@@ -116,8 +126,13 @@ impl TriggerEngine {
             }
         }
         self.last_dropped = self.last_dropped.max(dropped_total);
-        if batch_min.is_some() {
-            self.last_batch_min_ns = batch_min;
+        if let (Some(low), Some(high)) = (batch_min, batch_max) {
+            self.last_batch_min_ns = Some(low);
+            self.observed = Some(
+                self.observed
+                    .map_or((low, high), |(min, max)| (min.min(low), max.max(high))),
+            );
+            self.dirty = true;
         }
         self.retained.extend(events);
         self.trim();
@@ -152,6 +167,9 @@ impl TriggerEngine {
     /// Returns [`MeasureError`] when a latency trigger's selectors or policy
     /// cannot correlate the records.
     pub(crate) fn evaluate(&mut self, now: Instant) -> Result<(), MeasureError> {
+        if !std::mem::take(&mut self.dirty) {
+            return Ok(());
+        }
         let Self {
             condition,
             retained,
@@ -197,20 +215,44 @@ impl TriggerEngine {
     }
 
     /// Cut the pending window once its post-roll has had time to arrive, or
-    /// at once when `stopped`. A window that lost records is discarded.
+    /// at once when the capture `stopped` at that `CLOCK_MONOTONIC` time. The
+    /// window is clipped to what the capture covered; one that lost records
+    /// is discarded.
     pub(crate) fn take_window(
         &mut self,
         now: Instant,
         settle: Duration,
-        stopped: bool,
+        stopped: Option<u64>,
     ) -> Option<CutWindow> {
         let pending = self.pending.as_ref()?;
         let post = Duration::from_nanos(self.condition.post_ns);
-        if !stopped && now < pending.fired_at + post + settle {
+        if stopped.is_none() && now < pending.fired_at + post + settle {
             return None;
         }
         let pending = self.pending.take().expect("pending window was checked");
         self.cooldown_until_ns = pending.end_ns;
+        // Host-clock events compare with the ARM and STOP times; raw CUPTI
+        // time only with the records read.
+        let host_clock = pending.fired.start.clock_domain != ClockDomain::Cupti;
+        let (first_seen, last_seen) = self.observed.unwrap_or((pending.start_ns, pending.end_ns));
+        let covered_from = if host_clock {
+            self.armed_ns
+        } else {
+            first_seen
+        };
+        let covered_to = match stopped {
+            Some(stopped_ns) if host_clock => stopped_ns,
+            Some(_) => last_seen,
+            None => pending.end_ns,
+        };
+        let start_ns = pending.start_ns.max(covered_from);
+        let end_ns = pending.end_ns.min(covered_to);
+        let truncated = start_ns > pending.start_ns || end_ns < pending.end_ns;
+        let pending = Pending {
+            start_ns,
+            end_ns,
+            ..pending
+        };
         let lost = self
             .losses
             .iter()
@@ -242,6 +284,7 @@ impl TriggerEngine {
             fired: pending.fired,
             start_ns: pending.start_ns,
             end_ns: pending.end_ns,
+            truncated,
             events,
             longest,
         })
@@ -384,7 +427,11 @@ fn collect_trigger(request: &TriggerRequest<'_>) -> Result<TriggerResult, Comman
         || condition.match_policy == Some(MatchPolicy::StreamOrder);
     let directory = window_directory(request.events_out)?;
     let mut collection = start_live_collection(plan, &request.live)?;
-    let mut engine = TriggerEngine::new(condition.clone(), request.live.options.max_events);
+    let mut engine = TriggerEngine::new(
+        condition.clone(),
+        request.live.options.max_events,
+        collection.capture_plan.start_ns,
+    );
     let mut windows = Vec::new();
     let outcome = watch(
         &mut collection,
@@ -396,12 +443,14 @@ fn collect_trigger(request: &TriggerRequest<'_>) -> Result<TriggerResult, Comman
     let stopped = stop_cupti_agent(&mut collection, &request.live);
     let result = outcome.and_then(|()| {
         stopped?;
+        let stopped_ns = crate::live::monotonic_now()?;
+        check_capture(&collection)?;
         // The final forced flush may complete a pending window.
         drain_into(&mut collection, &mut engine);
         engine
             .evaluate(Instant::now())
             .map_err(|error| trigger_failure(&error))?;
-        if let Some(window) = engine.take_window(Instant::now(), Duration::ZERO, true) {
+        if let Some(window) = engine.take_window(Instant::now(), Duration::ZERO, Some(stopped_ns)) {
             windows.push(write_window(
                 &collection,
                 &directory,
@@ -516,21 +565,13 @@ fn watch(
     let settle = SNAPSHOT_QUIET_PERIOD * 2;
     loop {
         refresh_live_sources(collection, &request.live)?;
-        if let Some(cuda) = collection.latest_cuda.as_ref()
-            && cuda.state == xprobe_collector::cupti::CuptiCaptureState::Failed
-        {
-            return Err(CommandFailure::new(
-                ErrorCode::CuptiNotAvailable,
-                "CUPTI capture entered a failed state during triggered capture",
-                true,
-            ));
-        }
+        check_capture(collection)?;
         drain_into(collection, engine);
         let now = Instant::now();
         engine
             .evaluate(now)
             .map_err(|error| trigger_failure(&error))?;
-        if let Some(window) = engine.take_window(now, settle, false) {
+        if let Some(window) = engine.take_window(now, settle, None) {
             windows.push(write_window(collection, directory, window, windows.len())?);
         }
         if engine.done() || now >= collection.deadline {
@@ -538,6 +579,36 @@ fn watch(
         }
         thread::sleep(SNAPSHOT_QUIET_PERIOD);
     }
+}
+
+/// A failed capture or unknown records invalidate every window.
+fn check_capture(collection: &LiveCollection) -> Result<(), CommandFailure> {
+    let Some(cuda) = collection.latest_cuda.as_ref() else {
+        return Ok(());
+    };
+    if matches!(
+        cuda.state,
+        xprobe_collector::cupti::CuptiCaptureState::Failed
+            | xprobe_collector::cupti::CuptiCaptureState::Idle
+    ) {
+        return Err(CommandFailure::new(
+            ErrorCode::CuptiNotAvailable,
+            "CUPTI capture entered a failed state during triggered capture",
+            true,
+        ));
+    }
+    let unknown = cuda
+        .unknown_records
+        .saturating_sub(collection.baseline_unknown);
+    if unknown != 0 {
+        return Err(CommandFailure::new(
+            ErrorCode::TraceExportFailed,
+            format!("triggered capture holds {unknown} unknown CUPTI activity records"),
+            false,
+        )
+        .with_hint("rebuild xprobe and the CUPTI Agent from the same release"));
+    }
+    Ok(())
 }
 
 /// Move newly appended CUDA events from the collection into the engine.
@@ -625,6 +696,7 @@ fn write_window(
         start_ns: window.start_ns,
         end_ns: window.end_ns,
         clock_domain,
+        truncated: window.truncated,
         longest: window.longest,
         artifact: EvidenceArtifact {
             path: path.display().to_string(),
@@ -763,14 +835,14 @@ mod tests {
 
     #[test]
     fn a_gap_over_the_threshold_writes_the_window_around_it() {
-        let mut engine = TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 100);
+        let mut engine = TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 100, 0);
         // Kernels at 0–10, 10.5–11, and 30–31 ms: one 19 ms gap.
         let events = [kernel(0, 10 * MS, 0), kernel(10 * MS + MS / 2, 11 * MS, 2)].concat();
         engine.ingest(events, 0, 0);
         engine.evaluate(Instant::now()).unwrap();
         assert!(
             engine
-                .take_window(Instant::now(), Duration::ZERO, true)
+                .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
                 .is_none()
         );
 
@@ -779,11 +851,11 @@ mod tests {
         // The post-roll has not had time to arrive yet.
         assert!(
             engine
-                .take_window(Instant::now(), Duration::from_secs(60), false)
+                .take_window(Instant::now(), Duration::from_secs(60), None)
                 .is_none()
         );
         let window = engine
-            .take_window(Instant::now(), Duration::ZERO, true)
+            .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
             .expect("the 19 ms gap fires");
         assert_eq!(window.fired.latency_ns, 19 * MS);
         assert_eq!((window.start_ns, window.end_ns), (10 * MS, 31 * MS));
@@ -798,8 +870,34 @@ mod tests {
     }
 
     #[test]
+    fn windows_are_clipped_to_what_the_capture_covered() {
+        // Armed at 9.5 ms, stopped at 30.5 ms: the 1 ms pre- and post-roll
+        // around the 10-30 ms gap are only partly captured.
+        let mut engine =
+            TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 100, 9 * MS + MS / 2);
+        engine.ingest(
+            [
+                kernel(9 * MS + MS / 2, 10 * MS, 0),
+                kernel(30 * MS, 30 * MS + MS / 4, 2),
+            ]
+            .concat(),
+            0,
+            0,
+        );
+        engine.evaluate(Instant::now()).unwrap();
+        let window = engine
+            .take_window(Instant::now(), Duration::ZERO, Some(30 * MS + MS / 2))
+            .expect("the gap fires");
+        assert!(window.truncated);
+        assert_eq!(
+            (window.start_ns, window.end_ns),
+            (9 * MS + MS / 2, 30 * MS + MS / 2)
+        );
+    }
+
+    #[test]
     fn spans_fire_once_and_later_windows_follow_the_previous_one() {
-        let mut engine = TriggerEngine::new(condition(TriggerKind::Gap, 10, 2), 100);
+        let mut engine = TriggerEngine::new(condition(TriggerKind::Gap, 10, 2), 100, 0);
         engine.ingest(
             [kernel(0, MS, 0), kernel(20 * MS, 21 * MS, 2)].concat(),
             0,
@@ -808,14 +906,14 @@ mod tests {
         engine.evaluate(Instant::now()).unwrap();
         assert!(
             engine
-                .take_window(Instant::now(), Duration::ZERO, true)
+                .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
                 .is_some()
         );
         // Re-evaluating the same records does not fire again.
         engine.evaluate(Instant::now()).unwrap();
         assert!(
             engine
-                .take_window(Instant::now(), Duration::ZERO, true)
+                .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
                 .is_none()
         );
         assert!(!engine.done());
@@ -823,7 +921,7 @@ mod tests {
         engine.ingest(kernel(40 * MS, 41 * MS, 4), 0, 0);
         engine.evaluate(Instant::now()).unwrap();
         let second = engine
-            .take_window(Instant::now(), Duration::ZERO, true)
+            .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
             .expect("a later gap fires the second window");
         assert_eq!(second.fired.start.timestamp_ns, 21 * MS);
         assert!(engine.done());
@@ -831,27 +929,27 @@ mod tests {
 
     #[test]
     fn a_window_that_lost_records_is_not_written() {
-        let mut engine = TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 100);
+        let mut engine = TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 100, 0);
         engine.ingest(kernel(0, MS, 0), 0, 0);
         // The ring overwrote records between the two reads.
         engine.ingest(kernel(20 * MS, 21 * MS, 10), 3, 0);
         engine.evaluate(Instant::now()).unwrap();
         assert!(
             engine
-                .take_window(Instant::now(), Duration::ZERO, true)
+                .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
                 .is_none()
         );
         assert_eq!(engine.lost_windows(), 1);
         assert!(engine.done());
 
         // Drops count the same way.
-        let mut dropped = TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 100);
+        let mut dropped = TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 100, 0);
         dropped.ingest(kernel(0, MS, 0), 0, 0);
         dropped.ingest(kernel(20 * MS, 21 * MS, 2), 0, 1);
         dropped.evaluate(Instant::now()).unwrap();
         assert!(
             dropped
-                .take_window(Instant::now(), Duration::ZERO, true)
+                .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
                 .is_none()
         );
         assert_eq!(dropped.lost_windows(), 1);
@@ -859,11 +957,11 @@ mod tests {
 
     #[test]
     fn a_duration_trigger_fires_on_a_long_activity() {
-        let mut engine = TriggerEngine::new(condition(TriggerKind::Duration, 5, 1), 100);
+        let mut engine = TriggerEngine::new(condition(TriggerKind::Duration, 5, 1), 100, 0);
         engine.ingest([kernel(0, MS, 0), kernel(2 * MS, 9 * MS, 2)].concat(), 0, 0);
         engine.evaluate(Instant::now()).unwrap();
         let window = engine
-            .take_window(Instant::now(), Duration::ZERO, true)
+            .take_window(Instant::now(), Duration::ZERO, Some(u64::MAX))
             .expect("the 7 ms kernel fires");
         assert_eq!(window.fired.latency_ns, 7 * MS);
         assert_eq!(window.fired.start.timestamp_ns, 2 * MS);
