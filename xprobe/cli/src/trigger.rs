@@ -38,8 +38,9 @@ struct Pending {
     start_ns: u64,
     end_ns: u64,
     fired_at: Instant,
-    /// Records inside the window were trimmed before it fired.
-    trimmed: bool,
+    /// Records the window may hold were lost: trimmed before it fired,
+    /// reported lost after it fired, or beyond the retention bound.
+    lost: bool,
     /// The window's records trimmed from retention after it closed.
     kept: Vec<Event>,
 }
@@ -139,6 +140,11 @@ impl TriggerEngine {
                 // Nothing was ever read: everything up to now is suspect.
                 self.losses.push((0, u64::MAX));
             }
+            // A loss cannot be placed in time, so one reported after a window
+            // fired may belong to it.
+            for window in self.closed.iter_mut().chain(&mut self.pending) {
+                window.lost = true;
+            }
         }
         self.last_dropped = self.last_dropped.max(dropped_total);
         if let (Some(low), Some(high)) = (batch_min, batch_max) {
@@ -163,7 +169,18 @@ impl TriggerEngine {
         if excess == 0 {
             return;
         }
-        let protected_from = self.pending.as_ref().map_or(u64::MAX, |open| open.start_ns);
+        // The open window holds retention up to twice the bound; beyond
+        // that it is lost rather than grow without limit.
+        if self.retained.len() > self.capacity.saturating_mul(2)
+            && let Some(open) = self.pending.as_mut()
+        {
+            open.lost = true;
+        }
+        let protected_from = self
+            .pending
+            .as_ref()
+            .filter(|open| !open.lost)
+            .map_or(u64::MAX, |open| open.start_ns);
         self.retained.sort_by_key(|event| event.timestamp_ns);
         let removable = self
             .retained
@@ -172,13 +189,18 @@ impl TriggerEngine {
             .take_while(|event| event.timestamp_ns < protected_from)
             .count();
         let removed = self.retained.drain(..removable).collect::<Vec<_>>();
-        for window in &mut self.closed {
+        for window in self.closed.iter_mut().filter(|window| !window.lost) {
             window.kept.extend(
                 removed
                     .iter()
                     .filter(|event| (window.start_ns..=window.end_ns).contains(&event.timestamp_ns))
                     .cloned(),
             );
+            // A window keeps at most the retention bound of its own records.
+            if window.kept.len() > self.capacity {
+                window.lost = true;
+                window.kept = Vec::new();
+            }
         }
         let through = removed.iter().map(|event| event.timestamp_ns).max();
         self.trimmed_through_ns = self.trimmed_through_ns.max(through);
@@ -246,7 +268,7 @@ impl TriggerEngine {
                     end_ns: span.end.timestamp_ns.saturating_add(condition.post_ns),
                     fired: pair(&span),
                     fired_at: now,
-                    trimmed: trimmed_through_ns.is_some_and(|through| through >= start_ns),
+                    lost: trimmed_through_ns.is_some_and(|through| through >= start_ns),
                     kept: Vec::new(),
                 });
             }
@@ -300,7 +322,7 @@ impl TriggerEngine {
         let start_ns = window.start_ns.max(covered_from);
         let end_ns = window.end_ns.min(covered_to);
         let truncated = start_ns > window.start_ns || end_ns < window.end_ns;
-        let lost = window.trimmed
+        let lost = window.lost
             || self
                 .losses
                 .iter()
@@ -308,30 +330,36 @@ impl TriggerEngine {
         if lost {
             return Cut::Lost;
         }
-        // Each record is either still retained or kept by the window.
-        let mut events = window
+        // Each record is either still retained or kept by the window. Spans
+        // are re-evaluated on all of them, so boundaries outside the window
+        // keep their context; only the export is cut to the window.
+        let mut context = window
             .kept
             .into_iter()
             .chain(self.retained.iter().cloned())
-            .filter(|event| (start_ns..=end_ns).contains(&event.timestamp_ns))
             .collect::<Vec<_>>();
-        events.sort_by_key(|event| (event.timestamp_ns, event.sequence));
-        // The window's events already passed evaluation, so this cannot fail.
-        let mut longest = trigger_spans(&self.condition, &events)
-            .unwrap_or_default()
-            .iter()
-            .map(pair)
-            .collect::<Vec<_>>();
+        context.sort_by_key(|event| (event.timestamp_ns, event.sequence));
+        let inside = |event: &Event| (start_ns..=end_ns).contains(&event.timestamp_ns);
+        // These records already passed evaluation, so this cannot fail.
+        let spans = trigger_spans(&self.condition, &context).unwrap_or_default();
         let fired = (window.fired.start.sequence, window.fired.end.sequence);
-        let holds = longest.iter().any(|span| {
+        let holds = spans.iter().any(|span| {
             (span.start.sequence, span.end.sequence) == fired
                 && span.latency_ns >= self.condition.threshold_ns
         });
         if !holds {
             return Cut::Revoked;
         }
+        let mut longest = spans
+            .iter()
+            .filter(|span| inside(span.start) && inside(span.end))
+            .map(pair)
+            .collect::<Vec<_>>();
         longest.sort_by_key(|span| std::cmp::Reverse(span.latency_ns));
         longest.truncate(WINDOW_LONGEST);
+        drop(spans);
+        context.retain(|event| inside(event));
+        let events = context;
         Cut::Written(Box::new(CutWindow {
             fired: window.fired,
             start_ns,
@@ -489,6 +517,7 @@ fn collect_trigger(request: &TriggerRequest<'_>) -> Result<TriggerResult, Comman
         collection.capture_plan.start_ns,
     );
     let outcome = watch(&mut collection, request, &mut engine);
+    let timed_out = Instant::now() >= collection.deadline;
     // Activity after this instant may miss the capture.
     let stopped_ns = crate::live::monotonic_now();
     let stopped = stop_cupti_agent(&mut collection, &request.live);
@@ -522,10 +551,14 @@ fn collect_trigger(request: &TriggerRequest<'_>) -> Result<TriggerResult, Comman
         schema_version: SchemaVersion3::current(),
         ok: true,
         session_id: request.live.options.session_id.clone(),
-        status: if u32::try_from(windows.len()).is_ok_and(|written| written == condition.windows) {
-            SessionStatus::Completed
-        } else {
+        // Fewer windows than asked for is a timeout only if the deadline
+        // passed; otherwise windows were lost or revoked after closing.
+        status: if timed_out
+            && u32::try_from(windows.len()).is_ok_and(|written| written < condition.windows)
+        {
             SessionStatus::TimedOut
+        } else {
+            SessionStatus::Completed
         },
         target: collection.report.target.clone(),
         trigger: condition.clone(),
@@ -590,6 +623,17 @@ fn no_window_failure(
             true,
         )
         .with_hint("raise --max-events so the ring holds the records between snapshots")
+    } else if engine.revoked_windows() != 0 {
+        CommandFailure::new(
+            ErrorCode::TriggerNotObserved,
+            format!(
+                "{} window(s) fired at {} ns but their spans fell below it once every record arrived",
+                engine.revoked_windows(),
+                condition.threshold_ns
+            ),
+            true,
+        )
+        .with_hint("the longest span is the observed bound; lower the threshold or wait longer with --timeout-ms")
     } else {
         CommandFailure::new(
             ErrorCode::TriggerNotObserved,
@@ -1064,6 +1108,51 @@ mod tests {
         assert_eq!(windows.len(), 1);
         // 0 to 21 ms: both records of A and of B.
         assert_eq!(windows[0].events.len(), 4);
+    }
+
+    #[test]
+    fn a_window_without_pre_roll_keeps_its_span() {
+        // With no pre-roll the window starts at A's end, so A's start lies
+        // outside it; the gap is still re-checked in context.
+        let mut gap = condition(TriggerKind::Gap, 10, 1);
+        gap.pre_ns = 0;
+        let mut engine = TriggerEngine::new(gap, 100, 0);
+        engine.ingest(
+            [kernel(0, MS, 0), kernel(20 * MS, 21 * MS, 2)].concat(),
+            0,
+            0,
+        );
+        engine.evaluate(Instant::now()).unwrap();
+        let windows = engine.finish(u64::MAX);
+        assert_eq!(engine.revoked_windows(), 0);
+        assert_eq!(windows[0].start_ns, MS);
+        assert_eq!(windows[0].longest[0].latency_ns, 19 * MS);
+    }
+
+    #[test]
+    fn an_open_window_beyond_twice_retention_is_lost() {
+        let mut engine = TriggerEngine::new(condition(TriggerKind::Gap, 10, 1), 4, 0);
+        engine.ingest(
+            [kernel(0, MS, 0), kernel(20 * MS, 21 * MS, 2)].concat(),
+            0,
+            0,
+        );
+        engine.evaluate(Instant::now()).unwrap();
+        // Five more kernels arrive before the window closes.
+        for index in 0..5 {
+            engine.ingest(
+                kernel(
+                    22 * MS + index * MS,
+                    22 * MS + index * MS + 1,
+                    4 + index * 2,
+                ),
+                0,
+                0,
+            );
+        }
+        assert!(engine.retained.len() <= 2 * 4 + 2);
+        assert_eq!(engine.finish(u64::MAX).len(), 0);
+        assert_eq!(engine.lost_windows(), 1);
     }
 
     #[test]

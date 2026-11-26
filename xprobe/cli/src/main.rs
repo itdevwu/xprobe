@@ -814,13 +814,53 @@ const fn export_format_name(format: ExportFormatArg) -> &'static str {
     }
 }
 
+/// What an event records, apart from the session, ID, and sequence that a
+/// re-export or re-decode assigns anew.
+fn event_content(event: &xprobe_protocol::Event) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut canonical = event.clone();
+    canonical.session_id.clear();
+    canonical.event_id.clear();
+    canonical.sequence = 0;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(&canonical)
+        .expect("a decoded event serializes")
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Two manifests naming one PID as different processes are two targets,
+/// even when their events carry no start time.
+fn reject_mixed_manifest_targets(
+    manifests: &[Option<xprobe_protocol::CaptureManifest>],
+) -> Result<(), CommandFailure> {
+    for (index, first) in manifests.iter().flatten().enumerate() {
+        if let Some(other) = manifests.iter().flatten().skip(index + 1).find(|other| {
+            other.target.pid == first.target.pid
+                && other.target.process_start_time != first.target.process_start_time
+        }) {
+            return Err(CommandFailure::new(
+                ErrorCode::TraceExportFailed,
+                format!(
+                    "inputs capture two processes with PID {}, started at {} and {}",
+                    first.target.pid,
+                    first.target.process_start_time,
+                    other.target.process_start_time
+                ),
+                false,
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn measure_completed_inputs(
     input: &[PathBuf],
     options: &MeasureOptions,
 ) -> Result<MeasurementExecution, CommandFailure> {
     let mut captures = Vec::with_capacity(input.len());
     let mut manifests = Vec::with_capacity(input.len());
-    let mut binaries = std::collections::BTreeSet::new();
     let mut identities = std::collections::BTreeSet::new();
     for path in input {
         let bytes = fs::read(path).map_err(|error| {
@@ -842,16 +882,14 @@ fn measure_completed_inputs(
             coverage::check_manifest(path, manifest, &capture.events)?;
             coverage::apply_manifest(&mut capture, manifest);
         }
-        // Merging events twice would double them. Event JSON keeps each
-        // event's original identity; a raw CUPTI dump has none, so the
-        // bytes identify it, and only when there is more than one input.
-        let repeated = if capture.cupti.is_some() {
-            input.len() > 1 && !binaries.insert(xprobe_exporter::artifact_sha256(&bytes))
-        } else {
+        // Merging events twice would double them. Session, ID, and sequence
+        // change when events are re-exported or re-decoded, so an event is
+        // identified by everything else it records.
+        let repeated = input.len() > 1 && {
             let own = capture
                 .events
                 .iter()
-                .map(|event| (event.session_id.clone(), event.event_id.clone()))
+                .map(event_content)
                 .collect::<std::collections::BTreeSet<_>>();
             let repeated = !own.is_disjoint(&identities);
             identities.extend(own);
@@ -867,6 +905,7 @@ fn measure_completed_inputs(
         captures.push(capture);
         manifests.push(manifest);
     }
+    reject_mixed_manifest_targets(&manifests)?;
     let coverage = coverage::offline_coverage(&manifests);
     // A re-exported artifact keeps its input's coverage only when one input
     // carried a manifest.

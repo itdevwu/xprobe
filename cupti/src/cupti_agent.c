@@ -1324,8 +1324,11 @@ static void check_activity_clock(uint64_t end_ns)
                               memory_order_relaxed);
         return;
     }
-    atomic_store_explicit(&activity_clock, XPROBE_CLOCK_ALIGNED,
-                          memory_order_relaxed);
+    /* Only an unknown verdict becomes aligned; unaligned is final. */
+    int expected = XPROBE_CLOCK_UNKNOWN;
+    (void)atomic_compare_exchange_strong_explicit(
+        &activity_clock, &expected, XPROBE_CLOCK_ALIGNED, memory_order_relaxed,
+        memory_order_relaxed);
 }
 
 /*
@@ -1799,6 +1802,10 @@ static int activity_timestamps_are_host_monotonic(
     return bounded;
 
 unaligned:
+    /* Once any reply is unaligned, every later one is too, so one capture
+     * never mixes clock labels. */
+    atomic_store_explicit(&activity_clock, XPROBE_CLOCK_UNALIGNED,
+                          memory_order_relaxed);
     if (atomic_exchange_explicit(&clock_alignment_warning_emitted, 1,
                                  memory_order_relaxed) == 0) {
         fprintf(stderr,
@@ -2224,6 +2231,12 @@ static int stop_capture(void)
     if (subscriber_active != 0 || enabled_activity_mask != 0U) {
         int shutdown_status = shutdown_agent();
 
+        if (shutdown_status != XPROBE_CUPTI_AGENT_READY) {
+            atomic_store_explicit(&capture_state, XPROBE_CUPTI_CAPTURE_FAILED,
+                                  memory_order_release);
+            atomic_store_explicit(&stop_reason, XPROBE_CUPTI_STOP_CLEANUP_ERROR,
+                                  memory_order_relaxed);
+        }
         if (status == XPROBE_CUPTI_AGENT_READY) {
             status = shutdown_status;
         }
@@ -2306,9 +2319,13 @@ static void *serve_snapshots(void *unused)
                 }
             } else {
                 command_status = stop_capture();
+                /* Keep serving after a failed cleanup so CLOSE can retry. */
                 close_requested =
-                    request.command == XPROBE_CUPTI_CONTROL_CLOSE;
+                    request.command == XPROBE_CUPTI_CONTROL_CLOSE &&
+                    atomic_load_explicit(&stop_reason, memory_order_relaxed) !=
+                        XPROBE_CUPTI_STOP_CLEANUP_ERROR;
             }
+            /* The reply's capture state and stop reason carry the outcome. */
             (void)command_status;
             if (write_capture(client, 1, request.record_offset) != 0) {
                 fprintf(stderr, "xprobe CUPTI: failed to send snapshot: %s\n",

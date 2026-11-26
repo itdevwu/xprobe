@@ -195,6 +195,8 @@ pub enum CuptiStopReason {
     RecordLimit,
     CuptiError,
     OutputError,
+    /// STOP could not disable every callback or activity kind.
+    CleanupError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -818,6 +820,7 @@ fn decode_stop_reason(value: u32) -> Result<CuptiStopReason, CuptiDecodeError> {
         2 => Ok(CuptiStopReason::RecordLimit),
         3 => Ok(CuptiStopReason::CuptiError),
         4 => Ok(CuptiStopReason::OutputError),
+        5 => Ok(CuptiStopReason::CleanupError),
         _ => Err(CuptiDecodeError::InvalidStopReason(value)),
     }
 }

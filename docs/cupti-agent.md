@@ -86,7 +86,10 @@ feature flags. It also reports the payload record offset so the caller can
 reject gaps, replays, and counter rollback. Exact capacity comes from
 `--max-events` and aggregate table capacity from `--max-groups`; there is no
 special 2^16 limit. Reaching either configured limit freezes capture and causes
-measurement to fail explicitly instead of returning partial success.
+measurement to fail explicitly instead of returning partial success. A STOP
+that cannot disable every callback or activity kind reports a failed capture
+with stop reason 5 (cleanup error) and keeps the control socket open, so the
+CLI returns `CLEANUP_FAILED` and retries CLOSE during cleanup.
 
 Exact records preserve process/thread, device/context/stream, correlation IDs,
 callback domain/ID, dimensions or transfer metadata, and one bounded name.

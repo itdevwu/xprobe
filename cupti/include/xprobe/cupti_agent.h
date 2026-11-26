@@ -58,7 +58,10 @@ enum xprobe_cupti_stop_reason {
     XPROBE_CUPTI_STOP_REQUESTED = 1,
     XPROBE_CUPTI_STOP_RECORD_LIMIT = 2,
     XPROBE_CUPTI_STOP_CUPTI_ERROR = 3,
-    XPROBE_CUPTI_STOP_OUTPUT_ERROR = 4
+    XPROBE_CUPTI_STOP_OUTPUT_ERROR = 4,
+    /* STOP could not disable every callback or activity kind; the Agent
+     * keeps serving so CLOSE can retry. */
+    XPROBE_CUPTI_STOP_CLEANUP_ERROR = 5
 };
 
 enum xprobe_cupti_control_command {

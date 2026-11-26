@@ -397,10 +397,29 @@ def event_label(event: dict) -> str | None:
     )
 
 
-def slice_events(events: list[dict], start_ns: int, end_ns: int, limit: int) -> dict:
-    """Every event inside [start_ns, end_ns], in time order, bounded by limit."""
+def comparable_clocks(domains: set) -> set:
+    """Clock domains whose timestamps compare with these."""
+    return HOST_CLOCKS if domains <= HOST_CLOCKS else domains
+
+
+def slice_events(
+    events: list[dict],
+    start_ns: int,
+    end_ns: int,
+    limit: int,
+    pid: object = None,
+    clocks: set | None = None,
+) -> dict:
+    """Events inside [start_ns, end_ns], in time order, bounded by limit; a
+    gap or outlier keeps only its own process and comparable clocks."""
     inside = sorted(
-        (event for event in events if start_ns <= event["timestamp_ns"] <= end_ns),
+        (
+            event
+            for event in events
+            if start_ns <= event["timestamp_ns"] <= end_ns
+            and (pid is None or event.get("pid") == pid)
+            and (clocks is None or event.get("clock_domain") in clocks)
+        ),
         key=lambda event: (event["timestamp_ns"], event.get("sequence", 0)),
     )
     rows = []
@@ -584,10 +603,16 @@ def analyze(
             target = {"start_ns": value[0], "end_ns": value[1]}
         start_ns = target["start_ns"] - window_ns
         end_ns = target["end_ns"] + window_ns
+        if kind == "gap":
+            scope = {"pid": target["pid"], "clocks": comparable_clocks({target["clock_domain"]})}
+        elif kind == "outlier":
+            scope = {"pid": target["pid"], "clocks": comparable_clocks(set(target["clock_domains"]))}
+        else:
+            scope = {}
         window_report = {
             "around": {"kind": kind, "start_ns": target["start_ns"], "end_ns": target["end_ns"]},
             "window_ns": window_ns,
-            **slice_events(events, start_ns, end_ns, max_slice_events),
+            **slice_events(events, start_ns, end_ns, max_slice_events, **scope),
         }
         if python_samples is not None:
             window_report["python"] = None

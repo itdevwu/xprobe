@@ -176,6 +176,8 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
                                                  correlation_id=6, kernel_name="z")],
         *[{**item, "pid": 999} for item in pair(13, "kernel", 60, 70, stream_id=7,
                                                  correlation_id=7, kernel_name="z")],
+        # ... and a call inside 1234's gap, which that gap's slice leaves out.
+        {**api_event(15, 400, "cudaMemcpy", 8), "pid": 999},
     ]
     measurement = {
         "schema_version": "3.0",
@@ -268,6 +270,7 @@ def check_gaps_outliers_and_slices(script: pathlib.Path) -> None:
     assert sliced["around"] == {"kind": "gap", "start_ns": 300, "end_ns": 500}
     assert (sliced["start_ns"], sliced["end_ns"]) == (250, 550)
     assert [row["name"] for row in sliced["events"]] == ["HtoD", "cudaStreamSynchronize", "b"]
+    assert {row["pid"] for row in sliced["events"]} == {1234}
     assert sliced["events"][1]["tid"] == 55
 
     outliers = by_outlier["outliers"]

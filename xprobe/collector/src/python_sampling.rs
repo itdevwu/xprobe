@@ -535,10 +535,13 @@ impl<'m, M: RemoteMemory> Walker<'m, M> {
         let window = if layout.frame_owner.is_some() && top != 0 {
             let start = top.saturating_sub(FRAME_WINDOW_BYTES);
             let mut bytes = vec![0_u8; usize::try_from(top - start + frame_bytes).unwrap_or(0)];
-            self.memory
-                .read(start, &mut bytes)
-                .ok()
-                .map(|()| (start, bytes))
+            // The window may reach below the data stack's mapping; only a
+            // fault falls back to per-frame reads.
+            match self.memory.read(start, &mut bytes) {
+                Ok(()) => Some((start, bytes)),
+                Err(ReadError::Fault) => None,
+                Err(error) => return Err(Discard::Fatal(error)),
+            }
         } else {
             None
         };
@@ -823,7 +826,7 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
         let timestamp_ns = monotonic_ns()?;
         let started = Instant::now();
         let outcome = self.consistent_stack(thread, gil);
-        let (stack, identity) = match outcome {
+        let (stack, tid) = match outcome {
             Ok(read) => read,
             Err(Discard::Inconsistent) => {
                 self.capture.counters.inconsistent += 1;
@@ -839,19 +842,6 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
         self.capture
             .read_ns
             .push(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
-        let tid = match self.tid(identity) {
-            Ok(tid) => tid,
-            Err(Discard::Inconsistent) => {
-                self.capture.counters.inconsistent += 1;
-                return Ok(());
-            }
-            Err(Discard::Fatal(error)) => {
-                return Err(SamplerError::Read {
-                    what: "a thread identity",
-                    error,
-                });
-            }
-        };
         self.capture.threads.extend(tid);
         // The GIL holder runs Python; a swept thread may be blocked.
         let native = match tid.filter(|_| gil.is_none()) {
@@ -872,8 +862,8 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
         &mut self,
         thread: u64,
         gil: Option<GilState>,
-    ) -> Result<(Stack, u64), Discard> {
-        let identity = self.walker.identity(thread)?;
+    ) -> Result<(Stack, Option<u32>), Discard> {
+        let identity = self.identity(thread)?;
         let stack = self.walker.stack(thread)?;
         if let Some(before) = gil {
             // Another thread taking the GIL during the read, even if it came
@@ -884,20 +874,27 @@ impl<M: RemoteMemory> Run<'_, '_, M> {
                 return Err(Discard::Inconsistent);
             }
         }
-        if self.walker.identity(thread)? != identity {
+        if self.identity(thread)? != identity {
             return Err(Discard::Inconsistent);
         }
-        Ok((stack, identity))
+        Ok((stack, identity.1))
     }
 
-    /// The TID of the OS thread behind `identity`.
-    fn tid(&self, identity: u64) -> Result<Option<u32>, Discard> {
+    /// The OS thread behind a thread state: what the thread state records
+    /// (its TID from 3.11, its `pthread_t` before) and the TID it maps to.
+    /// Before 3.11 the TID is read through the `pthread_t` each time, since
+    /// an exited thread's `struct pthread` can be reused.
+    fn identity(&self, thread: u64) -> Result<(u64, Option<u32>), Discard> {
+        let recorded = self.walker.identity(thread)?;
         if self.walker.layout().tstate_native_thread_id.is_some() {
-            return Ok(u32::try_from(identity).ok().filter(|tid| *tid != 0));
+            return Ok((
+                recorded,
+                u32::try_from(recorded).ok().filter(|tid| *tid != 0),
+            ));
         }
         match self.pthread_offset {
-            Some(offset) => Ok(Some(self.walker.u32_at(identity + offset)?)),
-            None => Ok(None),
+            Some(offset) => Ok((recorded, Some(self.walker.u32_at(recorded + offset)?))),
+            None => Ok((recorded, None)),
         }
     }
 

@@ -387,8 +387,9 @@ metric replay, or kernel performance-counter passes.
 
 Completed inputs may be CUPTI ABI binary, bounded host-capture JSON, or Event
 JSONL. Repeated inputs are merged after target checks: one PID naming two
-process start times is a mixed target. An input that repeats another's events,
-by Event session and ID or, for CUPTI binaries, by content, is an error.
+process start times, in events or manifests, is a mixed target. An input that
+repeats another's events, compared by content apart from session, ID, and
+sequence, is an error.
 Unknown records, mixed targets, malformed captures, and excessive event counts
 fail explicitly. An input's capture manifest, `<input>.manifest.json`, restores what its live
 capture recorded: drops, record limits, and collector failures fail the

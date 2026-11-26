@@ -191,6 +191,8 @@ pub(crate) struct LiveCollection {
     pub(crate) capture_plan: CapturePlan,
     /// Ring records overwritten before a snapshot read them.
     pub(crate) ring_overwritten: u64,
+    /// Clock domain of the GPU activity read so far; one capture keeps one.
+    pub(crate) cuda_activity_clock: Option<xprobe_protocol::ClockDomain>,
     /// The part of `ring_overwritten` a triggered capture has accounted for.
     pub(crate) ring_overwritten_seen: u64,
 }
@@ -563,6 +565,7 @@ pub(crate) fn start_live_collection(
             stream_order,
         },
         ring_overwritten: 0,
+        cuda_activity_clock: None,
         ring_overwritten_seen: 0,
     })
 }
@@ -998,6 +1001,21 @@ pub(crate) fn stop_cupti_agent(
             append_cuda_capture(collection, closed)?;
         }
     }
+    // An Agent that could not disable its callbacks keeps serving; leave the
+    // flag set so cleanup retries CLOSE.
+    if collection
+        .latest_cuda
+        .as_ref()
+        .is_some_and(|cuda| cuda.stop_reason == cupti::CuptiStopReason::CleanupError)
+    {
+        return Err(CommandFailure::new(
+            ErrorCode::CleanupFailed,
+            "the CUPTI Agent could not disable its callbacks or activity kinds",
+            true,
+        )
+        .with_detail("cleanup_phase", "stop_cupti")
+        .with_hint("verify the target state before starting another measurement"));
+    }
     // Only a completed stop clears the flag; otherwise cleanup retries it.
     collection.cupti_armed = false;
     collection.managed_agent = false;
@@ -1230,6 +1248,26 @@ pub(crate) fn append_cuda_capture(
             ),
             false,
         ));
+    }
+    // Raw and host-clock activity in one capture cannot be compared.
+    for event in &capture.events {
+        if xprobe_protocol::activity_boundary(&event.event_type).is_none() {
+            continue;
+        }
+        match &collection.cuda_activity_clock {
+            Some(clock) if *clock != event.clock_domain => {
+                return Err(CommandFailure::new(
+                    ErrorCode::ClockAlignmentFailed,
+                    format!(
+                        "CUPTI activity changed clock domain from {clock:?} to {:?} during capture",
+                        event.clock_domain
+                    ),
+                    true,
+                ));
+            }
+            Some(_) => {}
+            None => collection.cuda_activity_clock = Some(event.clock_domain.clone()),
+        }
     }
     let returned = u64::try_from(capture.events.len()).map_err(|error| {
         CommandFailure::new(

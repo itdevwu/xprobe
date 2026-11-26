@@ -115,8 +115,21 @@ pub fn decode(bytes: &[u8], session_id: &str) -> Result<CompletedCapture, Comple
         decode_json(bytes)
     } else {
         let capture = cupti::decode_capture(bytes, session_id)?;
+        // A snapshot that starts past record 0, or a ring dump that holds
+        // fewer records than were taken, lacks the records in between.
+        let held = capture
+            .record_offset
+            .saturating_add(capture.events.len() as u64);
+        let missing = capture.record_offset.saturating_add(if capture.ring {
+            capture.observed_records.saturating_sub(held)
+        } else {
+            0
+        });
         Ok(CompletedCapture {
-            dropped_records: capture.dropped_records,
+            dropped_records: capture
+                .dropped_records
+                .checked_add(missing)
+                .ok_or(CompletedCaptureError::CounterOverflow)?,
             unknown_records: capture.unknown_records,
             record_limit_reached: (capture.state == CuptiCaptureState::LimitReached)
                 .then_some(capture.record_capacity),
@@ -125,7 +138,7 @@ pub fn decode(bytes: &[u8], session_id: &str) -> Result<CompletedCapture, Comple
                 CuptiCaptureState::Idle | CuptiCaptureState::Failed
             ),
             cupti: Some(CompletedCuptiStatistics {
-                complete: capture.state == CuptiCaptureState::Stopped,
+                complete: capture.state == CuptiCaptureState::Stopped && missing == 0,
                 record_capacity: capture.record_capacity,
                 observed_records: capture.observed_records,
                 dropped_records: capture.dropped_records,

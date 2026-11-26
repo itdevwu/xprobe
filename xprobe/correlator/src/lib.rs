@@ -1511,27 +1511,33 @@ fn correlate_stream_order<'a>(selected: &Selected<'_, 'a>) -> Outcome<'a> {
 }
 
 /// Order one stream's boundaries in time. At one timestamp, ends come before
-/// starts, so A.end == B.start is a valid zero gap rather than an overlap; a
-/// zero-duration activity's own start and end sit together between them.
+/// starts, so A.end == B.start is a valid zero gap rather than an overlap. A
+/// zero-duration activity's own start and end sit together between them: the
+/// Agent records an activity's start before its end, so a start that shares
+/// an end's timestamp and key and precedes it in sequence is that end's own.
 fn sort_timeline(timeline: &mut [&Event]) {
     let is_start =
         |event: &Event| activity_boundary(&event.event_type) == Some(ActivityBoundary::Start);
-    let mut boundaries = BTreeMap::<(u64, ActivityKey<'_>), (bool, bool)>::new();
+    // Per timestamp and key: the earliest start and the latest end sequence.
+    let mut boundaries = BTreeMap::<(u64, ActivityKey<'_>), (u64, u64)>::new();
     for event in timeline.iter() {
         let seen = boundaries
             .entry((event.timestamp_ns, activity_key(event)))
-            .or_default();
+            .or_insert((u64::MAX, 0));
         if is_start(event) {
-            seen.0 = true;
+            seen.0 = seen.0.min(event.sequence);
         } else {
-            seen.1 = true;
+            seen.1 = seen.1.max(event.sequence);
         }
     }
     timeline.sort_by_cached_key(|event| {
         let key = activity_key(event);
-        let instant = boundaries
-            .get(&(event.timestamp_ns, key))
-            .is_some_and(|(start, end)| *start && *end);
+        let (first_start, last_end) = boundaries[&(event.timestamp_ns, key)];
+        let instant = if is_start(event) {
+            last_end > event.sequence
+        } else {
+            first_start < event.sequence
+        };
         let rank = match (instant, is_start(event)) {
             (false, false) => 0_u8,
             (true, _) => 1,
@@ -1541,7 +1547,7 @@ fn sort_timeline(timeline: &mut [&Event]) {
             event.timestamp_ns,
             rank,
             instant.then_some(key),
-            !is_start(event),
+            event.sequence,
         )
     });
 }
@@ -1584,11 +1590,29 @@ fn stream_successor<'a>(timeline: &[&'a Event], index: usize, alone: bool) -> Su
     };
     let is_start =
         |event: &Event| activity_boundary(&event.event_type) == Some(ActivityBoundary::Start);
-    if !is_start(next)
-        || timeline
-            .get(index + 2)
-            .is_some_and(|after| is_start(after) && after.timestamp_ns == next.timestamp_ns)
-    {
+    if !is_start(next) {
+        return Successor::Ambiguous;
+    }
+    // A zero-duration activity's start is followed by its own end at the
+    // same instant. Two zero-duration activities at one instant, or two
+    // starts that are not, could be in either order; a zero-duration one
+    // still precedes an activity that starts then and runs on.
+    let same_instant = timeline[index + 2..]
+        .iter()
+        .take_while(|after| after.timestamp_ns == next.timestamp_ns)
+        .collect::<Vec<_>>();
+    let instant = |start: &Event, rest: &[&&Event]| {
+        rest.iter().any(|after| {
+            !is_start(after)
+                && activity_key(after) == activity_key(start)
+                && after.sequence > start.sequence
+        })
+    };
+    let next_instant = instant(next, &same_instant);
+    let rival = same_instant.iter().enumerate().any(|(offset, after)| {
+        is_start(after) && instant(after, &same_instant[offset + 1..]) == next_instant
+    });
+    if rival {
         return Successor::Ambiguous;
     }
     Successor::Next(next)
@@ -2396,6 +2420,12 @@ mod tests {
             kernel(30, 40, 2, "D", 4),
         ]
         .concat();
+        // Sequences follow the Agent's write order: each start, then its end.
+        let events = events
+            .into_iter()
+            .zip(0..)
+            .map(|(event, sequence)| Event { sequence, ..event })
+            .collect::<Vec<_>>();
         let result = measure(
             &events,
             &stream_order("cuda:kernel_end", "cuda:kernel_start"),
@@ -2411,6 +2441,29 @@ mod tests {
             ]
         );
         assert_eq!(result.measurement.samples.ambiguous, 0);
+    }
+
+    #[test]
+    fn stream_order_keeps_back_to_back_runs_of_one_graph_kernel() {
+        // One graph node runs twice back to back under one correlation ID.
+        let events = [
+            kernel(0, 10, 2, "node", 7),
+            kernel(10, 20, 2, "node", 7),
+            kernel(25, 30, 2, "node", 7),
+        ]
+        .concat();
+        let result = measure(
+            &events,
+            &stream_order("cuda:kernel_end", "cuda:kernel_start"),
+        )
+        .unwrap();
+        assert_eq!(
+            gaps(&result),
+            [
+                ("node".to_owned(), "node".to_owned(), 0),
+                ("node".to_owned(), "node".to_owned(), 5)
+            ]
+        );
     }
 
     #[test]
