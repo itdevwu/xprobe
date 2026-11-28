@@ -26,6 +26,7 @@ pub(crate) struct CaptureRecord {
     pub(crate) unknown_records: u64,
     pub(crate) record_limit_reached: Option<u64>,
     pub(crate) capture_failed: bool,
+    pub(crate) cuda_devices: Vec<xprobe_protocol::CudaDevice>,
 }
 
 impl CaptureRecord {
@@ -53,6 +54,7 @@ impl CaptureRecord {
             unknown_records: capture.unknown_records,
             record_limit_reached: capture.record_limit_reached,
             capture_failed: capture.capture_failed,
+            cuda_devices: capture.cuda_devices.clone(),
         })
     }
 
@@ -76,6 +78,7 @@ impl CaptureRecord {
             unknown_records: self.unknown_records,
             record_limit_reached: self.record_limit_reached,
             capture_failed: self.capture_failed,
+            cuda_devices: self.cuda_devices.clone(),
         }
     }
 
@@ -90,6 +93,7 @@ impl CaptureRecord {
             unknown_records: manifest.unknown_records,
             record_limit_reached: manifest.record_limit_reached,
             capture_failed: manifest.capture_failed,
+            cuda_devices: manifest.cuda_devices.clone(),
         }
     }
 }
@@ -297,6 +301,7 @@ mod tests {
             unknown_records: 0,
             record_limit_reached: None,
             capture_failed: false,
+            cuda_devices: Vec::new(),
         }
     }
 

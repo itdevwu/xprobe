@@ -47,6 +47,9 @@ pub struct CaptureManifest {
     pub record_limit_reached: Option<u64>,
     /// A collector entered a failed state.
     pub capture_failed: bool,
+    /// The UUID behind each CUDA device ordinal in the events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuda_devices: Vec<crate::CudaDevice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

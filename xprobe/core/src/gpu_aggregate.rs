@@ -128,6 +128,7 @@ pub fn analyze(
             groups,
         },
         collection: AggregateCollectionSummary {
+            cuda_devices: Vec::new(),
             completeness: CaptureCompleteness::Complete,
             observed_activities: capture.observed_activities,
             grouped_activities,

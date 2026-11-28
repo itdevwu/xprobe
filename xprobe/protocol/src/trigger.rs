@@ -13,9 +13,13 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerKind {
-    /// Idle time on a stream: an activity end to the next kernel, copy, or
-    /// memset start on that stream.
+    /// A gap on one stream: an activity end to the next kernel, copy, or
+    /// memset start on that stream, even while other streams keep the
+    /// device busy.
     Gap,
+    /// Idle time on one device: no kernel, copy, or memset of the target on
+    /// any of its streams.
+    Idle,
     /// One kernel, copy, or memset from start to end.
     Duration,
     /// One edge between two selectors under a correlation policy.
@@ -47,7 +51,8 @@ pub struct TriggerResult {
     pub schema_version: SchemaVersion3,
     pub ok: bool,
     pub session_id: String,
-    /// `completed` after every requested window; `timed_out` with fewer.
+    /// `timed_out` when the deadline passed with fewer windows than requested;
+    /// otherwise `completed`, even when windows were lost or revoked.
     pub status: SessionStatus,
     pub target: TargetIdentity,
     pub trigger: TriggerCondition,

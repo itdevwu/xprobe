@@ -20,6 +20,8 @@ pub struct CompletedCapture {
     pub record_limit_reached: Option<u64>,
     pub capture_failed: bool,
     pub cupti: Option<CompletedCuptiStatistics>,
+    /// The UUID behind each CUDA device ordinal in the events.
+    pub cuda_devices: Vec<xprobe_protocol::CudaDevice>,
     pub events: Vec<Event>,
 }
 
@@ -34,6 +36,10 @@ pub enum CompletedCaptureError {
     TargetMismatch {
         expected: u32,
         actual: u32,
+    },
+    /// Inputs disagree on which GPU a CUDA device ordinal names.
+    DeviceMismatch {
+        device_id: u32,
     },
     /// One PID names two process instances, so the PID was reused.
     ProcessInstanceMismatch {
@@ -60,6 +66,10 @@ impl fmt::Display for CompletedCaptureError {
                 formatter,
                 "completed capture mixes target PIDs {expected} and {actual}"
             ),
+            Self::DeviceMismatch { device_id } => write!(
+                formatter,
+                "completed capture inputs name different GPUs as CUDA device {device_id}"
+            ),
             Self::ProcessInstanceMismatch {
                 pid,
                 expected,
@@ -82,6 +92,7 @@ impl Error for CompletedCaptureError {
             | Self::HostCaptureInsideEventStream
             | Self::CounterOverflow
             | Self::TargetMismatch { .. }
+            | Self::DeviceMismatch { .. }
             | Self::ProcessInstanceMismatch { .. } => None,
         }
     }
@@ -143,6 +154,7 @@ pub fn decode(bytes: &[u8], session_id: &str) -> Result<CompletedCapture, Comple
                 observed_records: capture.observed_records,
                 dropped_records: capture.dropped_records,
             }),
+            cuda_devices: capture.devices,
             events: capture.events,
         })
     }
@@ -164,6 +176,7 @@ fn decode_json(bytes: &[u8]) -> Result<CompletedCapture, CompletedCaptureError> 
             record_limit_reached: capture.record_limit_reached.then_some(capture.captured),
             capture_failed: false,
             cupti: None,
+            cuda_devices: Vec::new(),
             events: capture.events,
         });
     }
@@ -182,6 +195,7 @@ fn decode_json(bytes: &[u8]) -> Result<CompletedCapture, CompletedCaptureError> 
         record_limit_reached: None,
         capture_failed: false,
         cupti: None,
+        cuda_devices: Vec::new(),
         events,
     })
 }
@@ -202,6 +216,7 @@ pub fn merge(
         record_limit_reached: None,
         capture_failed: false,
         cupti: None,
+        cuda_devices: Vec::new(),
         events: Vec::new(),
     };
     let mut target_pid = None;
@@ -219,6 +234,23 @@ pub fn merge(
             .record_limit_reached
             .max(capture.record_limit_reached);
         merged.capture_failed |= capture.capture_failed;
+        // One process sees one ordinal-to-UUID mapping.
+        for device in capture.cuda_devices {
+            match merged
+                .cuda_devices
+                .iter()
+                .find(|known| known.device_id == device.device_id)
+            {
+                Some(known) if known.uuid != device.uuid => {
+                    return Err(CompletedCaptureError::DeviceMismatch {
+                        device_id: device.device_id,
+                    });
+                }
+                Some(_) => {}
+                None => merged.cuda_devices.push(device),
+            }
+        }
+        merged.cuda_devices.sort();
         if let Some(cupti) = capture.cupti {
             if let Some(existing) = merged.cupti.as_mut() {
                 existing.complete &= cupti.complete;
@@ -316,6 +348,7 @@ mod tests {
             record_limit_reached: None,
             capture_failed: false,
             cupti: None,
+            cuda_devices: Vec::new(),
             events: vec![Event {
                 process_start_time: Some(started),
                 ..event(12, started)
@@ -383,6 +416,7 @@ mod tests {
                     record_limit_reached: None,
                     capture_failed: false,
                     cupti: None,
+                    cuda_devices: Vec::new(),
                     events: vec![event(12, 30)],
                 },
                 CompletedCapture {
@@ -391,6 +425,7 @@ mod tests {
                     record_limit_reached: None,
                     capture_failed: false,
                     cupti: None,
+                    cuda_devices: Vec::new(),
                     events: vec![event(12, 20)],
                 },
             ],
@@ -412,6 +447,7 @@ mod tests {
                 record_limit_reached: None,
                 capture_failed: false,
                 cupti: None,
+                cuda_devices: Vec::new(),
                 events: vec![event(12, 20), event(13, 30)],
             }],
             "merged",

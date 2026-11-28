@@ -284,6 +284,7 @@ mod tests {
                 estimated_error_ns: Some(0),
             },
             collection: CollectionSummary {
+                cuda_devices: Vec::new(),
                 completeness: CaptureCompleteness::Complete,
                 coverage: xprobe_protocol::CaptureCoverage {
                     source: xprobe_protocol::CoverageSource::Live,

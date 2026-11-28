@@ -222,6 +222,10 @@ pub struct ClockQuality {
 #[serde(deny_unknown_fields)]
 pub struct CollectionSummary {
     pub completeness: CaptureCompleteness,
+    /// The UUID behind each CUDA device ordinal in the events; empty when the
+    /// capture had no CUDA source or the driver did not report UUIDs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuda_devices: Vec<CudaDevice>,
     /// Results written before xprobe recorded coverage read as unverified.
     #[serde(default)]
     pub coverage: CaptureCoverage,
@@ -235,6 +239,16 @@ pub struct CollectionSummary {
 #[serde(rename_all = "snake_case")]
 pub enum CaptureCompleteness {
     Complete,
+}
+
+/// One CUDA device as the target saw it. `device_id` is the process's CUDA
+/// ordinal, which `CUDA_VISIBLE_DEVICES` renumbers; the UUID names the
+/// physical GPU across processes and in `nvidia-smi`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CudaDevice {
+    pub device_id: u32,
+    pub uuid: String,
 }
 
 /// What is known about which events the capture could have recorded.
@@ -334,6 +348,9 @@ pub struct AggregateDuration {
 #[serde(deny_unknown_fields)]
 pub struct AggregateCollectionSummary {
     pub completeness: CaptureCompleteness,
+    /// The UUID behind each CUDA device ordinal in the groups.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuda_devices: Vec<CudaDevice>,
     pub observed_activities: u64,
     pub grouped_activities: u64,
     pub dropped_activities: u64,

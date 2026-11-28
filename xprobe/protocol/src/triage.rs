@@ -105,8 +105,13 @@ pub struct TriageResult {
     /// Share of GIL ticks with no thread running Python, when sampled.
     pub gil_released_proportion: Option<f64>,
     pub syscalls: Vec<crate::SyscallAggregateGroup>,
+    /// NVML health of every GPU on the host; `uuid` ties it to `cuda_devices`.
     pub gpu_devices: Vec<GpuDeviceHealth>,
     pub gpu_activity: Vec<crate::AggregateGroup>,
+    /// The UUID behind each CUDA ordinal in `gpu_activity`; GPU findings
+    /// cover only GPUs the target ran work on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuda_devices: Vec<crate::CudaDevice>,
     pub sources: Vec<TriageSource>,
     /// Questions this triage cannot answer; do not infer them from silence.
     pub not_covered: Vec<String>,

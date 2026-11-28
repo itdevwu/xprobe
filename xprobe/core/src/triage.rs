@@ -5,10 +5,10 @@
 //! environment action. Shares are estimates; findings never claim causality.
 
 use xprobe_protocol::{
-    AggregateActivity, AggregateGroup, CgroupCpuThrottling, CpuHotspot, GpuDeviceHealth,
-    MatchPolicy, MeasurementMode, MeasurementSpec, PythonHotspot, PythonSymbolizationStatus,
-    SchemaVersion, SyscallAggregateGroup, TargetIdentity, ThreadTimeBreakdown, TriageFinding,
-    TriageNextKind, TriageNextStep,
+    AggregateActivity, AggregateGroup, CgroupCpuThrottling, CpuHotspot, CudaDevice,
+    GpuDeviceHealth, MatchPolicy, MeasurementMode, MeasurementSpec, PythonHotspot,
+    PythonSymbolizationStatus, SchemaVersion, SyscallAggregateGroup, TargetIdentity,
+    ThreadTimeBreakdown, TriageFinding, TriageNextKind, TriageNextStep,
 };
 
 /// Throttled time at or above this share of the window is reported.
@@ -57,6 +57,33 @@ pub struct TriageEvidence<'a> {
     pub gpu_devices: &'a [GpuDeviceHealth],
     /// Present when CUDA activity was collected for the target.
     pub gpu_activity: Option<&'a [AggregateGroup]>,
+    /// The UUID behind each CUDA ordinal in `gpu_activity`.
+    pub cuda_devices: &'a [CudaDevice],
+}
+
+/// The target's activity on one NVML device, or `None` when the device
+/// cannot be tied to the target: its activity names devices by CUDA ordinal,
+/// and only the ordinal's UUID says which physical GPU that is.
+fn device_activity<'a>(
+    evidence: &TriageEvidence<'a>,
+    device: &GpuDeviceHealth,
+) -> Option<Vec<&'a AggregateGroup>> {
+    let groups = evidence.gpu_activity?;
+    if evidence.cuda_devices.is_empty() {
+        // Without UUIDs only a single visible GPU is unambiguous.
+        return (evidence.gpu_devices.len() == 1).then(|| groups.iter().collect());
+    }
+    let ordinals = evidence
+        .cuda_devices
+        .iter()
+        .filter(|cuda| cuda.uuid == device.uuid)
+        .map(|cuda| cuda.device_id)
+        .collect::<Vec<_>>();
+    let on_device = groups
+        .iter()
+        .filter(|group| group.device_id.is_some_and(|id| ordinals.contains(&id)))
+        .collect::<Vec<_>>();
+    (!on_device.is_empty()).then_some(on_device)
 }
 
 /// Evaluate every rule and rank findings by estimated impact.
@@ -448,26 +475,27 @@ fn syscall_time(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
 
 #[allow(clippy::cast_precision_loss)]
 fn gpu_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
-    let activity = evidence.gpu_activity;
     for device in evidence.gpu_devices {
+        // Only GPUs the target ran work on say anything about the target.
+        let Some(activity) = device_activity(evidence, device) else {
+            continue;
+        };
         let Some(mean) = device.utilization_mean_pct else {
             continue;
         };
         let loaded = device.utilization_max_pct.is_some_and(|max| max > 0);
-        let uses_gpu = activity.is_some_and(|groups| !groups.is_empty());
         let launches = activity
-            .unwrap_or_default()
             .iter()
             .filter(|group| group.activity == AggregateActivity::Kernel)
             .map(|group| group.count)
             .sum::<u64>();
-        if uses_gpu && mean < GPU_BUSY_PCT {
+        if mean < GPU_BUSY_PCT {
             found.push(finding(
                 "GPU_UNDERUTILIZED",
                 1.0 - mean / 100.0,
                 format!(
-                    "GPU {} was busy {mean:.0}% of sampled time (device-wide NVML estimate) while the target submitted work; CPU-side or launch-bound time likely limits it",
-                    device.index
+                    "GPU {} ({}) was busy {mean:.0}% of sampled time (device-wide NVML estimate) while the target submitted work there; CPU-side or launch-bound time likely limits it",
+                    device.index, device.uuid
                 ),
                 Some(measure(
                     evidence.target,
@@ -479,9 +507,8 @@ fn gpu_rules(evidence: &TriageEvidence<'_>, found: &mut Vec<TriageFinding>) {
                     "measure launch-to-kernel latency for each launch".to_owned(),
                 )),
             ));
-        }
-        if uses_gpu && mean >= GPU_BUSY_PCT {
-            kernel_dominant(evidence, device, mean, activity.unwrap_or_default(), found);
+        } else {
+            kernel_dominant(evidence, device, mean, &activity, found);
         }
         let slowdowns = device
             .clock_event_reasons
@@ -526,7 +553,7 @@ fn kernel_dominant(
     evidence: &TriageEvidence<'_>,
     device: &GpuDeviceHealth,
     mean: f64,
-    groups: &[AggregateGroup],
+    groups: &[&AggregateGroup],
     found: &mut Vec<TriageFinding>,
 ) {
     let kernels = groups
@@ -549,8 +576,9 @@ fn kernel_dominant(
         "GPU_KERNEL_DOMINANT",
         mean / 100.0 * kernel_share,
         format!(
-            "GPU {} was busy {mean:.0}% of sampled time; {name} is {} of summed kernel time over {} launches",
+            "GPU {} ({}) was busy {mean:.0}% of sampled time; {name} is {} of the target's summed kernel time there over {} launches",
             device.index,
+            device.uuid,
             percent(kernel_share),
             top.count
         ),
@@ -570,8 +598,8 @@ fn kernel_dominant(
 mod tests {
     use xprobe_protocol::{
         AggregateActivity, AggregateDuration, AggregateGroup, CgroupCpuThrottling, CgroupVersion,
-        CpuFrameLanguage, CpuHotspot, CpuStackFrame, GpuDeviceHealth, MatchPolicy, PcieLink,
-        PythonSymbolizationStatus, SyscallAggregateGroup, TargetIdentity, ThreadTime,
+        CpuFrameLanguage, CpuHotspot, CpuStackFrame, CudaDevice, GpuDeviceHealth, MatchPolicy,
+        PcieLink, PythonSymbolizationStatus, SyscallAggregateGroup, TargetIdentity, ThreadTime,
         ThreadTimeBreakdown, TriageNextKind,
     };
 
@@ -649,6 +677,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gpu_findings_cover_only_gpus_the_target_used() {
+        let target = TargetIdentity {
+            pid: 42,
+            process_start_time: 7,
+        };
+        let threads = threads(thread(0.1, 0.0));
+        // Two idle GPUs; the target's CUDA device 0 is the second one.
+        let mut other = gpu(10.0, &[]);
+        other.uuid = "GPU-other".to_owned();
+        let mut mine = gpu(20.0, &[]);
+        mine.index = 1;
+        mine.uuid = "GPU-mine".to_owned();
+        let devices = [other, mine];
+        let kernels = [kernel("gemm", 900)];
+        let mapping = [CudaDevice {
+            device_id: 0,
+            uuid: "GPU-mine".to_owned(),
+        }];
+        let evidence = TriageEvidence {
+            target: &target,
+            threads: &threads,
+            collection_window_ns: WINDOW,
+            cgroup: None,
+            cpu_hotspots: &[],
+            python_status: None,
+            python_hotspots: None,
+            syscalls: &[],
+            gpu_devices: &devices,
+            gpu_activity: Some(&kernels),
+            cuda_devices: &mapping,
+        };
+        let gpu_findings = findings(&evidence)
+            .into_iter()
+            .filter(|finding| finding.code.starts_with("GPU"))
+            .collect::<Vec<_>>();
+        assert_eq!(gpu_findings.len(), 1, "{gpu_findings:?}");
+        assert!(
+            gpu_findings[0].summary.contains("GPU-mine"),
+            "{gpu_findings:?}"
+        );
+
+        // Without UUIDs, several GPUs cannot be told apart.
+        let unmapped = TriageEvidence {
+            cuda_devices: &[],
+            ..evidence
+        };
+        assert!(
+            findings(&unmapped)
+                .iter()
+                .all(|finding| !finding.code.starts_with("GPU"))
+        );
+    }
+
     fn kernel(name: &str, total: u64) -> AggregateGroup {
         AggregateGroup {
             activity: AggregateActivity::Kernel,
@@ -694,6 +776,7 @@ mod tests {
             syscalls: &[],
             gpu_devices: &[],
             gpu_activity: None,
+            cuda_devices: &[],
         };
         let found = findings(&evidence);
         assert_eq!(found.len(), 1);
@@ -745,6 +828,7 @@ mod tests {
             syscalls: &[],
             gpu_devices: &busy_gpu,
             gpu_activity: Some(&kernels),
+            cuda_devices: &[],
         };
         let found = findings(&evidence)
             .into_iter()
@@ -776,6 +860,7 @@ mod tests {
             syscalls: &[],
             gpu_devices: &[],
             gpu_activity: None,
+            cuda_devices: &[],
         };
         let found = findings(&evidence);
         assert_eq!(found.len(), 1);
@@ -818,6 +903,7 @@ mod tests {
             syscalls: &[],
             gpu_devices: &[],
             gpu_activity: None,
+            cuda_devices: &[],
         };
         let found = findings(&evidence);
         let python = found
@@ -873,6 +959,7 @@ mod tests {
             syscalls: &syscalls,
             gpu_devices: &[],
             gpu_activity: None,
+            cuda_devices: &[],
         };
         let codes = findings(&evidence)
             .into_iter()
@@ -912,6 +999,7 @@ mod tests {
             syscalls: &[],
             gpu_devices: &idle_gpu,
             gpu_activity: None,
+            cuda_devices: &[],
         };
         assert!(
             findings(&base)
@@ -921,6 +1009,7 @@ mod tests {
 
         let underfed = TriageEvidence {
             gpu_activity: Some(&kernels),
+            cuda_devices: &[],
             ..base
         };
         let found = findings(&underfed);
@@ -934,6 +1023,7 @@ mod tests {
         let busy = TriageEvidence {
             gpu_devices: &busy_gpu,
             gpu_activity: Some(&kernels),
+            cuda_devices: &[],
             ..base
         };
         let found = findings(&busy);

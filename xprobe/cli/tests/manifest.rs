@@ -103,6 +103,7 @@ fn manifest(bytes: &[u8], all_gpu_activity: bool) -> CaptureManifest {
         unknown_records: 0,
         record_limit_reached: None,
         capture_failed: false,
+        cuda_devices: Vec::new(),
     }
 }
 

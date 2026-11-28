@@ -322,12 +322,14 @@ fn trigger_condition(
 ) -> Result<Option<TriggerCondition>, CommandFailure> {
     let (kind, threshold, flag) = match (
         args.trigger_gap_ms,
+        args.trigger_idle_ms,
         args.trigger_duration_ms,
         args.trigger_latency_ms,
     ) {
-        (Some(ms), None, None) => (TriggerKind::Gap, ms, "trigger-gap-ms"),
-        (None, Some(ms), None) => (TriggerKind::Duration, ms, "trigger-duration-ms"),
-        (None, None, Some(ms)) => (TriggerKind::Latency, ms, "trigger-latency-ms"),
+        (Some(ms), None, None, None) => (TriggerKind::Gap, ms, "trigger-gap-ms"),
+        (None, Some(ms), None, None) => (TriggerKind::Idle, ms, "trigger-idle-ms"),
+        (None, None, Some(ms), None) => (TriggerKind::Duration, ms, "trigger-duration-ms"),
+        (None, None, None, Some(ms)) => (TriggerKind::Latency, ms, "trigger-latency-ms"),
         _ => return Ok(None),
     };
     let latency = kind == TriggerKind::Latency;

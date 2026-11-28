@@ -38,10 +38,16 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
     assert header["abi_version"] == 4, header
     assert header["header_size"] == HEADER.size, header
     assert header["record_size"] == RECORD.size, header
-    assert len(data) == HEADER.size + header["record_count"] * RECORD.size, header
+    start = HEADER.size
+    # A device table of 32-byte entries may follow the header.
+    if header["feature_flags"] & 128:
+        count, entry_size = struct.unpack_from("<2I", data, HEADER.size)
+        assert entry_size == 32 and 0 < count <= 64, (count, entry_size)
+        start += 8 + count * entry_size
+    assert len(data) == start + header["record_count"] * RECORD.size, header
 
     records = []
-    for offset in range(HEADER.size, len(data), RECORD.size):
+    for offset in range(start, len(data), RECORD.size):
         fields = RECORD.unpack_from(data, offset)
         records.append(
             {

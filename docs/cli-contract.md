@@ -315,7 +315,8 @@ five hotspots, syscall groups, and kernel groups inline and writes each full
 inventory to a private artifact referenced from `sources`. Python sampling
 adds the top GIL-holder hotspots and `gil_released_proportion`, and a
 `PYTHON_HOTSPOT` finding when one function holds the GIL for a measurable
-share of the window. `findings` are
+share of the window. `findings` are rule-based hints over this one window,
+meant as a starting reference rather than a diagnosis. They are
 deterministic and ranked by an estimated share of the window; a finding whose
 impact cannot be bounded has `impact_share: null` and ranks last. Each finding
 carries an environment action or a ready `MeasurementSpec` for `measure
@@ -325,7 +326,9 @@ reason and a `TRIAGE_SOURCE_UNAVAILABLE` warning; target exit or reuse, cleanup,
 and internal failures fail the command. `not_covered` lists what triage cannot
 answer, including where blocked threads wait. Blocked time includes idle
 waiting, so read it per thread. NVML utilization is a device-wide sampled
-estimate.
+estimate. `gpu_devices` lists every GPU on the host; GPU findings cover only
+the GPUs the target ran kernels on, matched through `cuda_devices` UUIDs, and
+none are made when several GPUs cannot be told apart.
 
 `--syscall-aggregate` is live-only and requires `--duration-ms`. PID-filtered
 raw syscall entry/exit programs retain at most `--max-inflight` thread starts
@@ -427,7 +430,10 @@ write an artifact only with `--events-out`. The default format is JSONL; `--form
 Format. Beside an Event JSONL artifact, xprobe writes its capture manifest
 (`schemas/capture-manifest.schema.json`, schema `1.0`): target identity, the
 `CLOCK_MONOTONIC` capture window, armed selectors, whether every GPU activity
-and peer copy was recorded, losses, and the artifact's size and SHA-256. A
+and peer copy was recorded, losses, `cuda_devices` (the GPU UUID behind each
+process-local CUDA `device_id`), and the artifact's size and SHA-256.
+Measurement and aggregate results report the same `cuda_devices` under
+`collection`. A
 re-exported input keeps its manifest only when exactly one input had one; an
 artifact without known coverage removes a stale manifest at its path. Once collection has produced a capture, correlation, clock, drop, or
 capacity failures still write it and identify its path, format, and event count
@@ -437,17 +443,20 @@ the original measurement error code in `details`.
 ### Triggered capture
 
 ```bash
-xprobe measure --pid 4242 --trigger-gap-ms 10 --pre-ms 50 --post-ms 50 \
+xprobe measure --pid 4242 --trigger-idle-ms 10 --pre-ms 50 --post-ms 50 \
   --timeout-ms 300000 --max-events 400000 --events-out /tmp/spikes
 ```
 
 A triggered capture waits for one rare slow span instead of recording a fixed
-window. `--trigger-gap-ms` fires on idle time between an activity's end and
-the next kernel, copy, or memset on its stream, `--trigger-duration-ms` on a
-kernel, copy, or memset that lasts at least the threshold, and
-`--trigger-latency-ms` on a `--from`/`--to` pair under `--match`; latency
-triggers accept CUDA endpoints only. Gap and duration triggers, and latency
-triggers under `stream-order`, record every GPU activity.
+window. `--trigger-idle-ms` fires when a device runs no kernel, copy, or memset
+of the target on any stream; activity whose other boundary falls outside the
+capture keeps the device busy rather than idle. `--trigger-gap-ms` fires on a
+gap between an activity's end and the next kernel, copy, or memset on the same
+stream, even while another stream keeps the device busy.
+`--trigger-duration-ms` fires on a kernel, copy, or memset that lasts at least
+the threshold, and `--trigger-latency-ms` on a `--from`/`--to` pair under
+`--match`; latency triggers accept CUDA endpoints only. Idle, gap, and duration
+triggers, and latency triggers under `stream-order`, record every GPU activity.
 
 The CUPTI Agent keeps the newest `--max-events` records in a ring, and xprobe
 evaluates every new span on each snapshot with the same pairing rules as

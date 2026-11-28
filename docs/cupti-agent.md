@@ -80,6 +80,10 @@ counts records overwritten before they were read. Ring captures set the
 ring-records feature flag, which lets the offset plus count exceed capacity.
 
 Capture ABI v4 starts with an 88-byte header and zero or more 200-byte records.
+With the device-table feature flag, the header is followed by a device count,
+an entry size, and one 32-byte entry per CUDA ordinal holding its UUID, read
+from the target's loaded driver; results and manifests report it as
+`cuda_devices`, so a process-local `device_id` maps to a physical GPU.
 The header reports capture state and stop reason, configured capacity, observed
 and retained counts, Agent and CUPTI drops, unknown activity, record sizes, and
 feature flags. It also reports the payload record offset so the caller can

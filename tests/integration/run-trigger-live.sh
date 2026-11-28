@@ -50,8 +50,15 @@ set +e
   --max-events 400000 --timeout-ms 20000 --events-out "$1/fired" \
   >"$1/fired.json" 2>"$1/fired.stderr"
 echo $? >"$1/fired.status"
+mkdir -p "$1/idle"
 "${xprobe}" measure --pid "${target_pid}" --cupti-socket "${socket}" --json \
-  --trigger-gap-ms 500 --max-events 400000 --timeout-ms 3000 \
+  --trigger-idle-ms 20 --pre-ms 5 --post-ms 5 --windows 2 \
+  --max-events 400000 --timeout-ms 20000 --events-out "$1/idle" \
+  >"$1/idle.json" 2>"$1/idle.stderr"
+echo $? >"$1/idle.status"
+# The device is never idle for half a second, though a side stream is.
+"${xprobe}" measure --pid "${target_pid}" --cupti-socket "${socket}" --json \
+  --trigger-idle-ms 500 --max-events 400000 --timeout-ms 3000 \
   >"$1/unobserved.json" 2>"$1/unobserved.stderr"
 echo $? >"$1/unobserved.status"
 "${xprobe}" measure --pid "${target_pid}" --cupti-socket "${socket}" --json \

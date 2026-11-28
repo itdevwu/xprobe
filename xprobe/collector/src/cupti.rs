@@ -43,7 +43,13 @@ const FEATURE_NVTX_RECORDS: u32 = 1 << 3;
 const FEATURE_MEMORY_KINDS: u32 = 1 << 4;
 const FEATURE_PEER_MEMCPY: u32 = 1 << 5;
 const FEATURE_RING_RECORDS: u32 = 1 << 6;
-const SUPPORTED_FEATURES: u32 = FEATURE_HOST_MONOTONIC_TIMESTAMPS
+const FEATURE_DEVICE_TABLE: u32 = 1 << 7;
+/// Device table: count and entry size, then 32-byte entries.
+const DEVICE_TABLE_HEADER: usize = 8;
+const DEVICE_ENTRY_SIZE: usize = 32;
+const MAX_DEVICES: usize = 64;
+const SUPPORTED_FEATURES: u32 = FEATURE_DEVICE_TABLE
+    | FEATURE_HOST_MONOTONIC_TIMESTAMPS
     | FEATURE_TRANSFER_RECORDS
     | FEATURE_AGGREGATE_RECORDS
     | FEATURE_NVTX_RECORDS
@@ -175,6 +181,9 @@ pub struct CuptiCapture {
     pub cupti_dropped_records: u64,
     pub dropped_records: u64,
     pub unknown_records: u64,
+    /// The UUID behind each CUDA device ordinal; empty when the Agent's
+    /// driver did not report them.
+    pub devices: Vec<xprobe_protocol::CudaDevice>,
     pub events: Vec<Event>,
     pub aggregate_groups: Vec<CuptiAggregateGroup>,
 }
@@ -213,6 +222,7 @@ pub enum CuptiDecodeError {
         expected: u32,
     },
     InvalidRecordSize(u32),
+    InvalidDeviceTable(&'static str),
     CaptureLengthOverflow,
     InvalidCaptureLength {
         expected: usize,
@@ -273,6 +283,12 @@ impl fmt::Display for CuptiDecodeError {
                 write!(
                     formatter,
                     "CUPTI capture ABI {version} header size is {actual}, expected {expected}"
+                )
+            }
+            Self::InvalidDeviceTable(problem) => {
+                write!(
+                    formatter,
+                    "CUPTI capture device table is invalid: {problem}"
                 )
             }
             Self::InvalidRecordSize(size) => {
@@ -551,6 +567,144 @@ fn read_snapshot(reader: &mut impl Read, bytes: &mut Vec<u8>) -> Result<(), Cupt
 /// Returns [`CuptiDecodeError`] when the capture header, size, record kind, or
 /// bounded name does not match a supported ABI.
 pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, CuptiDecodeError> {
+    let feature_flags = check_header(bytes)?;
+    let state = decode_capture_state(read_u32(bytes, 24))?;
+    let stop_reason = decode_stop_reason(read_u32(bytes, 28))?;
+    let record_count_raw = read_u64(bytes, 32);
+    let record_capacity = read_u64(bytes, 40);
+    let observed_records = read_u64(bytes, 48);
+    let record_offset = read_u64(bytes, 80);
+    let ring = feature_flags & FEATURE_RING_RECORDS != 0;
+    check_record_counters(
+        record_offset,
+        record_count_raw,
+        record_capacity,
+        observed_records,
+        ring,
+    )?;
+    let record_count =
+        usize::try_from(record_count_raw).map_err(|_| CuptiDecodeError::CaptureLengthOverflow)?;
+    let (devices, payload_start) = if feature_flags & FEATURE_DEVICE_TABLE != 0 {
+        decode_device_table(bytes)?
+    } else {
+        (Vec::new(), HEADER_SIZE)
+    };
+    let payload_size = record_count
+        .checked_mul(RECORD_SIZE)
+        .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
+    let expected_size = payload_start
+        .checked_add(payload_size)
+        .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
+    if bytes.len() != expected_size {
+        return Err(CuptiDecodeError::InvalidCaptureLength {
+            expected: expected_size,
+            actual: bytes.len(),
+        });
+    }
+
+    let aggregate = feature_flags & FEATURE_AGGREGATE_RECORDS != 0;
+    if aggregate && record_offset != 0 {
+        return Err(CuptiDecodeError::InvalidCounters {
+            offset: record_offset,
+            records: record_count_raw,
+            capacity: record_capacity,
+            observed: observed_records,
+        });
+    }
+    let (events, aggregate_groups) = decode_payload(
+        &bytes[payload_start..],
+        record_count,
+        record_offset,
+        session_id,
+        feature_flags,
+    )?;
+
+    let agent_dropped_records = read_u64(bytes, 56);
+    let cupti_dropped_records = read_u64(bytes, 64);
+    let dropped_records = agent_dropped_records
+        .checked_add(cupti_dropped_records)
+        .ok_or(CuptiDecodeError::CounterOverflow)?;
+    Ok(CuptiCapture {
+        nvtx_callbacks_active: feature_flags & FEATURE_NVTX_RECORDS != 0,
+        peer_memcpy_captured: feature_flags & FEATURE_PEER_MEMCPY != 0,
+        ring,
+        record_offset,
+        state,
+        stop_reason,
+        record_capacity,
+        observed_records,
+        agent_dropped_records,
+        cupti_dropped_records,
+        dropped_records,
+        unknown_records: read_u64(bytes, 72),
+        devices,
+        events,
+        aggregate_groups,
+    })
+}
+
+/// The device table after the header, and where the records begin.
+fn decode_device_table(
+    bytes: &[u8],
+) -> Result<(Vec<xprobe_protocol::CudaDevice>, usize), CuptiDecodeError> {
+    let table = bytes
+        .get(HEADER_SIZE..HEADER_SIZE + DEVICE_TABLE_HEADER)
+        .ok_or(CuptiDecodeError::InvalidDeviceTable(
+            "truncated table header",
+        ))?;
+    let count = usize::try_from(read_u32(table, 0))
+        .map_err(|_| CuptiDecodeError::InvalidDeviceTable("device count overflows"))?;
+    if read_u32(table, 4) as usize != DEVICE_ENTRY_SIZE {
+        return Err(CuptiDecodeError::InvalidDeviceTable(
+            "unexpected entry size",
+        ));
+    }
+    if count == 0 || count > MAX_DEVICES {
+        return Err(CuptiDecodeError::InvalidDeviceTable(
+            "device count out of range",
+        ));
+    }
+    let start = HEADER_SIZE + DEVICE_TABLE_HEADER;
+    let end = start + count * DEVICE_ENTRY_SIZE;
+    let entries = bytes
+        .get(start..end)
+        .ok_or(CuptiDecodeError::InvalidDeviceTable("truncated entries"))?;
+    let mut devices = Vec::with_capacity(count);
+    for entry in entries.chunks_exact(DEVICE_ENTRY_SIZE) {
+        let uuid = &entry[8..24];
+        let hex = |range: std::ops::Range<usize>| {
+            use std::fmt::Write;
+            uuid[range].iter().fold(String::new(), |mut text, byte| {
+                write!(text, "{byte:02x}").expect("writing to a String cannot fail");
+                text
+            })
+        };
+        devices.push(xprobe_protocol::CudaDevice {
+            device_id: read_u32(entry, 0),
+            uuid: format!(
+                "GPU-{}-{}-{}-{}-{}",
+                hex(0..4),
+                hex(4..6),
+                hex(6..8),
+                hex(8..10),
+                hex(10..16)
+            ),
+        });
+    }
+    if devices
+        .iter()
+        .zip(0..)
+        .any(|(device, ordinal)| device.device_id != ordinal)
+    {
+        return Err(CuptiDecodeError::InvalidDeviceTable(
+            "ordinals are not 0..count",
+        ));
+    }
+    Ok((devices, end))
+}
+
+/// The magic, ABI, sizes, and feature flags of a capture header.
+fn check_header(bytes: &[u8]) -> Result<u32, CuptiDecodeError> {
     if bytes.len() < HEADER_SIZE {
         return Err(CuptiDecodeError::HeaderTooShort {
             actual: bytes.len(),
@@ -583,74 +737,7 @@ pub fn decode_capture(bytes: &[u8], session_id: &str) -> Result<CuptiCapture, Cu
             unsupported_features,
         ));
     }
-
-    let state = decode_capture_state(read_u32(bytes, 24))?;
-    let stop_reason = decode_stop_reason(read_u32(bytes, 28))?;
-    let record_count_raw = read_u64(bytes, 32);
-    let record_capacity = read_u64(bytes, 40);
-    let observed_records = read_u64(bytes, 48);
-    let record_offset = read_u64(bytes, 80);
-    let ring = feature_flags & FEATURE_RING_RECORDS != 0;
-    check_record_counters(
-        record_offset,
-        record_count_raw,
-        record_capacity,
-        observed_records,
-        ring,
-    )?;
-    let record_count =
-        usize::try_from(record_count_raw).map_err(|_| CuptiDecodeError::CaptureLengthOverflow)?;
-    let payload_size = record_count
-        .checked_mul(RECORD_SIZE)
-        .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
-    let expected_size = HEADER_SIZE
-        .checked_add(payload_size)
-        .ok_or(CuptiDecodeError::CaptureLengthOverflow)?;
-    if bytes.len() != expected_size {
-        return Err(CuptiDecodeError::InvalidCaptureLength {
-            expected: expected_size,
-            actual: bytes.len(),
-        });
-    }
-
-    let aggregate = feature_flags & FEATURE_AGGREGATE_RECORDS != 0;
-    if aggregate && record_offset != 0 {
-        return Err(CuptiDecodeError::InvalidCounters {
-            offset: record_offset,
-            records: record_count_raw,
-            capacity: record_capacity,
-            observed: observed_records,
-        });
-    }
-    let (events, aggregate_groups) = decode_payload(
-        bytes,
-        record_count,
-        record_offset,
-        session_id,
-        feature_flags,
-    )?;
-
-    let agent_dropped_records = read_u64(bytes, 56);
-    let cupti_dropped_records = read_u64(bytes, 64);
-    let dropped_records = agent_dropped_records
-        .checked_add(cupti_dropped_records)
-        .ok_or(CuptiDecodeError::CounterOverflow)?;
-    Ok(CuptiCapture {
-        nvtx_callbacks_active: feature_flags & FEATURE_NVTX_RECORDS != 0,
-        peer_memcpy_captured: feature_flags & FEATURE_PEER_MEMCPY != 0,
-        ring,
-        record_offset,
-        state,
-        stop_reason,
-        record_capacity,
-        observed_records,
-        agent_dropped_records,
-        cupti_dropped_records,
-        dropped_records,
-        unknown_records: read_u64(bytes, 72),
-        events,
-        aggregate_groups,
-    })
+    Ok(feature_flags)
 }
 
 /// Retained records fit the capacity and never exceed what was observed. A
@@ -678,7 +765,7 @@ fn check_record_counters(
 }
 
 fn decode_payload(
-    bytes: &[u8],
+    records: &[u8],
     record_count: usize,
     record_offset: u64,
     session_id: &str,
@@ -686,14 +773,14 @@ fn decode_payload(
 ) -> Result<(Vec<Event>, Vec<CuptiAggregateGroup>), CuptiDecodeError> {
     if feature_flags & FEATURE_AGGREGATE_RECORDS != 0 {
         let mut groups = Vec::with_capacity(record_count);
-        for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
+        for (index, record) in records.chunks_exact(RECORD_SIZE).enumerate() {
             groups.push(decode_aggregate_record(record, index, feature_flags)?);
         }
         return Ok((Vec::new(), groups));
     }
 
     let mut events = Vec::with_capacity(record_count);
-    for (index, record) in bytes[HEADER_SIZE..].chunks_exact(RECORD_SIZE).enumerate() {
+    for (index, record) in records.chunks_exact(RECORD_SIZE).enumerate() {
         events.push(decode_record(record, index, session_id, feature_flags)?);
     }
     events.sort_by_key(|event| event.timestamp_ns);
@@ -1384,11 +1471,45 @@ mod tests {
     #[test]
     fn rejects_unknown_feature_flags() {
         let mut bytes = capture(&[]);
-        bytes[20..24].copy_from_slice(&128_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&256_u32.to_le_bytes());
         assert_eq!(
             decode_capture(&bytes, "xp_test"),
-            Err(CuptiDecodeError::UnsupportedFeatureFlags(128))
+            Err(CuptiDecodeError::UnsupportedFeatureFlags(256))
         );
+    }
+
+    #[test]
+    fn decodes_the_device_table_before_the_records() {
+        let plain = capture(&[record(1, 100, 1, "cudaLaunchKernel")]);
+        let mut bytes = plain[..HEADER_SIZE].to_vec();
+        let flags =
+            u32::from_le_bytes(bytes[20..24].try_into().unwrap()) | super::FEATURE_DEVICE_TABLE;
+        bytes[20..24].copy_from_slice(&flags.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&32_u32.to_le_bytes());
+        for ordinal in 0_u32..2 {
+            bytes.extend_from_slice(&ordinal.to_le_bytes());
+            bytes.extend_from_slice(&[0; 4]);
+            bytes.extend((0..16).map(|byte| byte + u8::try_from(ordinal).unwrap() * 16));
+            bytes.extend_from_slice(&[0; 8]);
+        }
+        bytes.extend_from_slice(&plain[HEADER_SIZE..]);
+        let decoded = decode_capture(&bytes, "xp_test").unwrap();
+        assert_eq!(decoded.events.len(), 1);
+        assert_eq!(
+            decoded.devices[1],
+            xprobe_protocol::CudaDevice {
+                device_id: 1,
+                uuid: "GPU-10111213-1415-1617-1819-1a1b1c1d1e1f".to_owned()
+            }
+        );
+        // A table whose ordinals skip one is malformed.
+        let mut skipped = bytes.clone();
+        skipped[HEADER_SIZE + 8 + 32..HEADER_SIZE + 8 + 36].copy_from_slice(&5_u32.to_le_bytes());
+        assert!(matches!(
+            decode_capture(&skipped, "xp_test"),
+            Err(CuptiDecodeError::InvalidDeviceTable(_))
+        ));
     }
 
     #[test]

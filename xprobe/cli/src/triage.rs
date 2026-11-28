@@ -297,14 +297,17 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
     }
 
     let mut activity_groups = None;
+    let mut cuda_devices = Vec::new();
     match gpu_activity {
         Outcome::Collected(result) => {
             let path = write_artifact(&artifacts, "gpu-activity.json", &result)?;
             let AggregateInventoryResult {
                 inventory,
+                collection,
                 warnings: activity_warnings,
                 ..
             } = result;
+            cuda_devices = collection.cuda_devices;
             let mut groups = inventory.groups;
             groups.sort_by_key(|group| std::cmp::Reverse(group.duration_ns.total));
             groups.truncate(TOP);
@@ -367,6 +370,7 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
         syscalls: &syscall_groups,
         gpu_devices: &gpu_devices,
         gpu_activity: activity_groups.as_deref(),
+        cuda_devices: &cuda_devices,
     });
     Ok(TriageResult {
         schema_version: SchemaVersion3::current(),
@@ -384,6 +388,7 @@ fn triage(request: &TriageRequest) -> Result<TriageResult, CommandFailure> {
         syscalls: syscall_groups,
         gpu_devices,
         gpu_activity: activity_groups.unwrap_or_default(),
+        cuda_devices,
         sources,
         not_covered: NOT_COVERED.iter().map(|item| (*item).to_owned()).collect(),
         warnings,

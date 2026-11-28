@@ -61,6 +61,7 @@ int xprobe_cupti_agent_flush(void)
 #include <nvtx3/nvToolsExt.h>
 #include <generated_nvtx_meta.h>
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -165,6 +166,9 @@ static uint32_t runtime_cupti_version;
 static int64_t activity_timestamp_offset_ns;
 static uint64_t capture_start_timestamp_ns;
 static _Atomic int clock_alignment_warning_emitted;
+/* CUDA device ordinal to UUID, read once at ARM from the loaded driver. */
+static struct xprobe_cupti_device_entry device_entries[XPROBE_CUPTI_MAX_DEVICES];
+static uint32_t device_count;
 /* Whether this capture's activity timestamps were seen on CLOCK_MONOTONIC:
  * unknown until an activity is checked, and unaligned once one fails. */
 enum {
@@ -209,12 +213,16 @@ _Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, bytes) == 8U, "PtoP4 bytes");
 _Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, start) == 16U, "PtoP4 start");
 _Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, end) == 24U, "PtoP4 end");
 _Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, deviceId) == 32U, "PtoP4 deviceId");
+_Static_assert(sizeof(struct xprobe_cupti_device_table) == 8U, "device table header");
+_Static_assert(sizeof(struct xprobe_cupti_device_entry) == 32U, "device table entry");
+_Static_assert(sizeof(((CUuuid *)0)->bytes) == 16U, "CUuuid size");
 _Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, contextId) == 36U, "PtoP4 contextId");
 _Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, streamId) == 40U, "PtoP4 streamId");
 _Static_assert(offsetof(CUpti_ActivityMemcpyPtoP4, correlationId) == 60U,
                "PtoP4 correlationId");
 
 static int shutdown_agent(void);
+static void read_device_table(void);
 static int activate_capture(void);
 
 static int allocate_capture(uint64_t capacity, int needs_nvtx)
@@ -1870,6 +1878,9 @@ static void initialize_output_header(struct xprobe_cupti_output_header *header,
     if (capture_mode == XPROBE_CUPTI_CAPTURE_RING) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_RING_RECORDS;
     }
+    if (device_count != 0U) {
+        header->feature_flags |= XPROBE_CUPTI_FEATURE_DEVICE_TABLE;
+    }
     if (capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
         header->feature_flags |= XPROBE_CUPTI_FEATURE_AGGREGATE_RECORDS |
                                 XPROBE_CUPTI_FEATURE_MEMORY_KINDS;
@@ -1986,6 +1997,24 @@ static uint64_t copy_ring_records(uint64_t requested, uint64_t *first)
     return count;
 }
 
+static int write_device_table(int descriptor,
+                              int (*write_function)(int, const void *, size_t))
+{
+    struct xprobe_cupti_device_table table = {
+        .device_count = device_count,
+        .entry_size = (uint32_t)sizeof(device_entries[0]),
+    };
+
+    if (device_count == 0U) {
+        return 0;
+    }
+    if (write_function(descriptor, &table, sizeof(table)) != 0) {
+        return -1;
+    }
+    return write_function(descriptor, device_entries,
+                          device_count * sizeof(device_entries[0]));
+}
+
 static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
 {
     struct xprobe_cupti_output_header header;
@@ -1994,6 +2023,7 @@ static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
     uint64_t available;
     int result;
 
+    read_device_table();
     if (capture_mode == XPROBE_CUPTI_CAPTURE_EXACT) {
         /* Callbacks advance the commit count a bounded step at a time; the
          * reader finishes the job before taking its snapshot. */
@@ -2021,6 +2051,9 @@ static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
         initialize_output_header(&header, first + count, first, ring_snapshot, count);
         result = write_function(descriptor, &header, sizeof(header));
         if (result == 0) {
+            result = write_device_table(descriptor, write_function);
+        }
+        if (result == 0) {
             result = write_function(descriptor, ring_snapshot,
                                     count * sizeof(records[0]));
         }
@@ -2028,6 +2061,9 @@ static int write_capture(int descriptor, int is_socket, uint64_t record_offset)
     }
     initialize_output_header(&header, available, record_offset, records, available);
     result = write_function(descriptor, &header, sizeof(header));
+    if (result == 0) {
+        result = write_device_table(descriptor, write_function);
+    }
     if (result == 0 && capture_mode == XPROBE_CUPTI_CAPTURE_AGGREGATE) {
         result = write_aggregate_records(descriptor, write_function);
     } else if (result == 0) {
@@ -2674,6 +2710,77 @@ static int enable_api_callbacks(CUpti_CallbackDomain domain,
     return enable_filtered_callbacks(domain, callback_count);
 }
 
+/* Read every CUDA ordinal's UUID from the driver the target loaded, once
+ * the driver can report them: a capture armed during cuInit retries at its
+ * first write. No device table is sent while the driver cannot. */
+static _Atomic int device_warning_emitted;
+
+static void device_warning(const char *message)
+{
+    if (atomic_exchange_explicit(&device_warning_emitted, 1, memory_order_relaxed) == 0) {
+        fprintf(stderr, "xprobe CUPTI: %s; device UUIDs are unavailable\n", message);
+    }
+}
+
+static void read_device_table(void)
+{
+    if (device_count != 0U) {
+        return;
+    }
+    typedef CUresult (*count_function)(int *);
+    typedef CUresult (*get_function)(CUdevice *, int);
+    typedef CUresult (*uuid_function)(CUuuid *, CUdevice);
+    void *driver = dlopen("libcuda.so.1", RTLD_NOW | RTLD_NOLOAD);
+    count_function get_count;
+    get_function get_device;
+    uuid_function get_uuid;
+    int count = 0;
+
+    if (driver == NULL) {
+        device_warning("libcuda.so.1 is not loaded");
+        return;
+    }
+    /* POSIX defines dlsym results as convertible to function pointers;
+     * copying the bytes keeps ISO C from objecting. */
+#define XPROBE_DRIVER_SYMBOL(target, name)                                     \
+    do {                                                                       \
+        void *symbol = dlsym(driver, name);                                    \
+        memcpy(&(target), &symbol, sizeof(target));                            \
+    } while (0)
+    XPROBE_DRIVER_SYMBOL(get_count, "cuDeviceGetCount");
+    XPROBE_DRIVER_SYMBOL(get_device, "cuDeviceGet");
+    XPROBE_DRIVER_SYMBOL(get_uuid, "cuDeviceGetUuid_v2");
+    if (get_uuid == NULL) {
+        XPROBE_DRIVER_SYMBOL(get_uuid, "cuDeviceGetUuid");
+    }
+#undef XPROBE_DRIVER_SYMBOL
+    if (get_count == NULL || get_device == NULL || get_uuid == NULL ||
+        get_count(&count) != CUDA_SUCCESS || count < 0) {
+        device_warning("the CUDA driver did not report its devices");
+        (void)dlclose(driver);
+        return;
+    }
+    for (int ordinal = 0;
+         ordinal < count && ordinal < (int)XPROBE_CUPTI_MAX_DEVICES; ++ordinal) {
+        CUdevice device;
+        CUuuid uuid;
+        struct xprobe_cupti_device_entry *entry = &device_entries[device_count];
+
+        if (get_device(&device, ordinal) != CUDA_SUCCESS ||
+            get_uuid(&uuid, device) != CUDA_SUCCESS) {
+            device_warning("the CUDA driver did not report a device UUID");
+            device_count = 0U;
+            break;
+        }
+        memset(entry, 0, sizeof(*entry));
+        entry->ordinal = (uint32_t)ordinal;
+        memcpy(entry->uuid, uuid.bytes, sizeof(entry->uuid));
+        ++device_count;
+    }
+    /* The driver stays loaded by the target; this only drops our reference. */
+    (void)dlclose(driver);
+}
+
 static int activate_capture(void)
 {
 #if CUPTI_API_VERSION >= 130000
@@ -2714,6 +2821,7 @@ static int activate_capture(void)
         report_cupti_error("cuptiGetVersion", result);
         return XPROBE_CUPTI_AGENT_CUPTI_ERROR;
     }
+    read_device_table();
     if (monotonic_timestamp_ns(&capture_start_timestamp_ns) !=
         XPROBE_CUPTI_AGENT_READY) {
         return XPROBE_CUPTI_AGENT_OUTPUT_ERROR;

@@ -16,6 +16,13 @@
       "description": "A collector entered a failed state.",
       "type": "boolean"
     },
+    "cuda_devices": {
+      "description": "The UUID behind each CUDA device ordinal in the events.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CudaDevice"
+      }
+    },
     "dropped_records": {
       "type": "integer",
       "format": "uint64",
@@ -90,6 +97,25 @@
       "required": [
         "start_ns",
         "end_ns"
+      ]
+    },
+    "CudaDevice": {
+      "description": "One CUDA device as the target saw it. `device_id` is the process's CUDA\nordinal, which `CUDA_VISIBLE_DEVICES` renumbers; the UUID names the\nphysical GPU across processes and in `nvidia-smi`.",
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "uuid": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "uuid"
       ]
     },
     "ExportFormat": {

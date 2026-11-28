@@ -51,7 +51,7 @@ pub use measurement::{
     AggregateActivity, AggregateCollectionSummary, AggregateDuration, AggregateGroup,
     AggregateInventory, AggregateInventoryResult, CaptureCompleteness, CaptureCoverage,
     ClockQuality, CollectionSummary, CorrelationConfidence, CorrelationSummary, CoverageSource,
-    CuptiCollectionSummary, Evidence, EvidenceArtifact, EvidenceExemplar, EvidenceMode,
+    CudaDevice, CuptiCollectionSummary, Evidence, EvidenceArtifact, EvidenceExemplar, EvidenceMode,
     LatencyRank, LatencyStatistics, MatchPolicy, MatchedEventPair, Measurement, MeasurementMode,
     MeasurementResult, MeasurementSpec, QualityIssue, QualitySeverity, QualityVerdict,
     ResultQuality, SampleSummary, SessionStatus, TargetIdentity,

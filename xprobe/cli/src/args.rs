@@ -326,10 +326,10 @@ pub(crate) struct MeasureArgs {
     #[arg(long)]
     pub(crate) events_out: Option<PathBuf>,
 
-    /// Triage one bounded window: thread time, cgroup throttling, CPU samples,
-    /// syscall totals, GPU health, and CUDA kernel activity, with ranked
-    /// findings and the next exact measurement. Requires --pid and
-    /// --duration-ms.
+    /// Take a broad look over one bounded window: thread time, cgroup
+    /// throttling, CPU and Python samples, syscall totals, GPU health, and
+    /// CUDA kernel activity, with rule-based hints and a possible next
+    /// measurement. Requires --pid and --duration-ms.
     #[arg(
         long,
         requires_all = ["pid", "duration_ms"],
@@ -499,10 +499,16 @@ pub(crate) struct MeasureArgs {
     reason = "field names are the --trigger-* flags and avoid clashing with --duration-ms"
 )]
 pub(crate) struct TriggerArgs {
-    /// Fire on an idle gap of at least this many milliseconds between one
-    /// activity's end and the next kernel, copy, or memset on its stream.
+    /// Fire on a gap of at least this many milliseconds between one
+    /// activity's end and the next kernel, copy, or memset on the same
+    /// stream, even while other streams keep the device busy.
     #[arg(long)]
     pub(crate) trigger_gap_ms: Option<f64>,
+
+    /// Fire when a device runs no kernel, copy, or memset of the target on
+    /// any stream for at least this many milliseconds.
+    #[arg(long)]
+    pub(crate) trigger_idle_ms: Option<f64>,
 
     /// Fire on a kernel, copy, or memset lasting at least this many
     /// milliseconds.

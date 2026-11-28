@@ -70,13 +70,20 @@ def read_capture(path: pathlib.Path) -> tuple[dict[str, int], list[dict[str, int
     assert header["abi_version"] == 4
     assert header["header_size"] == HEADER.size
     assert header["record_size"] == RECORD.size
-    # Transfer records are always present; host-monotonic time (1) and peer
-    # copies (32) depend on the capture.
-    assert header["feature_flags"] & ~(1 | 32) == 2
-    assert len(data) == header["header_size"] + header["record_count"] * RECORD.size
+    # Transfer records (2) and the device table (128) are always present;
+    # host-monotonic time (1) and peer copies (32) depend on the capture.
+    assert header["feature_flags"] & ~(1 | 32) == 2 | 128, header
+    count, entry_size = struct.unpack_from("<2I", data, HEADER.size)
+    assert entry_size == 32 and 0 < count <= 64, (count, entry_size)
+    header["device_uuids"] = [
+        data[HEADER.size + 8 + index * 32 + 8 : HEADER.size + 8 + index * 32 + 24].hex()
+        for index in range(count)
+    ]
+    start = HEADER.size + 8 + count * 32
+    assert len(data) == start + header["record_count"] * RECORD.size
     records = [
         decode_record(data[offset : offset + RECORD.size])
-        for offset in range(header["header_size"], len(data), RECORD.size)
+        for offset in range(start, len(data), RECORD.size)
     ]
     return header, records
 
@@ -222,6 +229,13 @@ def main() -> None:
             raise SystemExit(measured.returncode)
         assert measured.stderr == ""
         measurement = json.loads(measured.stdout)
+        # The Agent names each CUDA ordinal's GPU as nvidia-smi does.
+        visible = (pathlib.Path(output_dir) / "gpu-uuids.txt").read_text().split()
+        devices = measurement["collection"]["cuda_devices"]
+        assert [device["uuid"] for device in devices] == visible, (devices, visible)
+        assert [device["device_id"] for device in devices] == list(range(len(visible)))
+        assert all(device["uuid"].replace("GPU-", "").replace("-", "") in header["device_uuids"]
+                   for device in devices)
         cross_domain = subprocess.run(
             [
                 xprobe,

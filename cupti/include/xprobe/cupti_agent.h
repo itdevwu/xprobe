@@ -25,7 +25,10 @@ enum xprobe_cupti_feature {
     XPROBE_CUPTI_FEATURE_PEER_MEMCPY = 1U << 5,
     /* Records come from a ring: record_offset plus record_count may exceed
      * record_capacity. */
-    XPROBE_CUPTI_FEATURE_RING_RECORDS = 1U << 6
+    XPROBE_CUPTI_FEATURE_RING_RECORDS = 1U << 6,
+    /* A device table follows the header: the UUID of every CUDA device
+     * ordinal the target sees, so device IDs compare across processes. */
+    XPROBE_CUPTI_FEATURE_DEVICE_TABLE = 1U << 7
 };
 
 enum xprobe_cupti_capture_mode {
@@ -127,6 +130,24 @@ struct xprobe_cupti_output_header {
     uint64_t cupti_dropped_records;
     uint64_t unknown_records;
     uint64_t record_offset;
+};
+
+enum { XPROBE_CUPTI_MAX_DEVICES = 64 };
+
+/* With XPROBE_CUPTI_FEATURE_DEVICE_TABLE, the header is followed by this
+ * table and `device_count` entries, then the records. */
+struct xprobe_cupti_device_table {
+    uint32_t device_count;
+    uint32_t entry_size;
+};
+
+struct xprobe_cupti_device_entry {
+    /* The CUDA device ordinal, as in each record's device_id. */
+    uint32_t ordinal;
+    uint32_t reserved;
+    /* CUuuid bytes, as nvidia-smi prints after "GPU-". */
+    uint8_t uuid[16];
+    uint64_t reserved_tail;
 };
 
 struct xprobe_cupti_record {

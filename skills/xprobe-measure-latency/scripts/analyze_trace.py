@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Summarize a bounded xprobe Event JSONL artifact.
+"""Summarize bounded xprobe Event JSONL artifacts.
 
-Beyond aggregate GPU timing, the report ranks idle gaps, optionally ranks the
-slowest pairs of a measurement result, and can list every event inside a time
-window ("vertical slice") around a gap, an outlier, or explicit timestamps.
-Everything is descriptive: events inside a window are concurrent with it, not
-proven causes.
+For one artifact the report gives each GPU's time budget (busy, idle, compute,
+communication, transfers), ranks device idle gaps and stream gaps, optionally
+ranks the slowest pairs of a measurement result, and can list every event
+inside a time window ("vertical slice") around a gap, an outlier, or explicit
+timestamps. For several artifacts of one host, such as the ranks of a data- or
+tensor-parallel job, it compares those budgets over the window they share.
+Everything is descriptive: events inside a window are concurrent with it, and
+ranks that overlap in time are compared, not shown to cause each other.
 """
 
 import argparse
@@ -98,6 +101,11 @@ def activity_key(kind: str, event: dict) -> tuple:
     )
 
 
+# Communication kernels are recognized by name; a heuristic that holds for
+# NCCL builds and can be overridden with --comm-kernel.
+DEFAULT_COMM_KERNEL = r"^nccl"
+
+
 def pair_activities(events: list[dict]) -> tuple[list[dict], int, int]:
     boundaries = []
     for event in events:
@@ -151,6 +159,153 @@ def pair_activities(events: list[dict]) -> tuple[list[dict], int, int]:
         )
     unmatched_starts = sum(len(queue) for queue in starts.values())
     return intervals, unmatched_starts, unmatched_ends
+
+
+def boundary_intervals(events: list[dict], intervals: list[dict]) -> list[dict]:
+    """Activity the capture saw only one boundary of, stretched to the edge
+    of the capture: it ran before the first event or past the last one."""
+    paired = collections.Counter()
+    for interval in intervals:
+        paired[(interval["pid"], interval["device_id"], interval["start_ns"], "start")] += 1
+        paired[(interval["pid"], interval["device_id"], interval["end_ns"], "end")] += 1
+    clocks = collections.defaultdict(list)
+    for event in events:
+        clocks[event.get("clock_domain")].append(event["timestamp_ns"])
+    edges = {clock: (min(times), max(times)) for clock, times in clocks.items()}
+    partial = []
+    for event in events:
+        activity = ACTIVITY_TYPES.get(event.get("event_type"))
+        if activity is None:
+            continue
+        kind, boundary = activity
+        cuda = event.get("cuda") or {}
+        key = (event.get("pid"), cuda.get("device_id"), event["timestamp_ns"], boundary)
+        if paired[key]:
+            paired[key] -= 1
+            continue
+        first, last = edges[event.get("clock_domain")]
+        start, end = (event["timestamp_ns"], last) if boundary == "start" else (first, event["timestamp_ns"])
+        partial.append(
+            {
+                "kind": kind,
+                "name": activity_name(kind, cuda),
+                "pid": event.get("pid"),
+                "clock_domain": event.get("clock_domain"),
+                "device_id": cuda.get("device_id"),
+                "start_ns": start,
+                "end_ns": end,
+                "partial": True,
+            }
+        )
+    return partial
+
+
+def union(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merged, sorted intervals."""
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def covered_ns(intervals: list[tuple[int, int]]) -> int:
+    return sum(end - start for start, end in intervals)
+
+
+def subtract(base: list[tuple[int, int]], cut: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Parts of merged `base` intervals not covered by merged `cut`."""
+    remaining = []
+    for start, end in base:
+        cursor = start
+        for cut_start, cut_end in cut:
+            if cut_end <= cursor or cut_start >= end:
+                continue
+            if cut_start > cursor:
+                remaining.append((cursor, cut_start))
+            cursor = max(cursor, cut_end)
+        if cursor < end:
+            remaining.append((cursor, end))
+    return remaining
+
+
+def clip(intervals: list[tuple[int, int]], window: tuple[int, int] | None) -> list[tuple[int, int]]:
+    if window is None:
+        return intervals
+    return [
+        (max(start, window[0]), min(end, window[1]))
+        for start, end in intervals
+        if end > window[0] and start < window[1]
+    ]
+
+
+def gaps_between(busy: list[tuple[int, int]], limit: int) -> list[dict]:
+    gaps = [
+        {"start_ns": previous[1], "end_ns": current[0], "gap_ns": current[0] - previous[1]}
+        for previous, current in zip(busy, busy[1:])
+    ]
+    return top(gaps, "gap_ns", limit)
+
+
+def device_budgets(
+    intervals: list[dict],
+    uuids: dict,
+    comm_kernel: re.Pattern,
+    limit: int,
+    window: tuple[int, int] | None = None,
+) -> list[dict]:
+    """Each GPU's time budget per process and clock domain.
+
+    `busy` is the union of every kernel, copy, and memset; `compute` of
+    kernels that are not communication; `communication_only` is time when
+    only communication kernels ran, which on a collective is often a rank
+    waiting for its peers. Inside `window` the budgets are clipped to it.
+    """
+    grouped = collections.defaultdict(list)
+    for interval in intervals:
+        if interval["device_id"] is None:
+            continue
+        grouped[(interval["pid"], interval["device_id"], interval["clock_domain"])].append(interval)
+    rows = []
+    for (pid, device, clock), group in sorted(grouped.items(), key=lambda item: str(item[0])):
+        def merged(predicate):
+            return union(clip([(item["start_ns"], item["end_ns"]) for item in group if predicate(item)], window))
+
+        busy = merged(lambda item: True)
+        compute = merged(lambda item: item["kind"] == "kernel" and not comm_kernel.search(item["name"]))
+        communication = merged(lambda item: item["kind"] == "kernel" and comm_kernel.search(item["name"]))
+        transfer = merged(lambda item: item["kind"] != "kernel")
+        if window is not None:
+            span = window
+        elif busy:
+            span = (busy[0][0], busy[-1][1])
+        else:
+            continue
+        span_ns = span[1] - span[0]
+        rows.append(
+            {
+                "pid": pid,
+                "device_id": device,
+                "uuid": uuids.get((pid, device)),
+                "clock_domain": clock,
+                "span": {"start_ns": span[0], "end_ns": span[1], "ns": span_ns},
+                "busy_ns": covered_ns(busy),
+                "idle_ns": span_ns - covered_ns(busy),
+                "compute_ns": covered_ns(compute),
+                "communication_ns": covered_ns(communication),
+                "communication_only_ns": covered_ns(subtract(communication, compute)),
+                "summed_activity_ns": sum(
+                    item["end_ns"] - item["start_ns"] for item in group if not item.get("partial")
+                ),
+                "transfer_ns": covered_ns(transfer),
+                "partial_activities": sum(1 for item in group if item.get("partial")),
+                "top_idle_gaps": gaps_between(busy, limit),
+                "top_compute_gaps": gaps_between(compute, limit),
+            }
+        )
+    return rows
 
 
 def selector_hint(name: str, names: list[str]) -> dict | None:
@@ -552,10 +707,26 @@ def measurement_outliers(path: pathlib.Path, limit: int) -> dict:
     }
 
 
+def load_manifest(path: pathlib.Path) -> dict | None:
+    """The capture manifest written beside an artifact, if any."""
+    manifest = path.with_name(path.name + ".manifest.json")
+    if not manifest.exists():
+        return None
+    return json.loads(manifest.read_text())
+
+
+def device_uuids(manifest: dict | None) -> dict:
+    if manifest is None:
+        return {}
+    pid = manifest["target"]["pid"]
+    return {(pid, device["device_id"]): device["uuid"] for device in manifest.get("cuda_devices", [])}
+
+
 def analyze(
     path: pathlib.Path,
     *,
     top_gaps: int = 5,
+    comm_kernel: re.Pattern = re.compile(DEFAULT_COMM_KERNEL),
     measurement: pathlib.Path | None = None,
     outliers: int = 10,
     window: tuple[str, object] | None = None,
@@ -565,24 +736,27 @@ def analyze(
 ) -> dict:
     events = load_events(path)
     intervals, unmatched_starts, unmatched_ends = pair_activities(events)
-    activity_ranges = [(item["start_ns"], item["end_ns"]) for item in intervals]
-    busy = interval_union_ns(activity_ranges)
+    # Activity seen at one boundary only ran to the edge of the capture; it
+    # keeps the device busy rather than leaving a false idle gap.
+    partial = boundary_intervals(events, intervals)
     summed = sum(item["duration_ns"] for item in intervals)
-    span = (
-        max(item["end_ns"] for item in intervals)
-        - min(item["start_ns"] for item in intervals)
-        if intervals
-        else 0
-    )
+    manifest = load_manifest(path)
     warnings = []
+    if manifest is None or not manifest.get("all_gpu_activity"):
+        warnings.append(
+            {
+                "code": "GPU_ACTIVITY_COVERAGE_UNKNOWN",
+                "message": "no manifest records that every kernel, copy, and memset was captured; device idle time may include activity the capture filtered out",
+            }
+        )
     if unmatched_starts or unmatched_ends:
         warnings.append(
             {
                 "code": "UNPAIRED_ACTIVITY_BOUNDARIES",
-                "message": "activity metrics exclude unpaired start or end records",
+                "message": "durations exclude unpaired start or end records; device budgets stretch them to the capture edge",
             }
         )
-    idle_gaps = device_idle_gaps(intervals, top_gaps)
+    idle_gaps = device_idle_gaps(intervals + partial, top_gaps)
     outlier_report = measurement_outliers(measurement, outliers) if measurement else None
     window_report = None
     if window is not None:
@@ -658,7 +832,7 @@ def analyze(
             }
         )
     return {
-        "analysis_version": "1.3",
+        "analysis_version": "1.4",
         "input": str(path),
         "events": {
             "total": len(events),
@@ -669,12 +843,15 @@ def analyze(
             "unmatched_activity_starts": unmatched_starts,
             "unmatched_activity_ends": unmatched_ends,
         },
+        "capture": {
+            "manifest": manifest is not None,
+            "all_gpu_activity": bool(manifest and manifest.get("all_gpu_activity")),
+            "window": manifest["window"] if manifest else None,
+            "communication_kernels": comm_kernel.pattern,
+        },
+        "devices": device_budgets(intervals + partial, device_uuids(manifest), comm_kernel, top_gaps),
         "gpu": {
-            "span_ns": span,
-            "busy_union_ns": busy,
             "summed_activity_ns": summed,
-            "overlap_factor": round(summed / busy, 6) if busy else None,
-            "busy_fraction_of_span": round(busy / span, 6) if span else None,
             "top_idle_gaps": idle_gaps,
         },
         "kernels": kernel_report(intervals),
@@ -691,6 +868,99 @@ def analyze(
         "streams": stream_report(intervals, top_gaps),
         "outliers": outlier_report,
         "slice": window_report,
+        "warnings": warnings,
+    }
+
+
+def compare(paths: list[pathlib.Path], *, top_gaps: int, comm_kernel: re.Pattern) -> dict:
+    """GPU budgets of several artifacts of one host, over the window they
+    share. Each artifact is one process, so its events are never paired with
+    another's; only their time budgets are compared."""
+    inputs = []
+    warnings = []
+    for path in paths:
+        events = load_events(path)
+        intervals, _, _ = pair_activities(events)
+        intervals += boundary_intervals(events, intervals)
+        manifest = load_manifest(path)
+        clocks = {item["clock_domain"] for item in intervals}
+        if manifest is None:
+            warnings.append(
+                {
+                    "code": "NO_MANIFEST",
+                    "message": f"{path} has no manifest: its window is its activity span and its GPUs have no UUIDs",
+                }
+            )
+        if manifest is not None and not manifest.get("all_gpu_activity"):
+            warnings.append(
+                {
+                    "code": "GPU_ACTIVITY_COVERAGE_UNKNOWN",
+                    "message": f"{path} did not record every GPU activity; its idle time may hide filtered work",
+                }
+            )
+        if manifest is not None:
+            window = (manifest["window"]["start_ns"], manifest["window"]["end_ns"])
+        elif intervals:
+            window = (
+                min(item["start_ns"] for item in intervals),
+                max(item["end_ns"] for item in intervals),
+            )
+        else:
+            window = None
+        inputs.append((path, intervals, manifest, clocks, window))
+    host = all(clocks and clocks <= HOST_CLOCKS for _, _, _, clocks, _ in inputs)
+    windows = [window for *_, window in inputs if window is not None]
+    common = None
+    if host and len(windows) == len(inputs):
+        start = max(window[0] for window in windows)
+        end = min(window[1] for window in windows)
+        common = (start, end) if start < end else None
+    if not host:
+        warnings.append(
+            {
+                "code": "CLOCKS_NOT_COMPARABLE",
+                "message": "not every artifact is on CLOCK_MONOTONIC; each is budgeted over its own span",
+            }
+        )
+    elif common is None:
+        warnings.append(
+            {
+                "code": "NO_COMMON_WINDOW",
+                "message": "the artifacts share no instant; each is budgeted over its own span, so compare shares, not totals",
+            }
+        )
+    rows = []
+    for path, intervals, manifest, _, _ in inputs:
+        for row in device_budgets(intervals, device_uuids(manifest), comm_kernel, top_gaps, common):
+            span = row["span"]["ns"]
+            row["input"] = str(path)
+            row["shares"] = {
+                name: round(row[f"{name}_ns"] / span, 6) if span else None
+                for name in ("busy", "idle", "compute", "communication_only")
+            }
+            rows.append(row)
+    def extreme(key, pick):
+        candidates = [row for row in rows if row["shares"][key] is not None]
+        if not candidates:
+            return None
+        row = pick(candidates, key=lambda row: row["shares"][key])
+        return {"input": row["input"], "pid": row["pid"], "device_id": row["device_id"],
+                "uuid": row["uuid"], "share": row["shares"][key]}
+    computes = [row["shares"]["compute"] for row in rows if row["shares"]["compute"] is not None]
+    return {
+        "analysis_version": "1.4",
+        "inputs": [str(path) for path in paths],
+        "window": {"start_ns": common[0], "end_ns": common[1]} if common else None,
+        "communication_kernels": comm_kernel.pattern,
+        "devices": rows,
+        "spread": {
+            "compute_share": round(max(computes) - min(computes), 6) if computes else None,
+            # On a collective, the rank that computes longest is the one its
+            # peers wait for; the one waiting longest computes least.
+            "most_compute": extreme("compute", max),
+            "most_communication_only": extreme("communication_only", max),
+            "most_idle": extreme("idle", max),
+        },
         "warnings": warnings,
     }
 
@@ -716,7 +986,10 @@ def main() -> None:
         description="Summarize kernels, copies, overlap, streams, gaps, outliers, "
         "and time slices in xprobe Event JSONL"
     )
-    parser.add_argument("trace", type=pathlib.Path)
+    parser.add_argument("trace", type=pathlib.Path, nargs="+",
+                        help="Event JSONL artifacts; several compare per-GPU budgets across processes")
+    parser.add_argument("--comm-kernel", default=DEFAULT_COMM_KERNEL, metavar="REGEX",
+                        help="kernel names counted as communication (default: ^nccl)")
     parser.add_argument("--top-gaps", type=positive, default=5,
                         help="idle gaps to rank per device and per stream")
     parser.add_argument("--measurement", type=pathlib.Path,
@@ -736,6 +1009,17 @@ def main() -> None:
     parser.add_argument("--python-samples", type=pathlib.Path,
                         help="measure --python-sample artifact whose stacks to add to the slice")
     args = parser.parse_args()
+    try:
+        comm_kernel = re.compile(args.comm_kernel)
+    except re.error as error:
+        parser.error(f"--comm-kernel is not a regular expression: {error}")
+    if len(args.trace) > 1:
+        if args.measurement or args.slice_gap or args.slice_outlier or args.around or args.python_samples:
+            parser.error("--measurement, slices, and --python-samples take one trace")
+        report = compare(args.trace, top_gaps=args.top_gaps, comm_kernel=comm_kernel)
+        json.dump(report, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return
     if args.python_samples is not None and not (
         args.slice_gap or args.slice_outlier or args.around
     ):
@@ -750,8 +1034,9 @@ def main() -> None:
     elif args.around is not None:
         window = ("timestamps", args.around)
     report = analyze(
-        args.trace,
+        args.trace[0],
         top_gaps=args.top_gaps,
+        comm_kernel=comm_kernel,
         measurement=args.measurement,
         outliers=args.outliers,
         window=window,

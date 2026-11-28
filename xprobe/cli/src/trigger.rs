@@ -394,6 +394,7 @@ fn trigger_spans<'a>(
 ) -> Result<Vec<spans::Span<'a>>, MeasureError> {
     Ok(match condition.kind {
         TriggerKind::Gap => spans::stream_gaps(events),
+        TriggerKind::Idle => spans::device_idle(events),
         TriggerKind::Duration => spans::activity_durations(events),
         TriggerKind::Latency => spans::edge_spans(
             events,
@@ -790,6 +791,11 @@ fn write_window(
         unknown_records: 0,
         record_limit_reached: None,
         capture_failed: false,
+        cuda_devices: collection
+            .latest_cuda
+            .as_ref()
+            .map(|cuda| cuda.devices.clone())
+            .unwrap_or_default(),
     };
     export_measurement_capture(&window.events, &path, ExportFormatArg::Jsonl, Some(&record))?;
     Ok(TriggerWindow {
@@ -823,7 +829,7 @@ pub(crate) fn trigger_request(
     // Gap and duration triggers arm on activity endpoints; a latency trigger
     // arms on its own edge.
     let (start_selector, end_selector, match_policy) = match condition.kind {
-        TriggerKind::Gap | TriggerKind::Duration => (
+        TriggerKind::Gap | TriggerKind::Idle | TriggerKind::Duration => (
             "cuda:kernel_end".to_owned(),
             "cuda:kernel_start".to_owned(),
             MatchPolicy::StreamOrder,

@@ -67,7 +67,14 @@ fn read_thread(dir: &Path, tid: u32) -> Result<Option<ThreadCounters>, InspectEr
         let path = dir.join(entry);
         match fs::read_to_string(&path) {
             Ok(text) => Ok(Some(text)),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+            // A thread that exits after the listing is gone: its entry
+            // disappears, or reads fail with ESRCH while it is reaped.
+            Err(source)
+                if source.kind() == io::ErrorKind::NotFound
+                    || source.raw_os_error() == Some(nix::errno::Errno::ESRCH as i32) =>
+            {
+                Ok(None)
+            }
             Err(source) => Err(InspectError::Io { path, source }),
         }
     };

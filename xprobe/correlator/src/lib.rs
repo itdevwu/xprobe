@@ -883,6 +883,7 @@ pub fn measure(
             estimated_error_ns,
         },
         collection: CollectionSummary {
+            cuda_devices: Vec::new(),
             completeness: CaptureCompleteness::Complete,
             // The caller knows how the events were collected and replaces this.
             coverage: CaptureCoverage {

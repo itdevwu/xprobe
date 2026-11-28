@@ -1326,6 +1326,7 @@ pub(crate) fn aggregate_inventory_result(
     request: &LiveMeasureRequest,
 ) -> Result<AggregateInventoryResult, CommandFailure> {
     validate_aggregate_capture(capture)?;
+    let cuda_devices = capture.devices.clone();
     let capture = gpu_aggregate::GpuAggregateCapture {
         groups: capture
             .aggregate_groups
@@ -1362,6 +1363,10 @@ pub(crate) fn aggregate_inventory_result(
         },
         capture,
     )
+    .map(|mut result| {
+        result.collection.cuda_devices = cuda_devices;
+        result
+    })
     .map_err(|error| CommandFailure::new(error.code(), error.to_string(), error.recoverable()))
 }
 
@@ -1601,6 +1606,7 @@ pub(crate) fn completed_live_capture(
             record_limit_reached: capture.record_limit_reached.then_some(capture.captured),
             capture_failed: false,
             cupti: None,
+            cuda_devices: Vec::new(),
             events: capture.events.clone(),
         })
         .collect::<Vec<_>>();
@@ -1650,6 +1656,7 @@ pub(crate) fn completed_live_capture(
                 observed_records,
                 dropped_records,
             }),
+            cuda_devices: cuda.devices.clone(),
             events: cuda
                 .events
                 .iter()
@@ -1721,6 +1728,10 @@ pub(crate) fn apply_collection_summary(
     result: &mut MeasurementResult,
     capture: &completed::CompletedCapture,
 ) {
+    result
+        .collection
+        .cuda_devices
+        .clone_from(&capture.cuda_devices);
     let Some(cupti) = capture.cupti.as_ref() else {
         return;
     };

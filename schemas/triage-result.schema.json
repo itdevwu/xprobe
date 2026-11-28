@@ -20,6 +20,13 @@
         "$ref": "#/$defs/CpuHotspot"
       }
     },
+    "cuda_devices": {
+      "description": "The UUID behind each CUDA ordinal in `gpu_activity`; GPU findings\ncover only GPUs the target ran work on.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CudaDevice"
+      }
+    },
     "findings": {
       "description": "Ranked by estimated window share; findings without an estimate last.",
       "type": "array",
@@ -42,6 +49,7 @@
       }
     },
     "gpu_devices": {
+      "description": "NVML health of every GPU on the host; `uuid` ties it to `cuda_devices`.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/GpuDeviceHealth"
@@ -419,6 +427,25 @@
       "required": [
         "address",
         "language"
+      ]
+    },
+    "CudaDevice": {
+      "description": "One CUDA device as the target saw it. `device_id` is the process's CUDA\nordinal, which `CUDA_VISIBLE_DEVICES` renumbers; the UUID names the\nphysical GPU across processes and in `nvidia-smi`.",
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "uuid": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "uuid"
       ]
     },
     "GpuDeviceHealth": {

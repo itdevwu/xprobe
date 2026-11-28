@@ -11,6 +11,26 @@ import tempfile
 MS = 1_000_000
 
 
+def busy_during(output: pathlib.Path, window: dict) -> bool:
+    """Whether a kernel of the window ran inside its firing span."""
+    artifact = output / pathlib.Path(window["artifact"]["path"]).relative_to("/output")
+    events = [json.loads(line) for line in artifact.read_text().splitlines()]
+    starts = {}
+    intervals = []
+    for event in events:
+        key = (event["cuda"]["stream_id"], event["cuda"]["correlation_id"])
+        if event["event_type"] == "gpu_kernel_start":
+            starts[key] = event["timestamp_ns"]
+        elif event["event_type"] == "gpu_kernel_end":
+            # A kernel that began before the window ran from its start.
+            intervals.append((starts.pop(key, window["start_ns"]), event["timestamp_ns"]))
+    # Kernels still running at either edge of the window count as busy too.
+    intervals += [(start, window["end_ns"]) for start in starts.values()]
+    begin = window["fired"]["start"]["timestamp_ns"]
+    end = window["fired"]["end"]["timestamp_ns"]
+    return any(start < end and stop > begin for start, stop in intervals)
+
+
 def main() -> None:
     if len(sys.argv) != 3:
         raise SystemExit("usage: test_trigger.py <container-image> <xprobe-binary>")
@@ -81,6 +101,17 @@ def main() -> None:
             offline.append(result["measurement"]["latency_ns"]["max"])
         # The second window starts after the first ends.
         assert windows[1]["start_ns"] >= windows[0]["end_ns"]
+        # A stream gap can sit under another stream's kernel.
+        assert any(busy_during(output, window) for window in windows), windows
+
+        # Device idle fires only when no stream of the target runs anything.
+        idle_status, idle = outcome("idle")
+        assert idle_status == 0, idle
+        assert idle["trigger"]["kind"] == "idle", idle["trigger"]
+        assert len(idle["windows"]) == 2, idle["windows"]
+        for window in idle["windows"]:
+            assert window["fired"]["latency_ns"] >= 20 * MS, window["fired"]
+            assert not busy_during(output, window), window
 
         unobserved_status, unobserved = outcome("unobserved")
         assert unobserved_status != 0, unobserved

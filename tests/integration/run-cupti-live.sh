@@ -33,3 +33,5 @@ nvcc \
 
 XPROBE_CUPTI_OUTPUT="$1" CUDA_INJECTION64_PATH="${agent}" "${fixture}"
 chmod 0644 "$1"
+nvidia-smi --query-gpu=uuid --format=csv,noheader >"$(dirname "$1")/gpu-uuids.txt"
+chmod 0644 "$(dirname "$1")/gpu-uuids.txt"

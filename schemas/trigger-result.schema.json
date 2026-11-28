@@ -20,7 +20,7 @@
       "type": "string"
     },
     "status": {
-      "description": "`completed` after every requested window; `timed_out` with fewer.",
+      "description": "`timed_out` when the deadline passed with fewer windows than requested;\notherwise `completed`, even when windows were lost or revoked.",
       "$ref": "#/$defs/SessionStatus"
     },
     "target": {
@@ -739,9 +739,14 @@
       "description": "What a trigger measures on each span it evaluates.",
       "oneOf": [
         {
-          "description": "Idle time on a stream: an activity end to the next kernel, copy, or\nmemset start on that stream.",
+          "description": "A gap on one stream: an activity end to the next kernel, copy, or\nmemset start on that stream, even while other streams keep the\ndevice busy.",
           "type": "string",
           "const": "gap"
+        },
+        {
+          "description": "Idle time on one device: no kernel, copy, or memset of the target on\nany of its streams.",
+          "type": "string",
+          "const": "idle"
         },
         {
           "description": "One kernel, copy, or memset from start to end.",

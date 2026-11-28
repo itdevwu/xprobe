@@ -122,9 +122,10 @@ def main() -> None:
     report = json.loads(completed.stdout)
     assert report["events"]["total"] == 8
     assert report["events"]["paired_activities"] == 4
-    assert report["gpu"]["busy_union_ns"] == 270
+    device = report["devices"][0]
+    assert (device["busy_ns"], device["idle_ns"], device["summed_activity_ns"]) == (270, 0, 350)
+    assert (device["compute_ns"], device["transfer_ns"]) == (220, 50)
     assert report["gpu"]["summed_activity_ns"] == 350
-    assert report["gpu"]["overlap_factor"] == 1.296296
     assert report["kernels"]["busy_union_ns"] == 220
     assert report["kernels"]["overlap_factor"] == 1.363636
     vector_add = report["kernels"]["by_name"][0]
@@ -138,12 +139,68 @@ def main() -> None:
     stream = next(item for item in report["streams"] if item["stream_id"] == 7)
     assert stream["adjacent_kernel_gaps"]["count"] == 1
     assert stream["adjacent_kernel_gaps"]["p50_ns"] == 20
-    assert report["warnings"] == []
+    # Without a manifest nothing says every activity was captured.
+    assert [item["code"] for item in report["warnings"]] == ["GPU_ACTIVITY_COVERAGE_UNKNOWN"]
     assert unpaired["events"]["unmatched_activity_starts"] == 1
-    assert unpaired["warnings"][0]["code"] == "UNPAIRED_ACTIVITY_BOUNDARIES"
+    assert "UNPAIRED_ACTIVITY_BOUNDARIES" in {item["code"] for item in unpaired["warnings"]}
     assert rejected.returncode != 0
     assert "expected schema_version 2.0" in rejected.stderr
     check_gaps_outliers_and_slices(script)
+    check_rank_comparison(script)
+
+
+def check_rank_comparison(script: pathlib.Path) -> None:
+    """Two tensor-parallel ranks over 0-100 ns: rank A computes 80 ns before
+    its all-reduce, rank B computes 40 ns and waits in NCCL for the rest."""
+    def rank(pid: int, compute_end: int, uuid: str) -> tuple[list[dict], dict]:
+        events = [
+            {**item, "pid": pid, "clock_domain": "cupti_normalized_to_host_monotonic"}
+            for item in [
+                *pair(1, "kernel", 0, compute_end, stream_id=7, correlation_id=1, kernel_name="gemm"),
+                *pair(3, "kernel", compute_end, 100, stream_id=8, correlation_id=2,
+                      kernel_name="ncclDevKernel_AllReduce_Sum_f32_RING_LL"),
+            ]
+        ]
+        manifest = {
+            "target": {"pid": pid, "process_start_time": 1},
+            "window": {"start_ns": 0, "end_ns": 100},
+            "all_gpu_activity": True,
+            "cuda_devices": [{"device_id": 0, "uuid": uuid}],
+        }
+        return events, manifest
+
+    with tempfile.TemporaryDirectory(prefix="xprobe-trace-ranks-") as directory:
+        paths = []
+        for pid, compute_end, uuid in [(11, 80, "GPU-a"), (12, 40, "GPU-b")]:
+            events, manifest = rank(pid, compute_end, uuid)
+            path = pathlib.Path(directory) / f"rank-{pid}.jsonl"
+            path.write_text("".join(json.dumps(item) + "\n" for item in events))
+            path.with_name(path.name + ".manifest.json").write_text(json.dumps(manifest))
+            paths.append(path)
+        single = json.loads(
+            subprocess.run([script, paths[1]], check=True, capture_output=True, text=True).stdout
+        )
+        compared = json.loads(
+            subprocess.run([script, *paths], check=True, capture_output=True, text=True).stdout
+        )
+        sliced = subprocess.run(
+            [script, *paths, "--slice-gap", "1"], check=False, capture_output=True, text=True
+        )
+
+    device = single["devices"][0]
+    assert device["uuid"] == "GPU-b"
+    assert (device["compute_ns"], device["communication_ns"], device["communication_only_ns"]) == (40, 60, 60)
+    assert single["warnings"] == [], single["warnings"]
+
+    assert compared["window"] == {"start_ns": 0, "end_ns": 100}
+    assert compared["warnings"] == [], compared["warnings"]
+    shares = {row["uuid"]: row["shares"] for row in compared["devices"]}
+    assert shares["GPU-a"]["compute"] == 0.8 and shares["GPU-b"]["compute"] == 0.4
+    spread = compared["spread"]
+    assert spread["compute_share"] == 0.4
+    assert spread["most_compute"]["uuid"] == "GPU-a"
+    assert spread["most_communication_only"]["uuid"] == "GPU-b"
+    assert sliced.returncode != 0 and "take one trace" in sliced.stderr
 
 
 def api_event(sequence: int, timestamp_ns: int, name: str, correlation_id: int) -> dict:
