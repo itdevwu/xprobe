@@ -27,6 +27,7 @@ pub(crate) struct CaptureRecord {
     pub(crate) record_limit_reached: Option<u64>,
     pub(crate) capture_failed: bool,
     pub(crate) cuda_devices: Vec<xprobe_protocol::CudaDevice>,
+    pub(crate) wall_clock: Option<xprobe_protocol::WallClock>,
 }
 
 impl CaptureRecord {
@@ -55,6 +56,10 @@ impl CaptureRecord {
             record_limit_reached: capture.record_limit_reached,
             capture_failed: capture.capture_failed,
             cuda_devices: capture.cuda_devices.clone(),
+            wall_clock: Some(xprobe_protocol::WallClock {
+                start: collection.wall_clock_start,
+                end: crate::live::clock_anchor()?,
+            }),
         })
     }
 
@@ -79,7 +84,14 @@ impl CaptureRecord {
             record_limit_reached: self.record_limit_reached,
             capture_failed: self.capture_failed,
             cuda_devices: self.cuda_devices.clone(),
+            wall_clock: self.wall_clock,
         }
+    }
+
+    /// Record a live capture's coverage and wall clock in its result.
+    pub(crate) fn apply_to(&self, result: &mut xprobe_protocol::MeasurementResult) {
+        xprobe_correlator::apply_coverage(result, self.live_coverage());
+        result.collection.wall_clock = self.wall_clock;
     }
 
     pub(crate) fn from_manifest(manifest: &CaptureManifest) -> Self {
@@ -94,6 +106,7 @@ impl CaptureRecord {
             record_limit_reached: manifest.record_limit_reached,
             capture_failed: manifest.capture_failed,
             cuda_devices: manifest.cuda_devices.clone(),
+            wall_clock: manifest.wall_clock,
         }
     }
 }
@@ -302,6 +315,7 @@ mod tests {
             record_limit_reached: None,
             capture_failed: false,
             cuda_devices: Vec::new(),
+            wall_clock: None,
         }
     }
 

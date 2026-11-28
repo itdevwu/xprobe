@@ -101,6 +101,9 @@ pub struct ReadLatency {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PythonSampleCollection {
+    /// Maps sample timestamps to wall time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_clock: Option<crate::WallClock>,
     /// `3.N` of the target interpreter.
     pub python_version: String,
     pub python_binary: String,

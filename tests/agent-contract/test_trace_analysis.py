@@ -149,10 +149,13 @@ def main() -> None:
     check_rank_comparison(script)
 
 
+EPOCH_2023 = 1_700_000_000_000_000_000
+
+
 def check_rank_comparison(script: pathlib.Path) -> None:
     """Two tensor-parallel ranks over 0-100 ns: rank A computes 80 ns before
     its all-reduce, rank B computes 40 ns and waits in NCCL for the rest."""
-    def rank(pid: int, compute_end: int, uuid: str) -> tuple[list[dict], dict]:
+    def rank(pid: int, compute_end: int, uuid: str, drift: int = 0) -> tuple[list[dict], dict]:
         events = [
             {**item, "pid": pid, "clock_domain": "cupti_normalized_to_host_monotonic"}
             for item in [
@@ -166,13 +169,18 @@ def check_rank_comparison(script: pathlib.Path) -> None:
             "window": {"start_ns": 0, "end_ns": 100},
             "all_gpu_activity": True,
             "cuda_devices": [{"device_id": 0, "uuid": uuid}],
+            # CLOCK_MONOTONIC 0 was 2023-11-14T22:13:20Z.
+            "wall_clock": {
+                "start": {"monotonic_ns": 0, "realtime_ns": EPOCH_2023, "uncertainty_ns": 5},
+                "end": {"monotonic_ns": 100, "realtime_ns": EPOCH_2023 + 100 + drift, "uncertainty_ns": 5},
+            },
         }
         return events, manifest
 
     with tempfile.TemporaryDirectory(prefix="xprobe-trace-ranks-") as directory:
         paths = []
-        for pid, compute_end, uuid in [(11, 80, "GPU-a"), (12, 40, "GPU-b")]:
-            events, manifest = rank(pid, compute_end, uuid)
+        for pid, compute_end, uuid, drift in [(11, 80, "GPU-a", 0), (12, 40, "GPU-b", 2_000_000)]:
+            events, manifest = rank(pid, compute_end, uuid, drift)
             path = pathlib.Path(directory) / f"rank-{pid}.jsonl"
             path.write_text("".join(json.dumps(item) + "\n" for item in events))
             path.with_name(path.name + ".manifest.json").write_text(json.dumps(manifest))
@@ -190,9 +198,13 @@ def check_rank_comparison(script: pathlib.Path) -> None:
     device = single["devices"][0]
     assert device["uuid"] == "GPU-b"
     assert (device["compute_ns"], device["communication_ns"], device["communication_only_ns"]) == (40, 60, 60)
-    assert single["warnings"] == [], single["warnings"]
+    # Host-clock spans carry UTC wall times; rank B's wall clock moved 2 ms.
+    assert device["span"]["start_wall"] == "2023-11-14T22:13:20.000000000Z", device["span"]
+    assert [item["code"] for item in single["warnings"]] == ["WALL_CLOCK_DRIFT"], single["warnings"]
+    assert single["capture"]["wall_clock_drift_ns"] == 2_000_000
 
     assert compared["window"] == {"start_ns": 0, "end_ns": 100}
+    assert all(row["span"]["start_wall"].startswith("2023-11-14T22:13:20") for row in compared["devices"])
     assert compared["warnings"] == [], compared["warnings"]
     shares = {row["uuid"]: row["shares"] for row in compared["devices"]}
     assert shares["GPU-a"]["compute"] == 0.8 and shares["GPU-b"]["compute"] == 0.4

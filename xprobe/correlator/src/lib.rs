@@ -884,6 +884,7 @@ pub fn measure(
         },
         collection: CollectionSummary {
             cuda_devices: Vec::new(),
+            wall_clock: None,
             completeness: CaptureCompleteness::Complete,
             // The caller knows how the events were collected and replaces this.
             coverage: CaptureCoverage {

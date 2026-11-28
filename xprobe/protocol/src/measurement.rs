@@ -226,6 +226,10 @@ pub struct CollectionSummary {
     /// capture had no CUDA source or the driver did not report UUIDs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuda_devices: Vec<CudaDevice>,
+    /// Maps the events' host-clock timestamps to wall time, for live
+    /// captures and inputs whose manifest recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_clock: Option<WallClock>,
     /// Results written before xprobe recorded coverage read as unverified.
     #[serde(default)]
     pub coverage: CaptureCoverage,
@@ -239,6 +243,28 @@ pub struct CollectionSummary {
 #[serde(rename_all = "snake_case")]
 pub enum CaptureCompleteness {
     Complete,
+}
+
+/// The wall clock read against `CLOCK_MONOTONIC`: `realtime_ns` is
+/// `CLOCK_REALTIME` (nanoseconds since the Unix epoch, UTC) when
+/// `CLOCK_MONOTONIC` was `monotonic_ns`, to within `uncertainty_ns`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClockAnchor {
+    pub monotonic_ns: u64,
+    pub realtime_ns: u64,
+    pub uncertainty_ns: u64,
+}
+
+/// Wall-clock anchors at the start and end of a capture. A host-clock
+/// timestamp `t` is `realtime_ns + (t - monotonic_ns)` from the nearer
+/// anchor; when the two anchors' offsets differ, the wall clock was stepped
+/// or slewed during the capture and wall times carry that error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WallClock {
+    pub start: ClockAnchor,
+    pub end: ClockAnchor,
 }
 
 /// One CUDA device as the target saw it. `device_id` is the process's CUDA

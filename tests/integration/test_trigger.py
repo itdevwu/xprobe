@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 
 MS = 1_000_000
 
@@ -63,6 +64,7 @@ def main() -> None:
         fired_status, fired = outcome("fired")
         assert fired_status == 0, fired
         windows = fired["windows"]
+        assert fired["collection"]["wall_clock"]["end"]["monotonic_ns"] >= windows[-1]["end_ns"]
         assert fired["status"] == "completed", fired["status"]
         assert len(windows) == 2, len(windows)
         assert fired["collection"]["overwritten_records"] == 0, fired["collection"]
@@ -81,6 +83,10 @@ def main() -> None:
                 artifact.read_bytes()
             ).hexdigest()
             assert manifest["all_gpu_activity"] is True, manifest
+            # The window's wall clock is this host's UTC time.
+            anchor = manifest["wall_clock"]["start"]
+            assert abs(anchor["realtime_ns"] / 1e9 - time.time()) < 600, anchor
+            assert anchor["uncertainty_ns"] < 1_000_000, anchor
             assert manifest["dropped_records"] == 0
             # The window re-correlates offline and keeps its coverage.
             measured = subprocess.run(

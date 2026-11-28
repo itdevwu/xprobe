@@ -523,9 +523,15 @@ fn collect_trigger(request: &TriggerRequest<'_>) -> Result<TriggerResult, Comman
     let stopped_ns = crate::live::monotonic_now();
     let stopped = stop_cupti_agent(&mut collection, &request.live);
     let mut windows = Vec::new();
+    let mut wall_clock = None;
     outcome.and_then(|()| {
         stopped?;
         let stopped_ns = stopped_ns?;
+        let clock = xprobe_protocol::WallClock {
+            start: collection.wall_clock_start,
+            end: crate::live::clock_anchor()?,
+        };
+        wall_clock = Some(clock);
         check_capture(&collection)?;
         // The final drain may complete windows; cut them only now.
         drain_into(&mut collection, &mut engine);
@@ -538,6 +544,7 @@ fn collect_trigger(request: &TriggerRequest<'_>) -> Result<TriggerResult, Comman
                 &directory,
                 window,
                 windows.len(),
+                clock,
             )?);
         }
         Ok(())
@@ -566,6 +573,7 @@ fn collect_trigger(request: &TriggerRequest<'_>) -> Result<TriggerResult, Comman
         observed: observation,
         windows,
         collection: TriggerCollection {
+            wall_clock,
             ring_capacity: request.live.options.max_events as u64,
             observed_records: cuda.map_or(0, |cuda| cuda.observed_records),
             overwritten_records: collection.ring_overwritten,
@@ -760,6 +768,7 @@ fn write_window(
     directory: &Path,
     window: CutWindow,
     written: usize,
+    wall_clock: xprobe_protocol::WallClock,
 ) -> Result<TriggerWindow, CommandFailure> {
     let index = u32::try_from(written + 1).unwrap_or(u32::MAX);
     let path = directory.join(format!("window-{index}.events.jsonl"));
@@ -796,6 +805,7 @@ fn write_window(
             .as_ref()
             .map(|cuda| cuda.devices.clone())
             .unwrap_or_default(),
+        wall_clock: Some(wall_clock),
     };
     export_measurement_capture(&window.events, &path, ExportFormatArg::Jsonl, Some(&record))?;
     Ok(TriggerWindow {

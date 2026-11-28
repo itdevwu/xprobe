@@ -55,6 +55,33 @@
     "collection"
   ],
   "$defs": {
+    "ClockAnchor": {
+      "description": "The wall clock read against `CLOCK_MONOTONIC`: `realtime_ns` is\n`CLOCK_REALTIME` (nanoseconds since the Unix epoch, UTC) when\n`CLOCK_MONOTONIC` was `monotonic_ns`, to within `uncertainty_ns`.",
+      "type": "object",
+      "properties": {
+        "monotonic_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "realtime_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "uncertainty_ns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "monotonic_ns",
+        "realtime_ns",
+        "uncertainty_ns"
+      ]
+    },
     "EvidenceArtifact": {
       "description": "Bounded capture written by `measure`; re-correlate it with `measure --input`.",
       "type": "object",
@@ -312,6 +339,17 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "wall_clock": {
+          "description": "Maps sample timestamps to wall time.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WallClock"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -504,6 +542,23 @@
       "required": [
         "pid",
         "process_start_time"
+      ]
+    },
+    "WallClock": {
+      "description": "Wall-clock anchors at the start and end of a capture. A host-clock\ntimestamp `t` is `realtime_ns + (t - monotonic_ns)` from the nearer\nanchor; when the two anchors' offsets differ, the wall clock was stepped\nor slewed during the capture and wall times carry that error.",
+      "type": "object",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/ClockAnchor"
+        },
+        "start": {
+          "$ref": "#/$defs/ClockAnchor"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
       ]
     },
     "Warning": {

@@ -18,8 +18,8 @@ the raw evidence.
 - `correlation.method` and `confidence`; `clock.alignment` and
   `estimated_error_ns`.
 - `collection.coverage` (`source`, `all_gpu_activity`), `collection.cupti`
-  (capacity, drops), and `collection.cuda_devices`, which maps each
-  process-local CUDA `device_id` to a GPU UUID.
+  (capacity, drops), `collection.cuda_devices`, which maps each process-local
+  CUDA `device_id` to a GPU UUID, and `collection.wall_clock`.
 - `evidence.exemplars` (rank pairs inline), `evidence.pairs` with
   `--evidence full`, and `evidence.artifact.path`, the Event JSONL.
 
@@ -47,8 +47,14 @@ end with the same `correlation_id`.
   `CUDA_VISIBLE_DEVICES`); name GPUs across processes by UUID.
 
 `<artifact>.manifest.json` records the target, the `CLOCK_MONOTONIC` window,
-armed selectors, `all_gpu_activity`, losses, `cuda_devices`, and the artifact's
-SHA-256. Idle time is trustworthy only when `all_gpu_activity` is true, since
+armed selectors, `all_gpu_activity`, losses, `cuda_devices`, `wall_clock`, and
+the artifact's SHA-256.
+
+`wall_clock` holds `start` and `end` anchors, each a `realtime_ns` (UTC, Unix
+epoch) read at `monotonic_ns`: a host-clock timestamp happened at
+`realtime_ns` plus its distance from `monotonic_ns` of the nearer anchor,
+within its `uncertainty_ns`. Use it to line events up with application logs. If the two
+anchors' offsets differ, the wall clock was adjusted during the capture. Idle time is trustworthy only when `all_gpu_activity` is true, since
 a narrow selector hides the activity it filtered out. Keep the manifest beside
 the artifact; `measure --input` restores losses and coverage from it.
 
@@ -102,7 +108,9 @@ a broad first look:
 
 ## Analyzer output
 
-`scripts/analyze_trace.py ARTIFACT` reads one Event JSONL and its manifest:
+`scripts/analyze_trace.py ARTIFACT` reads one Event JSONL and its manifest;
+with `wall_clock` it adds `start_wall`, `end_wall`, and `wall_time` (UTC)
+beside host-clock timestamps and warns `WALL_CLOCK_DRIFT`:
 
 - `devices[]`: per process, device, and clock, the span, `busy_ns`, `idle_ns`,
   `compute_ns`, `communication_ns`, `communication_only_ns`, `transfer_ns`,

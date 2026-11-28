@@ -13,6 +13,7 @@ ranks that overlap in time are compared, not shown to cause each other.
 
 import argparse
 import collections
+import datetime
 import json
 import math
 import pathlib
@@ -715,6 +716,54 @@ def load_manifest(path: pathlib.Path) -> dict | None:
     return json.loads(manifest.read_text())
 
 
+# Wall-clock offsets of a capture's start and end anchors that differ by more
+# than this mean the wall clock was stepped or slewed during the capture.
+WALL_CLOCK_DRIFT_NS = 1_000_000
+
+
+def wall_clock(manifest: dict | None):
+    """A function from host-clock nanoseconds to a UTC timestamp, and the
+    drift between the capture's start and end anchors; `None` without one."""
+    anchors = (manifest or {}).get("wall_clock")
+    if not anchors:
+        return None, None
+    start, end = anchors["start"], anchors["end"]
+
+    def offset(anchor: dict) -> int:
+        return anchor["realtime_ns"] - anchor["monotonic_ns"]
+
+    def to_wall(monotonic_ns: int) -> str:
+        nearer = min((start, end), key=lambda anchor: abs(monotonic_ns - anchor["monotonic_ns"]))
+        realtime = monotonic_ns + offset(nearer)
+        seconds, nanoseconds = divmod(realtime, 1_000_000_000)
+        moment = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+        return moment.strftime("%Y-%m-%dT%H:%M:%S") + f".{nanoseconds:09d}Z"
+
+    return to_wall, offset(end) - offset(start)
+
+
+def annotate_wall(node, to_wall, clocks: set) -> None:
+    """Add UTC wall times beside host-clock `start_ns`, `end_ns`, and
+    `timestamp_ns` fields; raw CUPTI timestamps are left alone. A node
+    without its own clock inherits its parent's."""
+    if isinstance(node, list):
+        for item in node:
+            annotate_wall(item, to_wall, clocks)
+        return
+    if not isinstance(node, dict):
+        return
+    if node.get("clock_domains"):
+        clocks = set(node["clock_domains"])
+    elif node.get("clock_domain"):
+        clocks = {node["clock_domain"]}
+    host = bool(clocks) and clocks <= HOST_CLOCKS
+    for field, wall in (("start_ns", "start_wall"), ("end_ns", "end_wall"), ("timestamp_ns", "wall_time")):
+        if host and isinstance(node.get(field), int):
+            node[wall] = to_wall(node[field])
+    for value in list(node.values()):
+        annotate_wall(value, to_wall, clocks)
+
+
 def device_uuids(manifest: dict | None) -> dict:
     if manifest is None:
         return {}
@@ -831,8 +880,16 @@ def analyze(
                 "message": "measurement has summary evidence; rerun with --evidence full to rank every pair",
             }
         )
-    return {
-        "analysis_version": "1.4",
+    to_wall, drift = wall_clock(manifest)
+    if drift is not None and abs(drift) > WALL_CLOCK_DRIFT_NS:
+        warnings.append(
+            {
+                "code": "WALL_CLOCK_DRIFT",
+                "message": f"the wall clock moved {drift} ns against CLOCK_MONOTONIC during the capture; wall times carry that error",
+            }
+        )
+    report = {
+        "analysis_version": "1.5",
         "input": str(path),
         "events": {
             "total": len(events),
@@ -847,6 +904,7 @@ def analyze(
             "manifest": manifest is not None,
             "all_gpu_activity": bool(manifest and manifest.get("all_gpu_activity")),
             "window": manifest["window"] if manifest else None,
+            "wall_clock_drift_ns": drift,
             "communication_kernels": comm_kernel.pattern,
         },
         "devices": device_budgets(intervals + partial, device_uuids(manifest), comm_kernel, top_gaps),
@@ -870,6 +928,11 @@ def analyze(
         "slice": window_report,
         "warnings": warnings,
     }
+    if to_wall is not None:
+        clocks = {event.get("clock_domain") for event in events}
+        for section in ("capture", "devices", "gpu", "streams", "outliers", "slice"):
+            annotate_wall(report[section], to_wall, clocks)
+    return report
 
 
 def compare(paths: list[pathlib.Path], *, top_gaps: int, comm_kernel: re.Pattern) -> dict:
@@ -934,6 +997,9 @@ def compare(paths: list[pathlib.Path], *, top_gaps: int, comm_kernel: re.Pattern
         for row in device_budgets(intervals, device_uuids(manifest), comm_kernel, top_gaps, common):
             span = row["span"]["ns"]
             row["input"] = str(path)
+            to_wall, _ = wall_clock(manifest)
+            if to_wall is not None:
+                annotate_wall(row, to_wall, set())
             row["shares"] = {
                 name: round(row[f"{name}_ns"] / span, 6) if span else None
                 for name in ("busy", "idle", "compute", "communication_only")
@@ -948,7 +1014,7 @@ def compare(paths: list[pathlib.Path], *, top_gaps: int, comm_kernel: re.Pattern
                 "uuid": row["uuid"], "share": row["shares"][key]}
     computes = [row["shares"]["compute"] for row in rows if row["shares"]["compute"] is not None]
     return {
-        "analysis_version": "1.4",
+        "analysis_version": "1.5",
         "inputs": [str(path) for path in paths],
         "window": {"start_ns": common[0], "end_ns": common[1]} if common else None,
         "communication_kernels": comm_kernel.pattern,

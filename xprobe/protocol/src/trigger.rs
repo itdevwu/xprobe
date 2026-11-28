@@ -93,6 +93,9 @@ pub struct TriggerWindow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerCollection {
+    /// Maps window timestamps to wall time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_clock: Option<crate::WallClock>,
     /// Agent ring and CLI retention bound, in records.
     pub ring_capacity: u64,
     pub observed_records: u64,

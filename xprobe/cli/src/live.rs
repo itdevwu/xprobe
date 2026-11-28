@@ -191,6 +191,8 @@ pub(crate) struct LiveCollection {
     pub(crate) capture_plan: CapturePlan,
     /// Ring records overwritten before a snapshot read them.
     pub(crate) ring_overwritten: u64,
+    /// Wall time against `CLOCK_MONOTONIC` when the capture was armed.
+    pub(crate) wall_clock_start: xprobe_protocol::ClockAnchor,
     /// Clock domain of the GPU activity read so far; one capture keeps one.
     pub(crate) cuda_activity_clock: Option<xprobe_protocol::ClockDomain>,
     /// The part of `ring_overwritten` a triggered capture has accounted for.
@@ -507,6 +509,7 @@ pub(crate) fn start_live_collection(
     )?;
     // Host-clock activity before the ARM reply may predate the capture.
     let capture_start_ns = monotonic_now()?;
+    let wall_clock_start = clock_anchor()?;
     let socket = activation.socket;
     let baseline_timestamp = baseline
         .as_ref()
@@ -566,11 +569,23 @@ pub(crate) fn start_live_collection(
         },
         ring_overwritten: 0,
         cuda_activity_clock: None,
+        wall_clock_start,
         ring_overwritten_seen: 0,
     })
 }
 
 /// `CLOCK_MONOTONIC` now, the clock capture windows are recorded in.
+/// `CLOCK_REALTIME` against `CLOCK_MONOTONIC` now.
+pub(crate) fn clock_anchor() -> Result<xprobe_protocol::ClockAnchor, CommandFailure> {
+    xprobe_core::clock::clock_anchor().map_err(|error| {
+        CommandFailure::new(
+            ErrorCode::Internal,
+            format!("failed to read the wall clock: {error}"),
+            false,
+        )
+    })
+}
+
 pub(crate) fn monotonic_now() -> Result<u64, CommandFailure> {
     xprobe_core::clock::monotonic_ns().map_err(|error| {
         CommandFailure::new(
@@ -1547,7 +1562,7 @@ pub(crate) fn measure_live_capture(
             .with_artifact_capture(Some(record.clone()))
     })?;
     apply_collection_summary(&mut result, &capture);
-    xprobe_correlator::apply_coverage(&mut result, record.live_coverage());
+    record.apply_to(&mut result);
     Ok(MeasurementExecution {
         result,
         events: capture.events,

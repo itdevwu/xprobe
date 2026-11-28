@@ -144,6 +144,7 @@ pub(crate) fn python_sample(
     let mut walker = Walker::new(&memory, runtime.clone(), STACK_DEPTH);
     let sample_capacity = capacity(request);
     let duration = Duration::from_millis(request.duration_ms);
+    let wall_clock_start = crate::live::clock_anchor()?;
     let capture = sample(
         &mut walker,
         request.pid,
@@ -156,6 +157,10 @@ pub(crate) fn python_sample(
         },
     )
     .map_err(|error| sampler_failure(&error))?;
+    let wall_clock = xprobe_protocol::WallClock {
+        start: wall_clock_start,
+        end: crate::live::clock_anchor()?,
+    };
     // A sample of a reused PID describes the wrong process.
     inspect::verify_target(&report.target).map_err(|error| {
         CommandFailure::new(error.code(), error.to_string(), error.recoverable())
@@ -179,6 +184,7 @@ pub(crate) fn python_sample(
         &capture,
         &native,
     );
+    result.collection.wall_clock = Some(wall_clock);
     let path = match request.events_out {
         Some(path) => path.to_path_buf(),
         None => crate::private_artifact_dir()?.join("python-samples.jsonl"),

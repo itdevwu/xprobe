@@ -204,7 +204,7 @@ fn measure_edge(
         failure
     })?;
     apply_collection_summary(&mut result, capture);
-    xprobe_correlator::apply_coverage(&mut result, record.live_coverage());
+    record.apply_to(&mut result);
     Ok(result)
 }
 

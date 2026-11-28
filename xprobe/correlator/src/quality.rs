@@ -285,6 +285,7 @@ mod tests {
             },
             collection: CollectionSummary {
                 cuda_devices: Vec::new(),
+                wall_clock: None,
                 completeness: CaptureCompleteness::Complete,
                 coverage: xprobe_protocol::CaptureCoverage {
                     source: xprobe_protocol::CoverageSource::Live,

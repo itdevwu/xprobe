@@ -947,6 +947,7 @@ fn measure_completed_inputs(
     })?;
     apply_collection_summary(&mut result, &capture);
     xprobe_correlator::apply_coverage(&mut result, coverage);
+    result.collection.wall_clock = record.as_ref().and_then(|record| record.wall_clock);
     Ok(MeasurementExecution {
         result,
         events: capture.events,

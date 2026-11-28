@@ -343,6 +343,7 @@ pub fn analyze(
             native_waits: native_waits(threads(), native, thread_samples),
         },
         collection: PythonSampleCollection {
+            wall_clock: None,
             python_version: format!("3.{}", request.python_minor),
             python_binary: request.python_binary.clone(),
             tid_source: match capture.tid_source {

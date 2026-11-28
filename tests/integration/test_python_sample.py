@@ -29,6 +29,8 @@ def check(minor: int, output: pathlib.Path, expected: dict) -> dict:
     assert collection["tid_source"] == ("native" if minor >= 11 else "pthread"), collection
     assert collection["gil_hz_achieved"] >= 1800, collection
     assert collection["threads"] == 2, collection
+    clock = collection["wall_clock"]
+    assert clock["start"]["monotonic_ns"] < clock["end"]["monotonic_ns"], clock
     reads = collection["gil_samples"] + collection["thread_samples"]
     assert collection["inconsistent_reads"] <= reads * 0.05, collection
     hottest = result["inventory"]["gil_hotspots"][0]
@@ -49,6 +51,12 @@ def check(minor: int, output: pathlib.Path, expected: dict) -> dict:
         json.loads(line) for line in (output / "samples.jsonl").read_text().splitlines()
     ]
     assert len(records) == result["artifact"]["events"]
+    # Samples fall between the run's wall-clock anchors.
+    anchors = result["collection"]["wall_clock"]
+    assert all(
+        anchors["start"]["monotonic_ns"] <= record["timestamp_ns"] <= anchors["end"]["monotonic_ns"]
+        for record in records
+    )
     assert all(record["tid"] is not None for record in records)
     return {
         "python": (output / "python-version.txt").read_text().split()[1],

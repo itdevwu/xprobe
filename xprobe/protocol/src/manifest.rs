@@ -50,6 +50,9 @@ pub struct CaptureManifest {
     /// The UUID behind each CUDA device ordinal in the events.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuda_devices: Vec<crate::CudaDevice>,
+    /// Maps the events' host-clock timestamps to wall time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_clock: Option<crate::WallClock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

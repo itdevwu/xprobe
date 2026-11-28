@@ -431,9 +431,13 @@ Format. Beside an Event JSONL artifact, xprobe writes its capture manifest
 (`schemas/capture-manifest.schema.json`, schema `1.0`): target identity, the
 `CLOCK_MONOTONIC` capture window, armed selectors, whether every GPU activity
 and peer copy was recorded, losses, `cuda_devices` (the GPU UUID behind each
-process-local CUDA `device_id`), and the artifact's size and SHA-256.
-Measurement and aggregate results report the same `cuda_devices` under
-`collection`. A
+process-local CUDA `device_id`), `wall_clock`, and the artifact's size and
+SHA-256. `wall_clock` pairs `CLOCK_REALTIME` with `CLOCK_MONOTONIC` at the
+start and end of the capture (each read bracketed by two monotonic reads, with
+half the bracket as `uncertainty_ns`), so host-clock timestamps convert to UTC
+wall time for comparison with application logs. Measurement and aggregate
+results report the same `cuda_devices`, and measurement, graph, trigger, and
+Python sample results the same `wall_clock`, under `collection`. A
 re-exported input keeps its manifest only when exactly one input had one; an
 artifact without known coverage removes a stale manifest at its path. Once collection has produced a capture, correlation, clock, drop, or
 capacity failures still write it and identify its path, format, and event count
