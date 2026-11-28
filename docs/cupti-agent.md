@@ -33,7 +33,10 @@ StartA/StartEx/End and PushA/PushEx/Pop callbacks, with bounded name matching
 before timestamping or table insertion. STOP disables those callbacks but
 retains the subscriber because CUDA 13 still references it. The Agent copies
 only ASCII range names, IDs, kind, and thread identity. It does not copy NVTX
-payload, color, category, registered strings, wide strings, or environments.
+payload, color, category, registered strings, wide strings, or environments. CUPTI
+tracks push levels only while those callbacks are on, so a pop of a range
+pushed before ARM reports no level; the Agent records nothing for it, the
+mirror of a range still open when the capture stops.
 
 An aggregate ARM uses a fixed-capacity hash table instead of event records.
 Kernel activity is grouped by name and device, memcpy by direction and device,

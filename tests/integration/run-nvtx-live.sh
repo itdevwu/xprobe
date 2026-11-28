@@ -22,7 +22,7 @@ printf '%s\n' nested >"${mode}"
 NVTX_INJECTION64_PATH="${agent}" "${fixture}" "${mode}" \
   >"${output_dir}/fixture.log" 2>"${output_dir}/fixture.stderr" &
 pid=$!
-trap 'chmod 0644 "${output_dir}"/*.jsonl 2>/dev/null || true; kill "${pid}" 2>/dev/null || true; wait "${pid}" 2>/dev/null || true' EXIT
+trap 'chmod 0644 "${output_dir}"/* 2>/dev/null || true; kill "${pid}" 2>/dev/null || true; wait "${pid}" 2>/dev/null || true' EXIT
 
 attempt=0
 while ! grep -q '^ready$' "${output_dir}/fixture.log"; do

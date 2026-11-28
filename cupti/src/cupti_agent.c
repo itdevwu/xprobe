@@ -1230,7 +1230,9 @@ static void nvtx_callback(CUpti_CallbackId callback_id,
         }
         level = *(const int *)data->functionReturnValue;
         if (level < 0) {
-            atomic_fetch_add_explicit(&unknown_records, 1U, memory_order_relaxed);
+            /* CUPTI tracks push levels only while NVTX callbacks are on, so
+             * popping a range pushed before ARM has no level: it ended a
+             * range the capture never saw start, like an orphan end. */
             return;
         }
         tid = current_tid();
