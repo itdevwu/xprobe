@@ -2,9 +2,7 @@
   "scenarios": [
     {
       "name": "existing_artifact",
-      "sources": [
-        "skill"
-      ],
+      "sources": ["skill"],
       "required": [
         "measure --input",
         "skip installation",
@@ -12,34 +10,28 @@
       ]
     },
     {
-      "name": "unknown_workload",
-      "sources": [
-        "skill"
-      ],
+      "name": "live_target",
+      "sources": ["skill"],
       "required": [
-        "unknown live workload",
-        "--triage",
-        "next.spec",
-        "not_covered"
+        "live target",
+        "representative cycle",
+        "validate",
+        "no fixed procedure"
       ]
     },
     {
-      "name": "known_selector",
-      "sources": [
-        "skill"
-      ],
+      "name": "triage_reference",
+      "sources": ["skill", "artifacts"],
       "required": [
-        "known boundary",
-        "skip triage",
-        "validate"
+        "--triage",
+        "a reference, not a verdict",
+        "not_covered",
+        "confirm a finding with a direct measurement"
       ]
     },
     {
       "name": "several_boundaries",
-      "sources": [
-        "skill",
-        "selectors"
-      ],
+      "sources": ["skill", "selectors"],
       "required": [
         "measurement graph",
         "up to eight edges",
@@ -47,30 +39,22 @@
       ]
     },
     {
-      "name": "dig_deeper",
-      "sources": [
-        "skill",
-        "deep_dive"
-      ],
+      "name": "gpu_idle",
+      "sources": ["skill", "artifacts"],
       "required": [
-        "dig deeper",
-        "split it with a measurement graph",
-        "rank the slowest pairs",
-        "not covered by this release",
-        "stop escalating",
-        "--slice-gap"
+        "--trigger-idle-ms",
+        "a stream gap is not device idle time",
+        "all_gpu_activity",
+        "--slice-gap",
+        "cuda_devices"
       ]
     },
     {
       "name": "python_semantics",
-      "sources": [
-        "skill",
-        "interpreting",
-        "selectors"
-      ],
+      "sources": ["skill", "artifacts", "selectors"],
       "required": [
         "python_status",
-        "native fallback",
+        "native frames only",
         "--python-sample",
         "python:gc_start",
         "check capability, not the process name"
@@ -78,23 +62,18 @@
     },
     {
       "name": "multi_process",
-      "sources": [
-        "skill",
-        "multi_process"
-      ],
+      "sources": ["skill", "multi_process"],
       "required": [
         "discover --pid root",
         "pid plus process start time",
         "do not cancel sibling commands",
-        "do not concatenate artifacts"
+        "do not concatenate artifacts",
+        "compare their shares, never their timestamps"
       ]
     },
     {
       "name": "container_namespace",
-      "sources": [
-        "skill",
-        "setup"
-      ],
+      "sources": ["skill", "setup"],
       "required": [
         "container target",
         "pid and mount namespaces",

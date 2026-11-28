@@ -26,14 +26,15 @@ For automation, add `--agent codex|claude-code|cursor --copy --yes`. Omit
 install its whole directory so its references, examples, and analysis script
 remain available.
 
-The Skill's `SKILL.md` is the agent-facing workflow; this page does not
-restate it. It drives a two-command path for unknown live work: `measure
---triage` over one representative window, then the ranked finding's ready
-`MeasurementSpec` or a measurement graph. Existing artifacts are analyzed
-offline without installing a collector, and an escalation ladder covers what
-the first pass cannot explain before handing off to kernel or runtime
-profilers. Selection and concurrency across processes stay in the agent;
-xprobe adds no multi-process command and never claims cross-process causality.
+The Skill's `SKILL.md` is the agent-facing guide; this page does not restate
+it. It lists the evidence each command produces and, in
+`references/artifacts.md`, the fields of every result and artifact and how
+they mislead, so the caller's agent can choose sources and analyze them for
+its own hypotheses rather than follow a fixed procedure. Triage is one
+optional broad look whose findings are hints. Existing artifacts are analyzed
+offline without installing a collector. Selection and concurrency across
+processes stay in the agent; xprobe adds no multi-process command and never
+claims cross-process causality.
 
 ## Contract test
 

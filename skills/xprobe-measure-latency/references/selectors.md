@@ -1,8 +1,8 @@
 # Selectors, policies, and specs
 
-Prefer selectors that xprobe emitted: triage `next.spec`, inventory
-`*_selector_hint` fields, and analyzer `selector_hint`. Write one by hand only
-when no emitted hint covers the boundary, and pass it through `validate`.
+Prefer selectors that xprobe emitted: inventory `*_selector_hint` fields,
+analyzer `selector_hint`, and triage `next.spec`. Write one by hand only when no
+emitted hint covers the boundary, and pass it through `validate`.
 
 ## Selector syntax
 
@@ -65,7 +65,7 @@ xprobe validate --pid "$PID" --from python:gc_start --to python:gc_end --match e
 | --- | --- | --- |
 | `exact` | Same CUPTI correlation ID (API ↔ its kernel or copy), kernel/copy start ↔ end, NVTX range ID, one syscall's entry ↔ exit on a thread, CPython GC start ↔ end | exact |
 | `stack-nested` | Entry ↔ return of one host function per thread | high |
-| `stream-order` | Activity end ↔ the next kernel, copy, or memset start on its stream; records all GPU activity | high |
+| `stream-order` | Activity end ↔ the next kernel, copy, or memset start on its stream (a stream gap, not device idle); records all GPU activity | high |
 | `first-after`, `nearest` | Host marker ↔ GPU activity and other unrelated sources | heuristic |
 
 `validate` reports `policy_recommendation` with a reason and the compatible
@@ -75,7 +75,7 @@ never establish request-level causality.
 ## Specs
 
 A single-edge `MeasurementSpec` (schema `2.0`) pins the target identity and
-bounds; triage emits ready ones, and `examples/` holds templates. Run it with
+bounds; `examples/` holds templates and triage emits ready ones. Run it with
 `measure --spec FILE`.
 
 A measurement graph (schema `3.0`) names endpoints once and measures up to
@@ -92,7 +92,7 @@ eight edges from one capture. See `examples/request-path-graph.json`. Rules:
 
 Start an exact capture with modest record headroom:
 `max_events ≈ 2 × samples × (records per start + records per end)` plus
-expected unmatched records. Triage specs size capacity from the observed rate.
+expected unmatched records; an aggregate inventory gives the event rate.
 On `EVENT_RATE_TOO_HIGH`, narrow the selector before raising `max_events`, and
 keep the window representative.
 
@@ -108,8 +108,8 @@ the host (`docs/benchmarks.md` in the xprobe repository has one measurement).
 - **CUPTI** cost scales with records. Kernel name filters that reduce to a
   literal run in the Agent and keep the rate down; `stream-order` and
   triggered captures record every GPU activity, so on launch-bound workloads
-  with tens of thousands of kernels per second shorten the window or raise
-  `max_events` from the triage rate.
+  with tens of thousands of kernels per second shorten the window or size
+  `max_events` from an aggregate inventory's counts.
 - Stop early: on a hot boundary bound the capture by `samples`, not only by
   duration.
 

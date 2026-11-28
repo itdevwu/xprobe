@@ -88,6 +88,42 @@ def check_documented_flags(binary: pathlib.Path, documents: list[pathlib.Path]) 
     return set(help_flags)
 
 
+# Backticked words in the artifact reference that are values or flags, not
+# field names.
+ARTIFACT_VALUES = {
+    "host_monotonic", "cupti_normalized_to_host_monotonic", "cupti", "pageable",
+    "inactive", "unsupported", "unavailable", "null", "timed_out", "idle", "gap",
+    "duration", "latency", "caution", "longest_ns",
+}
+
+
+def check_artifact_fields(workspace: pathlib.Path, reference: pathlib.Path, analyzer: pathlib.Path) -> None:
+    """Every field the artifact reference names exists in a schema or in the
+    analyzer's output, so the Skill never teaches a field that is gone."""
+    fields = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                fields.update(properties)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for schema in (workspace / "schemas").glob("*.schema.json"):
+        walk(json.loads(schema.read_text()))
+    analyzer_text = analyzer.read_text()
+    text = reference.read_text()
+    for name in re.findall(r"`([a-z_][a-z0-9_.\[\]]*)`", text):
+        for part in filter(None, re.split(r"[.\[\]]", name)):
+            assert (
+                part in fields or f'"{part}"' in analyzer_text or part in ARTIFACT_VALUES
+            ), (reference.name, name)
+
+
 def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
     skill_path = workspace / SKILL_PATH
     skill_root = skill_path.parent.resolve()
@@ -116,7 +152,7 @@ def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
     }
     assert {path.resolve() for path in references} <= skill_links, "orphaned reference"
 
-    # The entry point covers the two-command flow and its safety invariants.
+    # The entry point covers the evidence it offers and its safety invariants.
     normalized_skill = re.sub(r"\s+", " ", skill)
     for required in (
         "--triage",
@@ -126,7 +162,7 @@ def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
         "quality.verdict",
         "not_covered",
         "measurement graph",
-        "Dig deeper",
+        "references/artifacts.md",
         "PID plus procfs start time",
         "Bound every capture",
         "leave the CUPTI shared object mapped",
@@ -141,6 +177,7 @@ def check_skill(workspace: pathlib.Path, binary: pathlib.Path) -> None:
     assert {"measure", "validate"} <= checked, sorted(checked)
 
     analyzer = skill_root / "scripts/analyze_trace.py"
+    check_artifact_fields(workspace, skill_root / "references/artifacts.md", analyzer)
     assert analyzer.is_file()
     assert os.access(analyzer, os.X_OK)
     assert not list(skill_root.rglob("__pycache__"))

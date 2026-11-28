@@ -53,17 +53,19 @@
 ## Agent workflow
 
 - Follow `skills/xprobe-measure-latency/SKILL.md` for measurement tasks.
-- Choose the shortest Skill route supported by the evidence. Existing artifacts
-  are analyzed offline; known boundaries go straight to bounded measurement;
-  unknown live work starts with one triage window and continues with its ranked
-  next spec or a measurement graph. Escalate only from evidence, and do not
-  guess selectors. `discover` is only for CUDA context holders.
-- Read the quality verdict, source coverage, stream identity, and profiler
-  overhead before interpreting latency. Summed concurrent GPU duration is not
-  wall time.
-- Keep the Skill entry point short and each fact in one place. Field meanings
-  belong to schemas and flags to `--help`; Skill tests check behavior, links,
-  and documented flags rather than pinning prose.
+- The Skill describes the evidence each command produces and how to read it;
+  it does not prescribe an investigation order. The caller's agent chooses
+  sources from its own hypotheses. Triage is one optional broad look whose
+  rule-based findings are hints, not the entry point or a verdict. Existing
+  artifacts are analyzed offline, and selectors are never guessed. `discover`
+  is only for CUDA context holders.
+- Read the quality verdict, source coverage, process, device, and stream
+  identity, and profiler overhead before interpreting latency. A stream gap is
+  not device idle time, and summed concurrent GPU duration is not wall time.
+- Keep the Skill entry point short and each fact in one place. The Skill maps
+  each artifact's fields to what they answer and how they mislead; complete
+  definitions belong to schemas and flags to `--help`. Skill tests check
+  behavior, links, field names, and documented flags rather than pinning prose.
 - Keep reusable analysis deterministic and bundled with the Skill. Keep model
   orchestration in the caller rather than adding CLI commands or a service.
 
